@@ -17,6 +17,7 @@ enum ActiveSheet: Identifiable {
     case newPlace(CLLocationCoordinate2D)
     case transitArrivals(String, CLLocationCoordinate2D)
     case vehicleDetail(GTFSVehiclePosition)
+    case trainDetail(IrishRailTrainPosition)
 
     var id: String {
         switch self {
@@ -27,6 +28,7 @@ enum ActiveSheet: Identifiable {
         case .newPlace: return "newPlace"
         case .transitArrivals(let name, _): return "transit-\(name)"
         case .vehicleDetail(let v): return "vehicle-\(v.id)"
+        case .trainDetail(let t): return "train-\(t.id)"
         }
     }
 }

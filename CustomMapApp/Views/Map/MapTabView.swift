@@ -22,7 +22,7 @@ struct MapTabView: View {
     @State private var transitStops: [TransitStop] = []
     @State private var showTransitStops: Set<TransitStop.TransitStopType> = []
     @State private var liveVehicles: [GTFSVehiclePosition] = []
-    @State private var showLiveVehicles = false
+    @State private var liveTrains: [IrishRailTrainPosition] = []
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
 
     var filteredPlaces: [Place] {
@@ -54,12 +54,28 @@ struct MapTabView: View {
             .map { $0 }
     }
 
-    /// Live vehicles filtered to current map region
+    /// Live NTA bus vehicles filtered to current map region (only shown when bus type is toggled on)
     var visibleVehicles: [GTFSVehiclePosition] {
-        guard let region = mapRegion else { return [] }
+        guard showTransitStops.contains(.bus), let region = mapRegion else { return [] }
         return liveVehicles.filter { v in
             abs(v.latitude - region.center.latitude) < region.span.latitudeDelta &&
             abs(v.longitude - region.center.longitude) < region.span.longitudeDelta
+        }
+        .prefix(300)
+        .map { $0 }
+    }
+
+    /// Live Irish Rail trains filtered to current map region (shown when dart or rail types are toggled on)
+    var visibleTrains: [IrishRailTrainPosition] {
+        let wantsDart = showTransitStops.contains(.dart)
+        let wantsRail = showTransitStops.contains(.rail)
+        guard wantsDart || wantsRail, let region = mapRegion else { return [] }
+        return liveTrains.filter { train in
+            let isDart = train.trainType.uppercased() == "DART"
+            let typeMatch = (isDart && wantsDart) || (!isDart && wantsRail)
+            let inRegion = abs(train.latitude - region.center.latitude) < region.span.latitudeDelta &&
+                abs(train.longitude - region.center.longitude) < region.span.longitudeDelta
+            return typeMatch && inRegion
         }
         .prefix(300)
         .map { $0 }
@@ -160,23 +176,30 @@ struct MapTabView: View {
                 transitStops.append(stop)
             }
         }
-        .task(id: showLiveVehicles) {
-            // Refresh live vehicles every 15 seconds when toggled on
-            guard showLiveVehicles, NTATransitService.isConfigured else { return }
-            let service = LiveVehicleService()
+        .task(id: showTransitStops) {
+            // Live vehicles/trains refresh every 30 seconds while relevant transit types are toggled on
+            let wantsBus = showTransitStops.contains(.bus) && NTATransitService.isConfigured
+            let wantsTrains = showTransitStops.contains(.dart) || showTransitStops.contains(.rail)
+            guard wantsBus || wantsTrains else {
+                liveVehicles = []
+                liveTrains = []
+                return
+            }
+            let vehicleService = LiveVehicleService()
+            let railService = IrishRailService()
             var interval: Duration = .seconds(30)
-            while !Task.isCancelled && showLiveVehicles {
-                let vehicles = await service.fetchVehiclePositions()
-                if vehicles.isEmpty {
-                    // Backoff on failure/rate limit
-                    interval = min(interval * 2, .seconds(120))
-                } else {
-                    liveVehicles = vehicles
-                    interval = .seconds(30) // reset on success
-                }
+            while !Task.isCancelled {
+                async let busFetch: [GTFSVehiclePosition] = wantsBus ? vehicleService.fetchVehiclePositions() : []
+                async let trainFetch: [IrishRailTrainPosition] = wantsTrains ? railService.fetchCurrentTrains() : []
+                let (buses, trains) = await (busFetch, trainFetch)
+                let anySuccess = !buses.isEmpty || !trains.isEmpty
+                if wantsBus { liveVehicles = buses }
+                if wantsTrains { liveTrains = trains }
+                interval = anySuccess ? .seconds(30) : min(interval * 2, .seconds(120))
                 try? await Task.sleep(for: interval)
             }
-            liveVehicles = [] // clear when toggled off
+            liveVehicles = []
+            liveTrains = []
         }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
@@ -224,8 +247,7 @@ struct MapTabView: View {
                 filterMode: $filterVM.filterMode,
                 activeWeatherOverlays: $activeWeatherOverlays,
                 bicyclePreference: $routingVM.bicyclePreference,
-                showTransitStops: $showTransitStops,
-                showLiveVehicles: $showLiveVehicles
+                showTransitStops: $showTransitStops
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -250,6 +272,12 @@ struct MapTabView: View {
 
         case .vehicleDetail(let vehicle):
             VehicleDetailView(vehicle: vehicle)
+                .presentationDetents([.fraction(0.3), .medium])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.3)))
+
+        case .trainDetail(let train):
+            TrainDetailView(train: train)
                 .presentationDetents([.fraction(0.3), .medium])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.3)))
@@ -287,15 +315,23 @@ struct MapTabView: View {
                     }
                 }
 
-                // Live vehicle positions
-                if showLiveVehicles {
-                    ForEach(visibleVehicles) { vehicle in
-                        Annotation(vehicle.routeShortName.isEmpty ? vehicle.routeId : vehicle.routeShortName, coordinate: vehicle.coordinate) {
-                            VehicleDot(vehicle: vehicle)
-                                .onTapGesture {
-                                    viewModel.activeSheet = .vehicleDetail(vehicle)
-                                }
-                        }
+                // Live bus vehicle positions
+                ForEach(visibleVehicles) { vehicle in
+                    Annotation(vehicle.routeShortName.isEmpty ? vehicle.routeId : vehicle.routeShortName, coordinate: vehicle.coordinate) {
+                        VehicleDot(vehicle: vehicle)
+                            .onTapGesture {
+                                viewModel.activeSheet = .vehicleDetail(vehicle)
+                            }
+                    }
+                }
+
+                // Live train positions
+                ForEach(visibleTrains) { train in
+                    Annotation(train.trainCode, coordinate: train.coordinate) {
+                        TrainDot(train: train, zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01)
+                            .onTapGesture {
+                                viewModel.activeSheet = .trainDetail(train)
+                            }
                     }
                 }
 

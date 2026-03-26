@@ -8,7 +8,6 @@ struct HamburgerMenuView: View {
     @Binding var activeWeatherOverlays: Set<WeatherOverlay>
     @Binding var bicyclePreference: BicycleRoutePreference
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
-    @Binding var showLiveVehicles: Bool
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
 
@@ -114,13 +113,12 @@ struct HamburgerMenuView: View {
                     }
                     .font(.caption)
 
-                    Toggle(isOn: $showLiveVehicles) {
-                        Label("Live Vehicles on Map", systemImage: "bus.fill")
-                    }
-                    .disabled(!NTATransitService.isConfigured)
+                    Text("Toggling a transit type on also shows live vehicle positions of that type on the map.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     if !NTATransitService.isConfigured {
-                        Text("Add NTA API key to show live bus positions and transit stops.")
+                        Text("Add an NTA API key to show live bus positions and transit stops.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
