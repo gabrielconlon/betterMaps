@@ -43,11 +43,9 @@ struct MapTabView: View {
     var visibleTransitStops: [TransitStop] {
         guard !showTransitStops.isEmpty, let region = mapRegion else { return [] }
         let latDelta = region.span.latitudeDelta
-        // Don't show at very far zoom
         guard latDelta < 0.15 else { return [] }
-        // Filter by type and region
         return transitStops
-            .filter { showTransitStops.contains($0.type) }
+            .filter { activeTypes.contains($0.type) }
             .filter { stop in
                 abs(stop.latitude - region.center.latitude) < latDelta &&
                 abs(stop.longitude - region.center.longitude) < region.span.longitudeDelta

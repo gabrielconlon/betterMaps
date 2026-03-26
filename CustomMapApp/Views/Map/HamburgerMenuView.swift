@@ -89,47 +89,10 @@ struct HamburgerMenuView: View {
 
                 // MARK: - Transit Layers
                 Section("Transit") {
-                    let types: [TransitStop.TransitStopType] = [.bus, .luas, .dart, .rail]
-                    ForEach(types, id: \.rawValue) { type in
-                        VStack(spacing: 6) {
-                            HStack {
-                                Image(systemName: type.systemImage)
-                                    .foregroundColor(Color(hex: type.colorHex))
-                                    .frame(width: 22)
-                                Text(type.displayName)
-                                    .font(.subheadline.bold())
-                                Spacer()
-                            }
-
-                            HStack(spacing: 16) {
-                                Toggle(isOn: Binding(
-                                    get: { showTransitStops.contains(type) },
-                                    set: { isOn in
-                                        if isOn { showTransitStops.insert(type) }
-                                        else { showTransitStops.remove(type) }
-                                    }
-                                )) {
-                                    Text("Stops")
-                                        .font(.caption)
-                                }
-                                .toggleStyle(.switch)
-
-                                Toggle(isOn: Binding(
-                                    get: { showLiveTransit.contains(type) },
-                                    set: { isOn in
-                                        if isOn { showLiveTransit.insert(type) }
-                                        else { showLiveTransit.remove(type) }
-                                    }
-                                )) {
-                                    Text("Live")
-                                        .font(.caption)
-                                }
-                                .toggleStyle(.switch)
-                                .disabled(type == .bus && !NTATransitService.isConfigured)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
+                    TransitTypeRow(type: .bus, showStops: $showTransitStops, showLive: $showLiveTransit, liveDisabled: !NTATransitService.isConfigured)
+                    TransitTypeRow(type: .luas, showStops: $showTransitStops, showLive: $showLiveTransit)
+                    TransitTypeRow(type: .dart, showStops: $showTransitStops, showLive: $showLiveTransit)
+                    TransitTypeRow(type: .rail, showStops: $showTransitStops, showLive: $showLiveTransit)
 
                     Button("Hide All Transit") {
                         showTransitStops = []
@@ -446,5 +409,56 @@ struct NTAKeySettingsView: View {
         }
         .navigationTitle("TFI Transit")
         .onAppear { editingKey = ntaAPIKey }
+    }
+}
+
+// MARK: - Transit Type Row (explicit bindings, no ForEach capture issues)
+
+struct TransitTypeRow: View {
+    let type: TransitStop.TransitStopType
+    @Binding var showStops: Set<TransitStop.TransitStopType>
+    @Binding var showLive: Set<TransitStop.TransitStopType>
+    var liveDisabled: Bool = false
+
+    private var stopsOn: Binding<Bool> {
+        Binding(
+            get: { showStops.contains(type) },
+            set: { if $0 { showStops.insert(type) } else { showStops.remove(type) } }
+        )
+    }
+
+    private var liveOn: Binding<Bool> {
+        Binding(
+            get: { showLive.contains(type) },
+            set: { if $0 { showLive.insert(type) } else { showLive.remove(type) } }
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Image(systemName: type.systemImage)
+                    .foregroundColor(Color(hex: type.colorHex))
+                    .frame(width: 22)
+                Text(type.displayName)
+                    .font(.subheadline.bold())
+                Spacer()
+            }
+            HStack(spacing: 16) {
+                Toggle(isOn: stopsOn) {
+                    Text("Stops")
+                        .font(.caption)
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: liveOn) {
+                    Text("Live")
+                        .font(.caption)
+                }
+                .toggleStyle(.switch)
+                .disabled(liveDisabled)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
