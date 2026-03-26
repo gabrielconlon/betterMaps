@@ -276,7 +276,7 @@ actor GTFSStopLoader {
     // MARK: - ZIP Extraction
 
     /// Extract a single file from a ZIP archive using Compression framework
-    private func extractFileFromZip(data: Data, fileName: String) -> String? {
+    func extractFileFromZip(data: Data, fileName: String) -> String? {
         // ZIP local file header signature
         let sig: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
         var offset = 0
