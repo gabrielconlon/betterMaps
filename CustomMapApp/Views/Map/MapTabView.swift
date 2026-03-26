@@ -13,8 +13,13 @@ struct MapTabView: View {
     @State private var locationManager = LocationManager()
 
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
-    @State private var showLayerSidebar = false
-    @State private var showRoutingPanel = false
+    @State private var searchText = ""
+    @State private var searchResults: [MKMapItem] = []
+    @State private var showSearchResults = false
+    @State private var isSearchFocused = false
+    @State private var activeWeatherOverlays: Set<WeatherOverlay> = []
+    @State private var mapRegion: MKCoordinateRegion?
+    @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
 
     var filteredPlaces: [Place] {
         filterVM.filteredPlaces(allPlaces: places, allLayers: layers)
@@ -24,166 +29,356 @@ struct MapTabView: View {
         layers.filter { $0.isVisible }.count
     }
 
+    var isOverlapMode: Bool {
+        filterVM.filterMode == .intersection && activeLayerCount > 1
+    }
+
     var body: some View {
         ZStack {
+            // Map
             mapView
-            overlayControls
+
+            // NOTE: Weather tile overlays require MKMapView (not SwiftUI Map).
+            // Visual radar is blocked until the map layer is refactored.
+            // Weather-based routing rules still work via WeatherKit.
+
+            // UI overlays
+            VStack(spacing: 0) {
+                Spacer()
+
+                // Search results above bottom bar
+                if showSearchResults && !searchResults.isEmpty {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(searchResults, id: \.self) { item in
+                                Button(action: {
+                                    viewModel.showPOI(item)
+                                    showSearchResults = false
+                                    searchText = ""
+                                    cameraPosition = .region(MKCoordinateRegion(
+                                        center: item.placemark.coordinate,
+                                        span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                                    ))
+                                }) {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(item.name ?? "Unknown")
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.primary)
+                                            Text([item.placemark.thoroughfare, item.placemark.locality]
+                                                .compactMap { $0 }.joined(separator: ", "))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "arrow.right.circle")
+                                            .foregroundStyle(.blue)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 10)
+                                }
+                                Divider()
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 200)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                    .padding(.bottom, 4)
+                }
+
+                // Route clear
+                if !routingVM.activeRoutes.isEmpty {
+                    Button(action: { routingVM.clearRoutes() }) {
+                        Label("Clear Routes", systemImage: "xmark.circle.fill")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                    }
+                    .padding(.bottom, 4)
+                }
+
+                // Bottom bar: [hamburger] [search] [filter chips]
+                bottomBar
+            }
         }
         .onAppear {
             locationManager.requestPermission()
         }
-        .sheet(isPresented: $viewModel.showPlaceDetail) {
-            if let place = viewModel.selectedPlace {
-                PlaceDetailSheet(
-                    place: place,
-                    onGetDirections: { destination in
-                        viewModel.showPlaceDetail = false
-                        showRoutingPanel = true
-                        Task {
-                            await calculateRoute(to: destination)
-                        }
-                    },
-                    onEdit: { place in
-                        viewModel.showPlaceDetail = false
-                        viewModel.selectedPlace = place
-                        viewModel.showEditPlace = true
+        .sheet(item: $viewModel.activeSheet) { sheet in
+            sheetContent(for: sheet)
+        }
+    }
+
+    // MARK: - Sheet Router
+
+    @ViewBuilder
+    private func sheetContent(for sheet: ActiveSheet) -> some View {
+        switch sheet {
+        case .placeDetail(let place):
+            PlaceDetailSheet(
+                place: place,
+                onGetDirections: { dest in
+                    viewModel.dismissSheet()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        viewModel.showRouting(context: RouteContext(name: dest.name, coordinate: dest.coordinate))
+                        Task { await calculateRoute(to: dest) }
                     }
-                )
-                .presentationDetents([.medium, .large])
-            }
-        }
-        .sheet(isPresented: $viewModel.showEditPlace) {
-            if let place = viewModel.selectedPlace {
-                PlaceFormView(place: place)
-            }
-        }
-        .sheet(isPresented: $viewModel.showNewPlaceForm) {
-            PlaceFormView(coordinate: viewModel.longPressCoordinate)
-        }
-        .sheet(isPresented: $showLayerSidebar) {
-            LayerToggleSidebar(filterMode: $filterVM.filterMode)
-                .presentationDetents([.medium])
-        }
-        .sheet(isPresented: $showRoutingPanel) {
-            RoutingPanelView(viewModel: routingVM)
-                .presentationDetents([.medium, .large])
+                }
+            )
+            .presentationDetents([.fraction(0.25), .medium, .large])
+            .presentationDragIndicator(.hidden)
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+
+        case .poiDetail(let mapItem):
+            POIAddToLayerView(
+                mapItem: mapItem,
+                onGetDirections: { item in
+                    viewModel.dismissSheet()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        viewModel.showRouting(context: RouteContext(name: item.name ?? "Destination", coordinate: item.placemark.coordinate))
+                        Task { await calculateRouteToMapItem(item) }
+                    }
+                },
+                onDismiss: { viewModel.dismissSheet() }
+            )
+            .presentationDetents([.fraction(0.25), .medium, .large])
+            .presentationDragIndicator(.hidden)
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+
+        case .layerSidebar:
+            HamburgerMenuView(
+                filterMode: $filterVM.filterMode,
+                activeWeatherOverlays: $activeWeatherOverlays,
+                bicyclePreference: $routingVM.bicyclePreference
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+
+        case .routing(let context):
+            RoutingPanelView(
+                viewModel: routingVM,
+                destinationName: context?.name ?? "",
+                source: locationManager.userLocation,
+                destination: context?.coordinate
+            )
+            .presentationDetents([.medium, .large])
+
+        case .newPlace(let coordinate):
+            PlaceFormView(coordinate: coordinate)
         }
     }
 
     // MARK: - Map
 
     private var mapView: some View {
-        Map(position: $cameraPosition) {
-            UserAnnotation()
+        MapReader { proxy in
+            Map(position: $cameraPosition) {
+                UserAnnotation()
 
-            ForEach(filteredPlaces) { place in
-                Annotation(place.name, coordinate: place.coordinate) {
-                    PlaceAnnotationView(place: place, layers: layers)
+                ForEach(filteredPlaces) { place in
+                    Annotation(place.name, coordinate: place.coordinate) {
+                        PlaceAnnotationView(
+                            place: place,
+                            layers: layers,
+                            isOverlapMode: isOverlapMode,
+                            zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01
+                        )
                         .onTapGesture {
                             viewModel.selectPlace(place)
                         }
+                    }
+                }
+
+                ForEach(routingVM.activeRoutes) { routeResult in
+                    if let route = routeResult.route {
+                        MapPolyline(route)
+                            .stroke(
+                                routeResult.mode.color,
+                                lineWidth: routeResult.isPreferred ? 6 : 3
+                            )
+                    } else if let polyline = routeResult.cyclingPolyline {
+                        MapPolyline(polyline)
+                            .stroke(
+                                routeResult.mode.color.opacity(0.8),
+                                style: StrokeStyle(
+                                    lineWidth: routeResult.isPreferred ? 6 : 3,
+                                    dash: [8, 4]  // Dashed line for cycling
+                                )
+                            )
+                    }
                 }
             }
-
-            ForEach(routingVM.activeRoutes) { routeResult in
-                MapPolyline(routeResult.route)
-                    .stroke(
-                        routeResult.mode.color,
-                        lineWidth: routeResult.isPreferred ? 6 : 3
-                    )
+            .mapStyle(.standard(elevation: .realistic))
+            .mapControls {
+                MapUserLocationButton()
+                MapCompass()
+                MapScaleView()
             }
-        }
-        .mapStyle(.standard(elevation: .realistic))
-        .mapControls {
-            MapUserLocationButton()
-            MapCompass()
-            MapScaleView()
-        }
-        .onLongPressGesture(minimumDuration: 0.5) {
-            addPlaceAtCenter()
+            .onTapGesture { screenPoint in
+                // If searching, dismiss keyboard instead of POI search
+                if isSearchFocused {
+                    isSearchFocused = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    return
+                }
+                guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
+                Task { await searchPOI(at: coordinate) }
+            }
+            .onLongPressGesture(minimumDuration: 0.5) {
+                guard let location = locationManager.userLocation else { return }
+                viewModel.startNewPlace(at: location)
+            }
+            .onMapCameraChange(frequency: .onEnd) { context in
+                mapRegion = context.region
+            }
         }
     }
 
-    // MARK: - Overlay Controls
+    // MARK: - Bottom Bar
 
-    private var overlayControls: some View {
-        VStack {
-            HStack {
-                // Layer toggle button
-                Button(action: { showLayerSidebar.toggle() }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "square.3.layers.3d")
-                        if activeLayerCount > 0 {
-                            Text("\(activeLayerCount)")
-                                .font(.caption.bold())
-                        }
-                    }
+    private var bottomBar: some View {
+        HStack(spacing: 10) {
+            // Layers button
+            Button(action: { viewModel.showLayerSidebar() }) {
+                Image(systemName: "square.3.layers.3d")
+                    .font(.body)
                     .padding(10)
                     .background(.ultraThinMaterial)
-                    .clipShape(Capsule())
+                    .clipShape(Circle())
+            }
+
+            // Search field — floating style
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search places...", text: $searchText, onEditingChanged: { editing in
+                    isSearchFocused = editing
+                })
+                    .textFieldStyle(.plain)
+                    .onSubmit {
+                        isSearchFocused = false
+                        Task { await performSearch() }
+                    }
+                if !searchText.isEmpty {
+                    Button(action: {
+                        searchText = ""
+                        searchResults = []
+                        showSearchResults = false
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
                 }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
 
-                Spacer()
-
-                // Filter mode indicator
-                if activeLayerCount > 1 {
-                    Text(filterVM.filterMode.rawValue)
-                        .font(.caption.bold())
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
+            // Cancel button when searching
+            if isSearchFocused {
+                Button("Cancel") {
+                    searchText = ""
+                    searchResults = []
+                    showSearchResults = false
+                    isSearchFocused = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                 }
+                .font(.subheadline)
+            }
 
-                Spacer()
-
-                // Add place button
+            // Overlap toggle — only visible when 2+ layers active
+            if activeLayerCount > 1 {
                 Button(action: {
-                    addPlaceAtCenter()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        filterVM.filterMode = filterVM.filterMode == .union ? .intersection : .union
+                    }
                 }) {
-                    Image(systemName: "plus")
+                    Image(systemName: isOverlapMode ? "circle.grid.cross.fill" : "square.grid.2x2")
+                        .font(.body)
                         .padding(10)
-                        .background(.ultraThinMaterial)
+                        .background(isOverlapMode
+                            ? AnyShapeStyle(Color.purple.opacity(0.2))
+                            : AnyShapeStyle(.ultraThinMaterial))
+                        .foregroundStyle(isOverlapMode ? .purple : .primary)
                         .clipShape(Circle())
                 }
             }
-            .padding(.horizontal)
-            .padding(.top, 8)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
 
-            Spacer()
+    // MARK: - POI Search
 
-            // Route clear button
-            if !routingVM.activeRoutes.isEmpty {
-                Button(action: { routingVM.clearRoutes() }) {
-                    Label("Clear Routes", systemImage: "xmark.circle.fill")
-                        .font(.subheadline.bold())
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Capsule())
-                }
-                .padding(.bottom, 8)
-            }
+    @MainActor
+    private func searchPOI(at coordinate: CLLocationCoordinate2D) async {
+        let request = MKLocalPointsOfInterestRequest(center: coordinate, radius: 50)
+        let search = MKLocalSearch(request: request)
+        if let response = try? await search.start(), let closest = response.mapItems.first {
+            viewModel.showPOI(closest)
+            return
+        }
+
+        let broadRequest = MKLocalPointsOfInterestRequest(center: coordinate, radius: 150)
+        let broadSearch = MKLocalSearch(request: broadRequest)
+        if let response = try? await broadSearch.start(),
+           let closest = response.mapItems
+            .sorted(by: {
+                let loc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                return loc.distance(from: CLLocation(latitude: $0.placemark.coordinate.latitude, longitude: $0.placemark.coordinate.longitude))
+                    < loc.distance(from: CLLocation(latitude: $1.placemark.coordinate.latitude, longitude: $1.placemark.coordinate.longitude))
+            })
+            .first {
+            viewModel.showPOI(closest)
+            return
+        }
+
+        let geocoder = CLGeocoder()
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        if let placemarks = try? await geocoder.reverseGeocodeLocation(location),
+           let placemark = placemarks.first {
+            let mkPlacemark = MKPlacemark(placemark: placemark)
+            let mapItem = MKMapItem(placemark: mkPlacemark)
+            mapItem.name = placemark.name ?? placemark.thoroughfare ?? "Tapped Location"
+            viewModel.showPOI(mapItem)
         }
     }
 
-    // MARK: - Helpers
-
-    private func addPlaceAtCenter() {
-        guard let location = locationManager.userLocation else { return }
-        viewModel.startNewPlace(at: location)
+    @MainActor
+    private func performSearch() async {
+        guard !searchText.isEmpty else { return }
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = searchText
+        if let userLocation = locationManager.userLocation {
+            request.region = MKCoordinateRegion(
+                center: userLocation,
+                span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
+            )
+        }
+        if let response = try? await MKLocalSearch(request: request).start() {
+            searchResults = response.mapItems
+            showSearchResults = true
+        }
     }
 
     // MARK: - Routing
 
     @MainActor
+    private func calculateRouteToMapItem(_ mapItem: MKMapItem) async {
+        guard let userLocation = locationManager.userLocation else { return }
+        let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
+        await routingVM.calculateRoutes(from: userLocation, to: mapItem.placemark.coordinate, weatherRules: weatherRules ?? [], context: modelContext)
+    }
+
+    @MainActor
     private func calculateRoute(to destination: Place) async {
         guard let userLocation = locationManager.userLocation else { return }
         let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
-        await routingVM.calculateRoutes(
-            from: userLocation,
-            to: destination.coordinate,
-            weatherRules: weatherRules ?? []
-        )
+        await routingVM.calculateRoutes(from: userLocation, to: destination.coordinate, weatherRules: weatherRules ?? [], context: modelContext)
     }
 }

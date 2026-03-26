@@ -2,22 +2,61 @@ import SwiftUI
 import MapKit
 import Observation
 
+// MARK: - Active Sheet Enum (single-sheet pattern)
+
+struct RouteContext {
+    let name: String
+    let coordinate: CLLocationCoordinate2D
+}
+
+enum ActiveSheet: Identifiable {
+    case placeDetail(Place)
+    case poiDetail(MKMapItem)
+    case layerSidebar
+    case routing(RouteContext?)
+    case newPlace(CLLocationCoordinate2D)
+
+    var id: String {
+        switch self {
+        case .placeDetail(let place): return "place-\(place.id)"
+        case .poiDetail(let item): return "poi-\(item.name ?? "unknown")-\(item.placemark.coordinate.latitude)"
+        case .layerSidebar: return "layerSidebar"
+        case .routing: return "routing"
+        case .newPlace: return "newPlace"
+        }
+    }
+}
+
 @Observable
 @MainActor
 class MapViewModel {
     var selectedPlace: Place?
-    var showPlaceDetail = false
-    var showEditPlace = false
-    var showNewPlaceForm = false
+    var activeSheet: ActiveSheet?
     var longPressCoordinate: CLLocationCoordinate2D?
 
     func selectPlace(_ place: Place) {
         selectedPlace = place
-        showPlaceDetail = true
+        activeSheet = .placeDetail(place)
+    }
+
+    func showPOI(_ mapItem: MKMapItem) {
+        activeSheet = .poiDetail(mapItem)
+    }
+
+    func showLayerSidebar() {
+        activeSheet = .layerSidebar
+    }
+
+    func showRouting(context: RouteContext? = nil) {
+        activeSheet = .routing(context)
     }
 
     func startNewPlace(at coordinate: CLLocationCoordinate2D) {
         longPressCoordinate = coordinate
-        showNewPlaceForm = true
+        activeSheet = .newPlace(coordinate)
+    }
+
+    func dismissSheet() {
+        activeSheet = nil
     }
 }

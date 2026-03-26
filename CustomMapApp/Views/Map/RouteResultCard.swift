@@ -2,48 +2,82 @@ import SwiftUI
 
 struct RouteResultCard: View {
     let result: RouteResult
+    @State private var showSteps = false
+
+    var hasSteps: Bool {
+        result.route?.steps.isEmpty == false
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: result.mode.systemImage)
-                .font(.title2)
-                .foregroundStyle(result.mode.color)
-                .frame(width: 36)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: result.mode.systemImage)
+                    .font(.title2)
+                    .foregroundStyle(result.mode.color)
+                    .frame(width: 36)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(result.mode.displayName)
-                        .font(.headline)
-                    if result.isPreferred {
-                        Text("Fastest")
-                            .font(.caption2.bold())
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.green.opacity(0.2))
-                            .foregroundStyle(.green)
-                            .clipShape(Capsule())
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(result.mode.displayName)
+                            .font(.headline)
+                        if result.isPreferred {
+                            Text("Fastest")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.green.opacity(0.2))
+                                .foregroundStyle(.green)
+                                .clipShape(Capsule())
+                        }
+                        if result.isCached {
+                            Text("Saved")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.blue.opacity(0.15))
+                                .foregroundStyle(.blue)
+                                .clipShape(Capsule())
+                        }
+                    }
+
+                    HStack(spacing: 12) {
+                        Text(formattedDuration(result.eta))
+                            .font(.subheadline.bold())
+                        Text(formattedDistance(result.distance))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if result.mode == .cycling {
+                        if let bikeInfo = result.bikeLaneInfo {
+                            Label(bikeInfo, systemImage: "bicycle")
+                                .font(.caption)
+                                .foregroundStyle(.teal)
+                        }
+                    }
+
+                    if let warning = result.weatherWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
                 }
 
-                HStack(spacing: 12) {
-                    Text(formattedDuration(result.eta))
-                        .font(.subheadline.bold())
-                    Text(formattedDistance(result.distance))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                Spacer()
 
-                if let warning = result.weatherWarning {
-                    Label(warning, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .padding(.top, 2)
+                // Start / Steps button
+                Button(action: { showSteps = true }) {
+                    Text(hasSteps ? "Go" : "View")
+                        .font(.subheadline.bold())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(result.mode.color)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
                 }
             }
-
-            Spacer()
+            .padding()
         }
-        .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(result.isPreferred
@@ -54,27 +88,25 @@ struct RouteResultCard: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(result.isPreferred ? Color.green.opacity(0.3) : Color.gray.opacity(0.2))
         )
+        .sheet(isPresented: $showSteps) {
+            NavigationStepsView(routeResult: result)
+                .presentationDetents([.fraction(0.35), .medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        }
     }
 
     private func formattedDuration(_ seconds: TimeInterval) -> String {
         let minutes = Int(seconds) / 60
-        if minutes < 60 {
-            return "\(minutes) min"
-        }
+        if minutes < 60 { return "\(minutes) min" }
         let hours = minutes / 60
-        let remainingMinutes = minutes % 60
-        if remainingMinutes == 0 {
-            return "\(hours) hr"
-        }
-        return "\(hours) hr \(remainingMinutes) min"
+        let rem = minutes % 60
+        return rem == 0 ? "\(hours) hr" : "\(hours)h \(rem)m"
     }
 
     private func formattedDistance(_ meters: Double) -> String {
         let miles = meters / 1609.34
-        if miles < 0.1 {
-            let feet = Int(meters * 3.28084)
-            return "\(feet) ft"
-        }
+        if miles < 0.1 { return "\(Int(meters * 3.28084)) ft" }
         return String(format: "%.1f mi", miles)
     }
 }

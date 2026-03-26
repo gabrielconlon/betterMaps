@@ -41,20 +41,70 @@ extension Color {
     ]
 
     static let layerSymbols: [(name: String, symbol: String)] = [
+        // General
         ("Pin", "mappin"),
         ("Star", "star.fill"),
         ("Heart", "heart.fill"),
-        ("Food", "fork.knife"),
+        ("Bookmark", "bookmark.fill"),
+        ("Flag", "flag.fill"),
+
+        // Food & Drink
+        ("Restaurant", "fork.knife"),
         ("Coffee", "cup.and.saucer.fill"),
-        ("Shopping", "bag.fill"),
+        ("Brunch", "takeoutbag.and.cup.and.straw.fill"),
+        ("Bar", "wineglass.fill"),
+        ("Beer", "mug.fill"),
+        ("Pizza", "fork.knife.circle.fill"),
+
+        // Work & Productivity
         ("Work", "briefcase.fill"),
+        ("Laptop", "laptopcomputer"),
+        ("Wifi", "wifi"),
+        ("Meeting", "person.2.fill"),
+        ("Office", "building.2.fill"),
+
+        // Home & Life
         ("Home", "house.fill"),
+        ("Shopping", "bag.fill"),
+        ("Cart", "cart.fill"),
+        ("Laundry", "washer.fill"),
+
+        // Health & Fitness
         ("Gym", "figure.run"),
+        ("Yoga", "figure.mind.and.body"),
+        ("Bike", "bicycle"),
+        ("Swim", "figure.pool.swim"),
+        ("Medical", "cross.case.fill"),
+
+        // Transport
         ("Gas", "fuelpump.fill"),
+        ("Parking", "p.circle.fill"),
+        ("Train", "tram.fill"),
+        ("Airport", "airplane"),
+        ("EV Charge", "bolt.car.fill"),
+
+        // Nature & Outdoors
         ("Park", "leaf.fill"),
         ("Beach", "beach.umbrella.fill"),
+        ("Mountain", "mountain.2.fill"),
+        ("Dog Park", "dog.fill"),
+        ("Garden", "tree.fill"),
+
+        // Entertainment
         ("Music", "music.note"),
+        ("Movie", "film.fill"),
+        ("Museum", "building.columns.fill"),
+        ("Theater", "theatermasks.fill"),
+        ("Game", "gamecontroller.fill"),
+
+        // Other
         ("Camera", "camera.fill"),
         ("Book", "book.fill"),
+        ("School", "graduationcap.fill"),
+        ("Church", "cross.fill"),
+        ("Bank", "banknote.fill"),
+        ("Hotel", "bed.double.fill"),
+        ("Phone", "phone.fill"),
+        ("Globe", "globe.americas.fill"),
     ]
 }

@@ -7,7 +7,8 @@ struct CustomMapAppApp: App {
         let schema = Schema([
             Place.self,
             Layer.self,
-            WeatherRule.self
+            WeatherRule.self,
+            SavedRoute.self
         ])
         let modelConfiguration = ModelConfiguration(
             schema: schema,
@@ -26,6 +27,13 @@ struct CustomMapAppApp: App {
             ContentView()
                 .onAppear {
                     seedDefaultWeatherRules()
+                    // Load API keys from UserDefaults
+                    if let key = UserDefaults.standard.string(forKey: "yelpAPIKey"), !key.isEmpty {
+                        YelpService.apiKey = key
+                    }
+                    if let key = UserDefaults.standard.string(forKey: "orsAPIKey"), !key.isEmpty {
+                        BicycleRoutingService.apiKey = key
+                    }
                 }
         }
         .modelContainer(sharedModelContainer)

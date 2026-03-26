@@ -6,8 +6,12 @@ actor RoutingService {
         to destination: CLLocationCoordinate2D
     ) async -> [(TransportMode, MKRoute)] {
         await withTaskGroup(of: (TransportMode, MKRoute?).self) { group in
-            for mode in TransportMode.allCases {
+            // Only request MapKit-supported modes (not cycling)
+            for mode in TransportMode.mapKitModes {
                 group.addTask {
+                    guard let transportType = mode.mkTransportType else {
+                        return (mode, nil)
+                    }
                     let request = MKDirections.Request()
                     request.source = MKMapItem(
                         placemark: MKPlacemark(coordinate: source)
@@ -15,7 +19,7 @@ actor RoutingService {
                     request.destination = MKMapItem(
                         placemark: MKPlacemark(coordinate: destination)
                     )
-                    request.transportType = mode.mkTransportType
+                    request.transportType = transportType
 
                     let directions = MKDirections(request: request)
                     do {
@@ -38,6 +42,5 @@ actor RoutingService {
     }
 }
 
-// MKRoute is safe to pass across concurrency boundaries — it's
-// a read-only value object returned by MapKit after calculation.
 extension MKRoute: @unchecked Sendable {}
+extension MKPolyline: @unchecked Sendable {}

@@ -1,0 +1,307 @@
+import SwiftUI
+import SwiftData
+
+struct HamburgerMenuView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Layer.sortOrder) private var layers: [Layer]
+    @Binding var filterMode: FilterMode
+    @Binding var activeWeatherOverlays: Set<WeatherOverlay>
+    @Binding var bicyclePreference: BicycleRoutePreference
+    @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
+    @AppStorage("orsAPIKey") private var orsAPIKey = ""
+
+    @State private var showLayerForm = false
+    @State private var showSettings = false
+    @State private var editingWeatherKey = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // MARK: - Place Layers
+                Section("Place Layers") {
+                    if layers.isEmpty {
+                        Text("No layers yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(layers) { layer in
+                            NavigationLink(destination: LayerDetailView(layer: layer)) {
+                                LayerToggleRow(layer: layer)
+                            }
+                        }
+                    }
+
+                    Button(action: { showLayerForm = true }) {
+                        Label("New Layer", systemImage: "plus.circle")
+                    }
+
+                    if layers.filter({ $0.isVisible }).count > 1 {
+                        Picker("Filter Mode", selection: $filterMode) {
+                            ForEach(FilterMode.allCases, id: \.self) { mode in
+                                Label(mode.rawValue, systemImage: mode.systemImage)
+                                    .tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        Text(filterMode.description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // MARK: - Data Layers (Weather)
+                Section("Weather Layers") {
+                    ForEach(WeatherOverlay.allCases) { overlay in
+                        HStack {
+                            Label(overlay.displayName, systemImage: overlay.systemImage)
+                            Spacer()
+                            Text("Planned")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Text("Weather radar overlays require a map engine upgrade (SwiftUI Map → MKMapView). Weather-based routing rules are active now — configure them in Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // MARK: - Cycling
+                Section("Cycling Routes") {
+                    Picker("Route Preference", selection: $bicyclePreference) {
+                        ForEach(BicycleRoutePreference.allCases) { pref in
+                            Label(pref.displayName, systemImage: pref.systemImage)
+                                .tag(pref)
+                        }
+                    }
+
+                    Text(bicyclePreference.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if !BicycleRoutingService.isConfigured {
+                        Text("Add an OpenRouteService API key below to enable cycling directions.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // MARK: - Settings
+                Section("Settings") {
+                    NavigationLink(destination: WeatherRulesView()) {
+                        Label("Routing Weather Rules", systemImage: "cloud.sun")
+                    }
+
+                    NavigationLink(destination: SavedRoutesView()) {
+                        Label("Saved Routes (Offline)", systemImage: "arrow.down.circle")
+                    }
+
+                    NavigationLink(destination: APILogView()) {
+                        HStack {
+                            Label("API Logs", systemImage: "list.bullet.rectangle")
+                            Spacer()
+                            let failures = APILogger.shared.recentFailures
+                            if failures > 0 {
+                                Text("\(failures) errors")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                            }
+                        }
+                    }
+
+                    // Yelp API key
+                    NavigationLink(destination: YelpKeySettingsView()) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Label("Yelp Integration", systemImage: "star.bubble")
+                                Spacer()
+                                Text(YelpService.isConfigured ? "Connected" : "Not Set")
+                                    .font(.caption)
+                                    .foregroundStyle(YelpService.isConfigured ? .green : .secondary)
+                            }
+                            if let quota = APILogger.shared.quotas["Yelp"] {
+                                Text("\(quota.remaining) of \(quota.limit) calls remaining · \(quota.staleness)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    // Cycling API key
+                    NavigationLink(destination: ORSKeySettingsView()) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Label("Cycling Directions", systemImage: "bicycle")
+                                Spacer()
+                                Text(BicycleRoutingService.isConfigured ? "Connected" : "Not Set")
+                                    .font(.caption)
+                                    .foregroundColor(BicycleRoutingService.isConfigured ? .green : .secondary)
+                            }
+                            if let quota = APILogger.shared.quotas["OpenRouteService"] {
+                                Text("\(quota.remaining) of \(quota.limit) calls remaining · \(quota.staleness)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    // OpenWeatherMap API key
+                    NavigationLink(destination: OpenWeatherKeySettingsView()) {
+                        HStack {
+                            Label("Weather Layers", systemImage: "cloud.rain")
+                            Spacer()
+                            Text(openWeatherAPIKey.isEmpty ? "Not Set" : "Connected")
+                                .font(.caption)
+                                .foregroundColor(openWeatherAPIKey.isEmpty ? .secondary : .green)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Menu")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showLayerForm) {
+                LayerFormView(layer: nil)
+            }
+        }
+    }
+}
+
+// MARK: - API Key Settings Views
+
+struct YelpKeySettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("yelpAPIKey") private var yelpAPIKey = ""
+    @State private var editingKey = ""
+    @State private var saved = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Yelp Fusion provides rich place details. Get a free key at yelp.com/developers")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Free Tier Includes") {
+                Label("Business hours & open/closed status", systemImage: "clock")
+                    .font(.caption)
+                Label("Up to 3 photos per place", systemImage: "photo")
+                    .font(.caption)
+                Label("Top 3 user reviews", systemImage: "star.bubble")
+                    .font(.caption)
+                Label("Rating & price range", systemImage: "dollarsign.circle")
+                    .font(.caption)
+                Label("500 API calls/day", systemImage: "gauge.with.dots.needle.50percent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("API Key") {
+                SecureField("Yelp API Key", text: $editingKey)
+                Button(saved ? "Saved!" : "Save") {
+                    yelpAPIKey = editingKey
+                    YelpService.apiKey = editingKey
+                    saved = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dismiss() }
+                }
+                .disabled(editingKey.isEmpty || saved)
+            }
+        }
+        .navigationTitle("Yelp Integration")
+        .onAppear { editingKey = yelpAPIKey }
+    }
+}
+
+struct OpenWeatherKeySettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
+    @State private var editingKey = ""
+    @State private var saved = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("OpenWeatherMap provides weather radar overlays on the map. Get a free key at openweathermap.org/api")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Free Tier Includes") {
+                Label("Precipitation radar", systemImage: "cloud.rain")
+                    .font(.caption)
+                Label("Cloud cover overlay", systemImage: "cloud.fill")
+                    .font(.caption)
+                Label("Wind speed overlay", systemImage: "wind")
+                    .font(.caption)
+                Label("Temperature heatmap", systemImage: "thermometer.medium")
+                    .font(.caption)
+                Label("Pressure overlay", systemImage: "gauge.with.dots.needle.33percent")
+                    .font(.caption)
+                Label("1,000 tile loads/day", systemImage: "gauge.with.dots.needle.50percent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("API Key") {
+                SecureField("OpenWeatherMap API Key", text: $editingKey)
+                Button(saved ? "Saved!" : "Save") {
+                    openWeatherAPIKey = editingKey
+                    saved = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dismiss() }
+                }
+                .disabled(editingKey.isEmpty || saved)
+            }
+        }
+        .navigationTitle("Weather Layers")
+        .onAppear { editingKey = openWeatherAPIKey }
+    }
+}
+
+struct ORSKeySettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("orsAPIKey") private var orsAPIKey = ""
+    @State private var editingKey = ""
+    @State private var saved = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("OpenRouteService provides cycling directions. Get a free key at openrouteservice.org")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Free Tier Includes") {
+                Label("Cycling route directions", systemImage: "bicycle")
+                    .font(.caption)
+                Label("Quieter/safer route preference", systemImage: "leaf")
+                    .font(.caption)
+                Label("Turn-by-turn instructions", systemImage: "arrow.triangle.turn.up.right.diamond")
+                    .font(.caption)
+                Label("2,000 route requests/day", systemImage: "gauge.with.dots.needle.50percent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Paid Tier Adds") {
+                Label("Bike lane % and surface quality data", systemImage: "sparkles")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Label("Higher rate limits", systemImage: "arrow.up.right")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("API Key") {
+                SecureField("OpenRouteService API Key", text: $editingKey)
+                Button(saved ? "Saved!" : "Save") {
+                    orsAPIKey = editingKey
+                    BicycleRoutingService.apiKey = editingKey
+                    saved = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dismiss() }
+                }
+                .disabled(editingKey.isEmpty || saved)
+            }
+        }
+        .navigationTitle("Cycling Directions")
+        .onAppear { editingKey = orsAPIKey }
+    }
+}
