@@ -21,6 +21,7 @@ struct MapTabView: View {
     @State private var mapRegion: MKCoordinateRegion?
     @State private var transitStops: [TransitStop] = []
     @State private var showTransitStops: Set<TransitStop.TransitStopType> = []
+    @State private var showLiveTransit: Set<TransitStop.TransitStopType> = []
     @State private var liveVehicles: [GTFSVehiclePosition] = []
     @State private var liveTrains: [IrishRailTrainPosition] = []
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
@@ -54,9 +55,9 @@ struct MapTabView: View {
             .map { $0 }
     }
 
-    /// Live NTA bus vehicles filtered to current map region (only shown when bus type is toggled on)
+    /// Live NTA bus vehicles filtered to current map region
     var visibleVehicles: [GTFSVehiclePosition] {
-        guard showTransitStops.contains(.bus), let region = mapRegion else { return [] }
+        guard showLiveTransit.contains(.bus), let region = mapRegion else { return [] }
         return liveVehicles.filter { v in
             abs(v.latitude - region.center.latitude) < region.span.latitudeDelta &&
             abs(v.longitude - region.center.longitude) < region.span.longitudeDelta
@@ -65,10 +66,10 @@ struct MapTabView: View {
         .map { $0 }
     }
 
-    /// Live Irish Rail trains filtered to current map region (shown when dart or rail types are toggled on)
+    /// Live Irish Rail trains filtered to current map region
     var visibleTrains: [IrishRailTrainPosition] {
-        let wantsDart = showTransitStops.contains(.dart)
-        let wantsRail = showTransitStops.contains(.rail)
+        let wantsDart = showLiveTransit.contains(.dart)
+        let wantsRail = showLiveTransit.contains(.rail)
         guard wantsDart || wantsRail, let region = mapRegion else { return [] }
         return liveTrains.filter { train in
             let isDart = train.trainType.uppercased() == "DART"
@@ -176,10 +177,10 @@ struct MapTabView: View {
                 transitStops.append(stop)
             }
         }
-        .task(id: showTransitStops) {
-            // Live vehicles/trains refresh every 30 seconds while relevant transit types are toggled on
-            let wantsBus = showTransitStops.contains(.bus) && NTATransitService.isConfigured
-            let wantsTrains = showTransitStops.contains(.dart) || showTransitStops.contains(.rail)
+        .task(id: showLiveTransit) {
+            // Live vehicles/trains refresh every 30 seconds while relevant live types are toggled on
+            let wantsBus = showLiveTransit.contains(.bus) && NTATransitService.isConfigured
+            let wantsTrains = showLiveTransit.contains(.dart) || showLiveTransit.contains(.rail)
             guard wantsBus || wantsTrains else {
                 liveVehicles = []
                 liveTrains = []
@@ -247,7 +248,8 @@ struct MapTabView: View {
                 filterMode: $filterVM.filterMode,
                 activeWeatherOverlays: $activeWeatherOverlays,
                 bicyclePreference: $routingVM.bicyclePreference,
-                showTransitStops: $showTransitStops
+                showTransitStops: $showTransitStops,
+                showLiveTransit: $showLiveTransit
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)

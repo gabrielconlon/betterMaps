@@ -211,7 +211,7 @@ struct TrainDetailView: View {
                     }
 
                     if !train.publicMessage.isEmpty {
-                        Text(train.publicMessage)
+                        Text(train.publicMessage.replacingOccurrences(of: "\\n", with: "\n"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

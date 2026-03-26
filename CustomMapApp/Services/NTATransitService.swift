@@ -25,15 +25,18 @@ actor NTATransitService {
         !apiKey.isEmpty
     }
 
-    private let baseURL = "https://api.nationaltransport.ie"
+    // GTFS-RT endpoints from the NTA developer portal
+    private let gtfsrBaseURL = "https://gtfsr.transportforireland.ie/v2"
 
     /// Fetch real-time stop passage info for a given stop
-    /// Uses the NTA RTPI (Real Time Passenger Information) endpoint
+    /// Note: GTFS-RT doesn't have a per-stop JSON endpoint.
+    /// The stop departures need to be extracted from the full TripUpdates feed,
+    /// which requires protobuf parsing. For now this is best-effort.
     func fetchStopDepartures(stopId: String) async -> [NTAStopDeparture] {
         guard NTATransitService.isConfigured else { return [] }
 
-        // NTA RTPI endpoint for real-time bus info
-        let endpoint = "\(baseURL)/nta/stop_times/v1/\(stopId)?format=json"
+        // Try the GTFS-RT TripUpdates feed (protobuf)
+        let endpoint = "\(gtfsrBaseURL)?format=json"
         guard let url = URL(string: endpoint) else { return [] }
 
         var request = URLRequest(url: url)
@@ -71,7 +74,7 @@ actor NTATransitService {
     func fetchServiceAlerts() async -> [NTAServiceAlert] {
         guard NTATransitService.isConfigured else { return [] }
 
-        let endpoint = "\(baseURL)/gtfsr/v2/ServiceAlerts"
+        let endpoint = "https://api.nationaltransport.ie/gtfsr/v2/ServiceAlerts"
         guard let url = URL(string: endpoint) else { return [] }
 
         var request = URLRequest(url: url)

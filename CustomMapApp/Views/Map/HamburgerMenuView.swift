@@ -8,6 +8,7 @@ struct HamburgerMenuView: View {
     @Binding var activeWeatherOverlays: Set<WeatherOverlay>
     @Binding var bicyclePreference: BicycleRoutePreference
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
+    @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
 
@@ -87,38 +88,66 @@ struct HamburgerMenuView: View {
                 }
 
                 // MARK: - Transit Layers
-                Section("Transit Stops") {
+                Section("Transit") {
                     let types: [TransitStop.TransitStopType] = [.bus, .luas, .dart, .rail]
                     ForEach(types, id: \.rawValue) { type in
-                        Toggle(isOn: Binding(
-                            get: { showTransitStops.contains(type) },
-                            set: { isOn in
-                                if isOn { showTransitStops.insert(type) }
-                                else { showTransitStops.remove(type) }
+                        VStack(spacing: 6) {
+                            HStack {
+                                Image(systemName: type.systemImage)
+                                    .foregroundColor(Color(hex: type.colorHex))
+                                    .frame(width: 22)
+                                Text(type.displayName)
+                                    .font(.subheadline.bold())
+                                Spacer()
                             }
-                        )) {
-                            Label(type.displayName, systemImage: type.systemImage)
-                                .foregroundColor(Color(hex: type.colorHex))
+
+                            HStack(spacing: 16) {
+                                Toggle(isOn: Binding(
+                                    get: { showTransitStops.contains(type) },
+                                    set: { isOn in
+                                        if isOn { showTransitStops.insert(type) }
+                                        else { showTransitStops.remove(type) }
+                                    }
+                                )) {
+                                    Text("Stops")
+                                        .font(.caption)
+                                }
+                                .toggleStyle(.switch)
+
+                                Toggle(isOn: Binding(
+                                    get: { showLiveTransit.contains(type) },
+                                    set: { isOn in
+                                        if isOn { showLiveTransit.insert(type) }
+                                        else { showLiveTransit.remove(type) }
+                                    }
+                                )) {
+                                    Text("Live")
+                                        .font(.caption)
+                                }
+                                .toggleStyle(.switch)
+                                .disabled(type == .bus && !NTATransitService.isConfigured)
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
 
                     HStack {
-                        Button("Show All") {
+                        Button("All Stops") {
                             showTransitStops = [.bus, .luas, .dart, .rail]
+                        }
+                        Button("All Live") {
+                            showLiveTransit = [.bus, .luas, .dart, .rail]
                         }
                         Spacer()
                         Button("Hide All") {
                             showTransitStops = []
+                            showLiveTransit = []
                         }
                     }
                     .font(.caption)
 
-                    Text("Toggling a transit type on also shows live vehicle positions of that type on the map.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
                     if !NTATransitService.isConfigured {
-                        Text("Add an NTA API key to show live bus positions and transit stops.")
+                        Text("Add NTA API key for live bus positions.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
