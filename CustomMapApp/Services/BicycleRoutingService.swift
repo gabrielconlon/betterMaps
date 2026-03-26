@@ -97,15 +97,23 @@ struct ORSGeometry: Decodable {
 
 // MARK: - Bicycle Route Result
 
+struct BicycleRouteStep {
+    let instruction: String
+    let distance: Double  // meters
+    let duration: Double  // seconds
+    let name: String      // street name
+}
+
 struct BicycleRouteResult {
     let polyline: MKPolyline
-    let distance: CLLocationDistance      // meters
-    let duration: TimeInterval            // seconds
+    let distance: CLLocationDistance
+    let duration: TimeInterval
     let preference: BicycleRoutePreference
     let hasBikeLanes: Bool
-    let bikeLanePercentage: Double        // 0-100
+    let bikeLanePercentage: Double
     let surfaceInfo: String?
     let coordinates: [CLLocationCoordinate2D]
+    let steps: [BicycleRouteStep]
 }
 
 // MARK: - Service
@@ -203,6 +211,21 @@ actor BicycleRoutingService {
                 }
             }
 
+            // Parse turn-by-turn steps
+            var steps: [BicycleRouteStep] = []
+            if let segments = feature.properties.segments {
+                for segment in segments {
+                    for step in segment.steps ?? [] {
+                        steps.append(BicycleRouteStep(
+                            instruction: step.instruction,
+                            distance: step.distance,
+                            duration: step.duration,
+                            name: step.name
+                        ))
+                    }
+                }
+            }
+
             return BicycleRouteResult(
                 polyline: polyline,
                 distance: feature.properties.summary.distance,
@@ -211,7 +234,8 @@ actor BicycleRoutingService {
                 hasBikeLanes: bikeLanePercent > 30,
                 bikeLanePercentage: bikeLanePercent,
                 surfaceInfo: surfaceInfo,
-                coordinates: coordinates
+                coordinates: coordinates,
+                steps: steps
             )
         } catch {
             let ms = Int(Date().timeIntervalSince(start) * 1000)

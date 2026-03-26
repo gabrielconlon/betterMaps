@@ -7,6 +7,7 @@ struct HamburgerMenuView: View {
     @Binding var filterMode: FilterMode
     @Binding var activeWeatherOverlays: Set<WeatherOverlay>
     @Binding var bicyclePreference: BicycleRoutePreference
+    @Binding var showTransitStops: Set<TransitStop.TransitStopType>
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
 
@@ -66,6 +67,34 @@ struct HamburgerMenuView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                // MARK: - Transit Layers
+                Section("Transit Stops") {
+                    let types: [TransitStop.TransitStopType] = [.bus, .luas, .dart, .rail]
+                    ForEach(types, id: \.rawValue) { type in
+                        Toggle(isOn: Binding(
+                            get: { showTransitStops.contains(type) },
+                            set: { isOn in
+                                if isOn { showTransitStops.insert(type) }
+                                else { showTransitStops.remove(type) }
+                            }
+                        )) {
+                            Label(type.displayName, systemImage: type.systemImage)
+                                .foregroundColor(Color(hex: type.colorHex))
+                        }
+                    }
+
+                    HStack {
+                        Button("Show All") {
+                            showTransitStops = [.bus, .luas, .dart, .rail]
+                        }
+                        Spacer()
+                        Button("Hide All") {
+                            showTransitStops = []
+                        }
+                    }
+                    .font(.caption)
+                }
+
                 // MARK: - Cycling
                 Section("Cycling Routes") {
                     Picker("Route Preference", selection: $bicyclePreference) {
@@ -120,6 +149,24 @@ struct HamburgerMenuView: View {
                                     .foregroundStyle(YelpService.isConfigured ? .green : .secondary)
                             }
                             if let quota = APILogger.shared.quotas["Yelp"] {
+                                Text("\(quota.remaining) of \(quota.limit) calls remaining · \(quota.staleness)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    // NTA Transit API key
+                    NavigationLink(destination: NTAKeySettingsView()) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Label("TFI Transit (Bus/Rail)", systemImage: "bus.fill")
+                                Spacer()
+                                Text(NTATransitService.isConfigured ? "Connected" : "Not Set")
+                                    .font(.caption)
+                                    .foregroundColor(NTATransitService.isConfigured ? .green : .secondary)
+                            }
+                            if let quota = APILogger.shared.quotas["NTA"] {
                                 Text("\(quota.remaining) of \(quota.limit) calls remaining · \(quota.staleness)")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
@@ -303,5 +350,47 @@ struct ORSKeySettingsView: View {
         }
         .navigationTitle("Cycling Directions")
         .onAppear { editingKey = orsAPIKey }
+    }
+}
+
+struct NTAKeySettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("ntaAPIKey") private var ntaAPIKey = ""
+    @State private var editingKey = ""
+    @State private var saved = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Transport for Ireland / NTA provides real-time bus, rail, and tram data across Ireland. Register free at developer.nationaltransport.ie")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Free Tier Includes") {
+                Label("Real-time bus arrivals (Dublin Bus, Bus Éireann, Go-Ahead)", systemImage: "bus.fill")
+                    .font(.caption)
+                Label("DART & commuter rail schedules", systemImage: "tram.fill")
+                    .font(.caption)
+                Label("Luas tram integration", systemImage: "lightrail.fill")
+                    .font(.caption)
+                Label("Service disruption alerts", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                Label("~1,000 requests/day", systemImage: "gauge.with.dots.needle.50percent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("API Key") {
+                SecureField("NTA API Key", text: $editingKey)
+                Button(saved ? "Saved!" : "Save") {
+                    ntaAPIKey = editingKey
+                    NTATransitService.apiKey = editingKey
+                    saved = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dismiss() }
+                }
+                .disabled(editingKey.isEmpty || saved)
+            }
+        }
+        .navigationTitle("TFI Transit")
+        .onAppear { editingKey = ntaAPIKey }
     }
 }

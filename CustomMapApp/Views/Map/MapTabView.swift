@@ -19,6 +19,8 @@ struct MapTabView: View {
     @State private var isSearchFocused = false
     @State private var activeWeatherOverlays: Set<WeatherOverlay> = []
     @State private var mapRegion: MKCoordinateRegion?
+    @State private var transitStops: [TransitStop] = []
+    @State private var showTransitStops: Set<TransitStop.TransitStopType> = []
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
 
     var filteredPlaces: [Place] {
@@ -31,6 +33,23 @@ struct MapTabView: View {
 
     var isOverlapMode: Bool {
         filterVM.filterMode == .intersection && activeLayerCount > 1
+    }
+
+    /// Transit stops filtered by active types and current map region (limit count for performance)
+    var visibleTransitStops: [TransitStop] {
+        guard !showTransitStops.isEmpty, let region = mapRegion else { return [] }
+        let latDelta = region.span.latitudeDelta
+        // Don't show at very far zoom
+        guard latDelta < 0.15 else { return [] }
+        // Filter by type and region
+        return transitStops
+            .filter { showTransitStops.contains($0.type) }
+            .filter { stop in
+                abs(stop.latitude - region.center.latitude) < latDelta &&
+                abs(stop.longitude - region.center.longitude) < region.span.longitudeDelta
+            }
+            .prefix(200) // Performance cap
+            .map { $0 }
     }
 
     var body: some View {
@@ -108,6 +127,28 @@ struct MapTabView: View {
         .onAppear {
             locationManager.requestPermission()
         }
+        .task {
+            // Load transit stops — Luas from hardcoded coordinates (fixed infrastructure)
+            transitStops = LuasStopCoordinates.stops
+
+            // Irish Rail stations from API (has coordinates)
+            let railService = IrishRailService()
+            let stations = await railService.fetchStations()
+            for station in stations {
+                let type: TransitStop.TransitStopType = station.type == .dart ? .dart : (station.type == .suburban ? .suburban : .rail)
+                transitStops.append(TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type))
+            }
+
+            // GTFS bus stops (if NTA key configured and download works)
+            if NTATransitService.isConfigured {
+                let loader = GTFSStopLoader()
+                let gtfsStops = await loader.loadStops()
+                let existingIDs = Set(transitStops.map { $0.id })
+                for stop in gtfsStops where !existingIDs.contains(stop.id) {
+                    transitStops.append(stop)
+                }
+            }
+        }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
         }
@@ -153,7 +194,8 @@ struct MapTabView: View {
             HamburgerMenuView(
                 filterMode: $filterVM.filterMode,
                 activeWeatherOverlays: $activeWeatherOverlays,
-                bicyclePreference: $routingVM.bicyclePreference
+                bicyclePreference: $routingVM.bicyclePreference,
+                showTransitStops: $showTransitStops
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -169,6 +211,12 @@ struct MapTabView: View {
 
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
+
+        case .transitArrivals(let name, let coord):
+            TransitArrivalsView(stationName: name, coordinate: coord)
+                .presentationDetents([.fraction(0.3), .medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
     }
 
@@ -190,6 +238,16 @@ struct MapTabView: View {
                         .onTapGesture {
                             viewModel.selectPlace(place)
                         }
+                    }
+                }
+
+                // Transit stop annotations (toggled layer)
+                ForEach(visibleTransitStops) { stop in
+                    Annotation(stop.name, coordinate: stop.coordinate) {
+                        TransitStopPin(stop: stop, zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01)
+                            .onTapGesture {
+                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate)
+                            }
                     }
                 }
 
@@ -218,15 +276,12 @@ struct MapTabView: View {
                 MapCompass()
                 MapScaleView()
             }
-            .onTapGesture { screenPoint in
-                // If searching, dismiss keyboard instead of POI search
+            .onTapGesture { _ in
+                // Dismiss keyboard if searching
                 if isSearchFocused {
                     isSearchFocused = false
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    return
                 }
-                guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
-                Task { await searchPOI(at: coordinate) }
             }
             .onLongPressGesture(minimumDuration: 0.5) {
                 guard let location = locationManager.userLocation else { return }
@@ -279,17 +334,6 @@ struct MapTabView: View {
             .background(.ultraThinMaterial)
             .clipShape(Capsule())
 
-            // Cancel button when searching
-            if isSearchFocused {
-                Button("Cancel") {
-                    searchText = ""
-                    searchResults = []
-                    showSearchResults = false
-                    isSearchFocused = false
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                }
-                .font(.subheadline)
-            }
 
             // Overlap toggle — only visible when 2+ layers active
             if activeLayerCount > 1 {

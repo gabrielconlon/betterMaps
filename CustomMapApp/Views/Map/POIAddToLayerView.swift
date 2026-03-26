@@ -18,9 +18,15 @@ struct POIAddToLayerView: View {
     }
 
     @State private var showAddToLayer = false
+    @State private var showTransitArrivals = false
     @State private var yelpBusiness: YelpBusiness?
     @State private var yelpReviews: [YelpReview] = []
     @State private var isLoadingYelp = false
+
+    var isTransitPOI: Bool {
+        guard let cat = mapItem.pointOfInterestCategory else { return false }
+        return cat == .publicTransport || cat == .airport
+    }
 
     var placeName: String {
         mapItem.name ?? "Unknown Place"
@@ -87,6 +93,13 @@ struct POIAddToLayerView: View {
                     Spacer()
 
                     HStack(spacing: 10) {
+                        if isTransitPOI {
+                            Button(action: { showTransitArrivals = true }) {
+                                Image(systemName: "clock.badge")
+                                    .font(.title)
+                                    .foregroundStyle(.purple)
+                            }
+                        }
                         Button(action: { showAddToLayer = true }) {
                             Image(systemName: "plus.circle.fill")
                                 .font(.title)
@@ -248,6 +261,13 @@ struct POIAddToLayerView: View {
         }
         .task {
             await loadYelpData()
+        }
+        .sheet(isPresented: $showTransitArrivals) {
+            TransitArrivalsView(
+                stationName: placeName,
+                coordinate: mapItem.placemark.coordinate
+            )
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showAddToLayer) {
             AddToLayerSheet(

@@ -15,6 +15,7 @@ struct RouteResult: Identifiable {
     let weatherWarning: String?
     let bikeLaneInfo: String?
     let isCached: Bool
+    let cyclingSteps: [BicycleRouteStep]
 }
 
 // MARK: - Route Cache
@@ -150,7 +151,11 @@ class RoutingViewModel {
             }
             route = first
         } catch {
-            failedModes[mode] = error.localizedDescription
+            if mode == .transit {
+                failedModes[mode] = "Apple Maps transit not available here. Use TFI for Irish transit."
+            } else {
+                failedModes[mode] = error.localizedDescription
+            }
             return
         }
 
@@ -166,7 +171,8 @@ class RoutingViewModel {
             isPreferred: warning == nil,
             weatherWarning: warning,
             bikeLaneInfo: nil,
-            isCached: false
+            isCached: false,
+            cyclingSteps: []
         )
 
         // Cache it
@@ -211,7 +217,8 @@ class RoutingViewModel {
             isPreferred: warning == nil && bike.hasBikeLanes,
             weatherWarning: warning,
             bikeLaneInfo: bikeLaneInfo,
-            isCached: false
+            isCached: false,
+            cyclingSteps: bike.steps
         )
 
         let key = RouteCacheKey(source: source, destination: destination, mode: .cycling)
@@ -242,7 +249,8 @@ class RoutingViewModel {
                     isPreferred: cached.result.isPreferred,
                     weatherWarning: cached.result.weatherWarning,
                     bikeLaneInfo: cached.result.bikeLaneInfo,
-                    isCached: true
+                    isCached: true,
+                    cyclingSteps: cached.result.cyclingSteps
                 )
                 activeRoutes.append(cachedResult)
             }
@@ -341,7 +349,8 @@ class RoutingViewModel {
                 isPreferred: true,
                 weatherWarning: nil,
                 bikeLaneInfo: saved.bikeLaneInfo,
-                isCached: true
+                isCached: true,
+                cyclingSteps: []
             )
         }
     }

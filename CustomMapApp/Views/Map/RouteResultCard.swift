@@ -2,82 +2,79 @@ import SwiftUI
 
 struct RouteResultCard: View {
     let result: RouteResult
-    @State private var showSteps = false
+    var onSelect: (() -> Void)?
 
     var hasSteps: Bool {
         result.route?.steps.isEmpty == false
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: result.mode.systemImage)
-                    .font(.title2)
-                    .foregroundStyle(result.mode.color)
-                    .frame(width: 36)
+        HStack(spacing: 12) {
+            Image(systemName: result.mode.systemImage)
+                .font(.title2)
+                .foregroundStyle(result.mode.color)
+                .frame(width: 36)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(result.mode.displayName)
-                            .font(.headline)
-                        if result.isPreferred {
-                            Text("Fastest")
-                                .font(.caption2.bold())
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(.green.opacity(0.2))
-                                .foregroundStyle(.green)
-                                .clipShape(Capsule())
-                        }
-                        if result.isCached {
-                            Text("Saved")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(.blue.opacity(0.15))
-                                .foregroundStyle(.blue)
-                                .clipShape(Capsule())
-                        }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(result.mode.displayName)
+                        .font(.headline)
+                    if result.isPreferred {
+                        Text("Fastest")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.green.opacity(0.2))
+                            .foregroundStyle(.green)
+                            .clipShape(Capsule())
                     }
-
-                    HStack(spacing: 12) {
-                        Text(formattedDuration(result.eta))
-                            .font(.subheadline.bold())
-                        Text(formattedDistance(result.distance))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if result.mode == .cycling {
-                        if let bikeInfo = result.bikeLaneInfo {
-                            Label(bikeInfo, systemImage: "bicycle")
-                                .font(.caption)
-                                .foregroundStyle(.teal)
-                        }
-                    }
-
-                    if let warning = result.weatherWarning {
-                        Label(warning, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                    if result.isCached {
+                        Text("Saved")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.blue.opacity(0.15))
+                            .foregroundStyle(.blue)
+                            .clipShape(Capsule())
                     }
                 }
 
-                Spacer()
-
-                // Start / Steps button
-                Button(action: { showSteps = true }) {
-                    Text(hasSteps ? "Go" : "View")
+                HStack(spacing: 12) {
+                    Text(formattedDuration(result.eta))
                         .font(.subheadline.bold())
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(result.mode.color)
-                        .foregroundStyle(.white)
-                        .clipShape(Capsule())
+                    Text(formattedDistance(result.distance))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if result.mode == .cycling {
+                    if let bikeInfo = result.bikeLaneInfo {
+                        Label(bikeInfo, systemImage: "bicycle")
+                            .font(.caption)
+                            .foregroundStyle(.teal)
+                    }
+                }
+
+                if let warning = result.weatherWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
-            .padding()
+
+            Spacer()
+
+            Button(action: { onSelect?() }) {
+                Text(hasSteps ? "Go" : "View")
+                    .font(.subheadline.bold())
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(result.mode.color)
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+            }
         }
+        .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(result.isPreferred
@@ -88,12 +85,6 @@ struct RouteResultCard: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(result.isPreferred ? Color.green.opacity(0.3) : Color.gray.opacity(0.2))
         )
-        .sheet(isPresented: $showSteps) {
-            NavigationStepsView(routeResult: result)
-                .presentationDetents([.fraction(0.35), .medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        }
     }
 
     private func formattedDuration(_ seconds: TimeInterval) -> String {

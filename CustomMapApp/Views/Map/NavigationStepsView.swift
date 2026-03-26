@@ -9,6 +9,7 @@ struct NavigationStepsView: View {
     @State private var currentStepIndex = 0
 
     var steps: [NavigationStep] {
+        // MapKit route steps (driving, walking, transit)
         if let route = routeResult.route {
             return route.steps.enumerated().map { index, step in
                 NavigationStep(
@@ -20,13 +21,23 @@ struct NavigationStepsView: View {
                 )
             }
         }
-        // For cycling/saved routes we don't have step-by-step yet
+        // ORS cycling steps
+        if !routeResult.cyclingSteps.isEmpty {
+            return routeResult.cyclingSteps.enumerated().map { index, step in
+                NavigationStep(
+                    index: index,
+                    instruction: step.instruction,
+                    distance: step.distance,
+                    isFirst: index == 0,
+                    isLast: index == routeResult.cyclingSteps.count - 1
+                )
+            }
+        }
         return []
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
                 // Current step highlight
                 if !steps.isEmpty && currentStepIndex < steps.count {
                     let step = steps[currentStepIndex]
@@ -138,12 +149,6 @@ struct NavigationStepsView: View {
             }
             .navigationTitle("Directions")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
     }
 
     private func openInAppleMaps() {

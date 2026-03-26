@@ -15,6 +15,7 @@ enum ActiveSheet: Identifiable {
     case layerSidebar
     case routing(RouteContext?)
     case newPlace(CLLocationCoordinate2D)
+    case transitArrivals(String, CLLocationCoordinate2D) // stationName, coordinate
 
     var id: String {
         switch self {
@@ -23,6 +24,7 @@ enum ActiveSheet: Identifiable {
         case .layerSidebar: return "layerSidebar"
         case .routing: return "routing"
         case .newPlace: return "newPlace"
+        case .transitArrivals(let name, _): return "transit-\(name)"
         }
     }
 }
@@ -54,6 +56,10 @@ class MapViewModel {
     func startNewPlace(at coordinate: CLLocationCoordinate2D) {
         longPressCoordinate = coordinate
         activeSheet = .newPlace(coordinate)
+    }
+
+    func showTransitArrivals(stationName: String, coordinate: CLLocationCoordinate2D) {
+        activeSheet = .transitArrivals(stationName, coordinate)
     }
 
     func dismissSheet() {

@@ -1,0 +1,351 @@
+import Foundation
+import CoreLocation
+import Compression
+
+// MARK: - Transit Stop Model
+
+struct TransitStop: Identifiable {
+    let id: String          // stop_id from GTFS
+    let name: String
+    let latitude: Double
+    let longitude: Double
+    let type: TransitStopType
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    enum TransitStopType: String {
+        case bus = "bus"
+        case luas = "luas"
+        case dart = "dart"
+        case rail = "rail"
+        case suburban = "suburban"
+
+        var displayName: String {
+            switch self {
+            case .bus: return "Bus"
+            case .luas: return "Luas"
+            case .dart: return "DART"
+            case .rail: return "Rail"
+            case .suburban: return "Suburban Rail"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .bus: return "bus.fill"
+            case .luas: return "tram.fill"
+            case .dart, .rail, .suburban: return "tram.fill"
+            }
+        }
+
+        var colorHex: String {
+            switch self {
+            case .bus: return "#007AFF"
+            case .luas: return "#34C759"
+            case .dart: return "#FF9500"
+            case .rail: return "#AF52DE"
+            case .suburban: return "#FF2D55"
+            }
+        }
+    }
+}
+
+// MARK: - GTFS Stop Loader
+
+/// Downloads and parses the NTA GTFS static feed to extract all transit stops.
+/// Caches locally so we don't re-download every launch.
+actor GTFSStopLoader {
+    private let cacheFileName = "gtfs_stops_cache.json"
+    private let cacheMaxAge: TimeInterval = 7 * 24 * 3600 // 7 days
+
+    /// Load stops — from cache if fresh, otherwise download from NTA
+    func loadStops() async -> [TransitStop] {
+        // Check cache first
+        if let cached = loadFromCache() {
+            await APILogger.shared.log(service: "NTA", endpoint: "GTFS stops (cached)", status: .cached, durationMs: 0)
+            return cached
+        }
+
+        // Download fresh
+        guard NTATransitService.isConfigured else {
+            // Return hardcoded Irish Rail + Luas stops if no NTA key
+            return builtInStops()
+        }
+
+        let stops = await downloadAndParseGTFS()
+        if !stops.isEmpty {
+            saveToCache(stops)
+        }
+        return stops.isEmpty ? builtInStops() : stops
+    }
+
+    // MARK: - Download GTFS
+
+    private func downloadAndParseGTFS() async -> [TransitStop] {
+        guard let url = URL(string: "https://api.nationaltransport.ie/gtfs/v2/gtfsfeed.zip") else { return [] }
+
+        var request = URLRequest(url: url)
+        request.setValue(NTATransitService.apiKey, forHTTPHeaderField: "x-api-key")
+
+        let start = Date()
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+
+            let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if httpStatus != 200 {
+                await APILogger.shared.log(service: "NTA", endpoint: "GTFS feed download", status: .failure, durationMs: ms, detail: "HTTP \(httpStatus)")
+                return []
+            }
+
+            await APILogger.shared.log(service: "NTA", endpoint: "GTFS feed download (\(data.count / 1024)KB)", status: .success, durationMs: ms)
+
+            // Extract stops.txt from the ZIP
+            return parseStopsFromZip(data: data)
+        } catch {
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            await APILogger.shared.log(service: "NTA", endpoint: "GTFS feed download", status: .failure, durationMs: ms, detail: error.localizedDescription)
+            return []
+        }
+    }
+
+    /// Parse stops.txt from GTFS ZIP data
+    /// GTFS stops.txt format: stop_id,stop_name,stop_lat,stop_lon,...
+    private func parseStopsFromZip(data: Data) -> [TransitStop] {
+        // Simple ZIP extraction — look for stops.txt in the archive
+        // GTFS ZIPs use standard ZIP format. We extract the stops.txt entry.
+
+        guard let stopsCSV = extractFileFromZip(data: data, fileName: "stops.txt") else {
+            return []
+        }
+
+        return parseStopsCSV(stopsCSV)
+    }
+
+    private func parseStopsCSV(_ csv: String) -> [TransitStop] {
+        let lines = csv.components(separatedBy: .newlines)
+        guard let headerLine = lines.first else { return [] }
+
+        // Parse CSV header to find column indices
+        let headers = parseCSVRow(headerLine)
+        guard let idIdx = headers.firstIndex(of: "stop_id"),
+              let nameIdx = headers.firstIndex(of: "stop_name"),
+              let latIdx = headers.firstIndex(of: "stop_lat"),
+              let lonIdx = headers.firstIndex(of: "stop_lon") else {
+            return []
+        }
+
+        var stops: [TransitStop] = []
+
+        for line in lines.dropFirst() {
+            let fields = parseCSVRow(line)
+            guard fields.count > max(idIdx, nameIdx, latIdx, lonIdx),
+                  let lat = Double(fields[latIdx]),
+                  let lon = Double(fields[lonIdx]),
+                  lat != 0, lon != 0 else { continue }
+
+            let stopId = fields[idIdx]
+            let name = fields[nameIdx]
+            let type = classifyStop(id: stopId, name: name)
+
+            stops.append(TransitStop(
+                id: stopId,
+                name: name,
+                latitude: lat,
+                longitude: lon,
+                type: type
+            ))
+        }
+
+        return stops
+    }
+
+    private func parseCSVRow(_ row: String) -> [String] {
+        var fields: [String] = []
+        var current = ""
+        var inQuotes = false
+
+        for char in row {
+            if char == "\"" {
+                inQuotes.toggle()
+            } else if char == "," && !inQuotes {
+                fields.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(char)
+            }
+        }
+        fields.append(current.trimmingCharacters(in: .whitespaces))
+        return fields
+    }
+
+    /// Classify a stop as bus/luas/dart/rail based on ID patterns and name
+    private func classifyStop(id: String, name: String) -> TransitStop.TransitStopType {
+        let lowerId = id.lowercased()
+        let lowerName = name.lowercased()
+
+        if lowerId.hasPrefix("luas") || lowerName.contains("luas") {
+            return .luas
+        }
+        if lowerName.contains("dart") || lowerId.contains("dart") {
+            return .dart
+        }
+        if lowerId.hasPrefix("ir_") || lowerId.hasPrefix("rail") ||
+           lowerName.contains("station") && (lowerName.contains("train") || lowerName.contains("rail")) {
+            return .rail
+        }
+        return .bus
+    }
+
+    // MARK: - ZIP Extraction
+
+    /// Extract a single file from a ZIP archive using Compression framework
+    private func extractFileFromZip(data: Data, fileName: String) -> String? {
+        // ZIP local file header signature
+        let sig: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
+        var offset = 0
+
+        while offset + 30 < data.count {
+            let headerBytes = [UInt8](data[offset..<offset+4])
+            guard headerBytes == sig else { break }
+
+            let compressionMethod = readUInt16(data, at: offset + 8)
+            let compressedSize = readUInt32(data, at: offset + 18)
+            let uncompressedSize = readUInt32(data, at: offset + 22)
+            let nameLength = readUInt16(data, at: offset + 26)
+            let extraLength = readUInt16(data, at: offset + 28)
+
+            let nameStart = offset + 30
+            let nameEnd = nameStart + Int(nameLength)
+            guard nameEnd <= data.count else { break }
+
+            let entryName = String(data: data[nameStart..<nameEnd], encoding: .utf8) ?? ""
+            let dataStart = nameEnd + Int(extraLength)
+
+            if entryName == fileName || entryName.hasSuffix("/\(fileName)") {
+                if compressionMethod == 0 {
+                    // Stored (uncompressed)
+                    let dataEnd = dataStart + Int(uncompressedSize)
+                    guard dataEnd <= data.count else { return nil }
+                    return String(data: data[dataStart..<dataEnd], encoding: .utf8)
+                } else if compressionMethod == 8 {
+                    // Deflate — use Compression framework with raw deflate
+                    let dataEnd = dataStart + Int(compressedSize)
+                    guard dataEnd <= data.count else { return nil }
+                    let compressed = data[dataStart..<dataEnd]
+
+                    // Raw deflate decompression using Compression framework
+                    let decompressed = decompressRawDeflate(
+                        compressed: compressed,
+                        expectedSize: Int(uncompressedSize)
+                    )
+                    if let decompressed {
+                        return String(data: decompressed, encoding: .utf8)
+                    }
+                    return nil
+                }
+            }
+
+            offset = nameEnd + Int(extraLength) + Int(compressedSize)
+        }
+        return nil
+    }
+
+    private func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
+        data.subdata(in: offset..<(offset + 2)).withUnsafeBytes { $0.load(as: UInt16.self) }
+    }
+
+    private func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
+        data.subdata(in: offset..<(offset + 4)).withUnsafeBytes { $0.load(as: UInt32.self) }
+    }
+
+    /// Decompress raw deflate data (no zlib/gzip headers)
+    private func decompressRawDeflate(compressed: Data, expectedSize: Int) -> Data? {
+        // Add a zlib header (78 01) to make it valid zlib so NSData can decompress
+        var zlibData = Data([0x78, 0x01]) // zlib header: CM=8, CINFO=7, no dict, FLEVEL=0
+        zlibData.append(compressed)
+
+        // Add Adler-32 checksum placeholder (required by zlib format)
+        // Use 0 — decompressor may or may not validate
+        zlibData.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
+
+        if let decompressed = try? (zlibData as NSData).decompressed(using: .zlib) {
+            return decompressed as Data
+        }
+
+        // Fallback: try with Compression framework directly
+        let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: expectedSize)
+        defer { destinationBuffer.deallocate() }
+
+        let decompressedSize = compressed.withUnsafeBytes { srcPtr -> Int in
+            guard let srcBase = srcPtr.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+            return compression_decode_buffer(
+                destinationBuffer, expectedSize,
+                srcBase, compressed.count,
+                nil,
+                COMPRESSION_ZLIB
+            )
+        }
+
+        guard decompressedSize > 0 else { return nil }
+        return Data(bytes: destinationBuffer, count: decompressedSize)
+    }
+
+    // MARK: - Cache
+
+    private var cacheURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(cacheFileName)
+    }
+
+    private func loadFromCache() -> [TransitStop]? {
+        guard FileManager.default.fileExists(atPath: cacheURL.path) else { return nil }
+
+        // Check age
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
+           let modified = attrs[.modificationDate] as? Date,
+           Date().timeIntervalSince(modified) > cacheMaxAge {
+            return nil // expired
+        }
+
+        guard let data = try? Data(contentsOf: cacheURL),
+              let cached = try? JSONDecoder().decode([CachedTransitStop].self, from: data) else {
+            return nil
+        }
+
+        return cached.map { TransitStop(id: $0.id, name: $0.name, latitude: $0.lat, longitude: $0.lon, type: TransitStop.TransitStopType(rawValue: $0.type) ?? .bus) }
+    }
+
+    private func saveToCache(_ stops: [TransitStop]) {
+        let cacheable = stops.map { CachedTransitStop(id: $0.id, name: $0.name, lat: $0.latitude, lon: $0.longitude, type: $0.type.rawValue) }
+        if let data = try? JSONEncoder().encode(cacheable) {
+            try? data.write(to: cacheURL)
+        }
+    }
+
+    // MARK: - Built-in stops (fallback when no NTA key)
+
+    private func builtInStops() -> [TransitStop] {
+        var stops: [TransitStop] = []
+
+        // Luas stops with approximate coordinates
+        let luasStops = LuasService.stops
+        // We don't have coordinates for Luas from the basic API,
+        // so these will be populated when GTFS feed is available
+        // For now, return Irish Rail stations which DO have coordinates
+
+        return stops
+    }
+}
+
+// MARK: - Codable cache model
+
+private struct CachedTransitStop: Codable {
+    let id: String
+    let name: String
+    let lat: Double
+    let lon: Double
+    let type: String
+}

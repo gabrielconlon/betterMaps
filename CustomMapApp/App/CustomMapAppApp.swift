@@ -34,6 +34,9 @@ struct CustomMapAppApp: App {
                     if let key = UserDefaults.standard.string(forKey: "orsAPIKey"), !key.isEmpty {
                         BicycleRoutingService.apiKey = key
                     }
+                    if let key = UserDefaults.standard.string(forKey: "ntaAPIKey"), !key.isEmpty {
+                        NTATransitService.apiKey = key
+                    }
                 }
         }
         .modelContainer(sharedModelContainer)
