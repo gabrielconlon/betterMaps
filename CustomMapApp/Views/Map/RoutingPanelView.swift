@@ -106,6 +106,7 @@ struct RoutingPanelView: View {
                         ForEach(viewModel.transitOptions) { option in
                             TransitOptionCard(option: option, onSelect: {
                                 selectedTransitOption = option
+                                selectedRouteId = nil  // Hide standard routes on map
                             })
                         }
 

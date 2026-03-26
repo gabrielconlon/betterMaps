@@ -365,10 +365,14 @@ struct MapTabView: View {
                     }
                 }
 
-                // Routes — show only selected route if one is picked, otherwise show all
-                let routesToShow = selectedRouteId != nil
-                    ? routingVM.activeRoutes.filter { $0.id == selectedRouteId }
-                    : routingVM.activeRoutes
+                // Routes — hide standard routes when a transit option is selected
+                let routesToShow: [RouteResult] = {
+                    if selectedTransitOption != nil { return [] }
+                    if selectedRouteId != nil {
+                        return routingVM.activeRoutes.filter { $0.id == selectedRouteId }
+                    }
+                    return routingVM.activeRoutes
+                }()
                 ForEach(routesToShow) { routeResult in
                     if let route = routeResult.route {
                         MapPolyline(route)
