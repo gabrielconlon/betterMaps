@@ -148,16 +148,17 @@ class RoutingViewModel {
                 let originLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
                 let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
 
-                // Find 25 nearest stops to origin + 25 nearest to destination (max 50 total)
+                // Find 5 nearest stops to origin + 5 nearest to destination
+                // Most people won't walk past a few stops
                 let originStops = allStops
                     .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: originLoc)) }
                     .sorted { $0.dist < $1.dist }
-                    .prefix(25)
+                    .prefix(5)
                     .map { $0.stop }
                 let destStops = allStops
                     .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: destLoc)) }
                     .sorted { $0.dist < $1.dist }
-                    .prefix(25)
+                    .prefix(5)
                     .map { $0.stop }
                 let nearbyStopIDs = Set(originStops.map { $0.id }).union(destStops.map { $0.id })
                 let nearbyStops = allStops.filter { nearbyStopIDs.contains($0.id) }
@@ -188,10 +189,18 @@ class RoutingViewModel {
                     group.cancelAll()
                     return first
                 }
-                transitOptions = result
+                var allTransitOptions = result
+
+                // Also check Luas direct routes (not in GTFS feed)
+                let luasOptions = await findLuasRoutes(from: source, to: destination, maxWalkMin: maxWalk)
+                allTransitOptions.append(contentsOf: luasOptions)
+
+                // Sort by total duration
+                allTransitOptions.sort { $0.totalDuration < $1.totalDuration }
+                transitOptions = Array(allTransitOptions.prefix(5))
 
                 if transitOptions.isEmpty {
-                    transitStatusMessage = "No transit routes found. Stops may not have schedule data for this time."
+                    transitStatusMessage = "No transit routes found for this time."
                 } else {
                     transitStatusMessage = nil
                 }
@@ -207,6 +216,75 @@ class RoutingViewModel {
                 errorMessage = "No routes found."
             }
         }
+    }
+
+    // MARK: - Luas Direct Route Finder
+
+    /// Check if origin and destination are both near Luas stops on the same line
+    private func findLuasRoutes(from source: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D, maxWalkMin: Int) async -> [TransitRouteOption] {
+        let walkRadius = Double(maxWalkMin) * 80.0
+        let originLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
+        let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+
+        // Find nearest Luas stops
+        let nearOrigin = LuasStopCoordinates.stops
+            .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: originLoc)) }
+            .filter { $0.dist < walkRadius }
+            .sorted { $0.dist < $1.dist }
+            .prefix(2)
+
+        let nearDest = LuasStopCoordinates.stops
+            .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: destLoc)) }
+            .filter { $0.dist < walkRadius }
+            .sorted { $0.dist < $1.dist }
+            .prefix(2)
+
+        guard !nearOrigin.isEmpty, !nearDest.isEmpty else { return [] }
+
+        var options: [TransitRouteOption] = []
+        let luasService = LuasService()
+
+        for originMatch in nearOrigin {
+            for destMatch in nearDest {
+                let originStop = originMatch.stop
+                let destStop = destMatch.stop
+                guard originStop.id != destStop.id else { continue }
+
+                // Get Luas forecast for the origin stop
+                let stopCode = originStop.id.replacingOccurrences(of: "LUAS_", with: "")
+                guard let forecast = await luasService.fetchForecast(stopCode: stopCode) else { continue }
+
+                // Find the next tram heading in the right direction
+                let allForecasts = forecast.inbound + forecast.outbound
+                guard let nextTram = allForecasts.first(where: { $0.dueMinutes != nil }) else { continue }
+
+                let walkToMin = Int(originMatch.dist / 80.0)
+                let walkFromMin = Int(destMatch.dist / 80.0)
+                let waitMin = nextTram.dueMinutes ?? 5
+                let rideMin = 2 * abs(LuasStopCoordinates.stops.firstIndex(where: { $0.id == originStop.id }) ?? 0 -
+                                       (LuasStopCoordinates.stops.firstIndex(where: { $0.id == destStop.id }) ?? 0))
+                let totalMin = walkToMin + waitMin + rideMin + walkFromMin
+
+                let now = Date()
+                let option = TransitRouteOption(
+                    id: UUID(),
+                    legs: [
+                        .walk(id: UUID(), durationMinutes: walkToMin, distance: originMatch.dist, from: "Start", to: originStop.name),
+                        .ride(id: UUID(), routeName: "Luas", routeId: "luas", boardStop: originStop.name, alightStop: destStop.name,
+                              departureTime: nextTram.dueIn, arrivalTime: "", numStops: abs(rideMin / 2), mode: .luas),
+                        .walk(id: UUID(), durationMinutes: walkFromMin, distance: destMatch.dist, from: destStop.name, to: "Destination")
+                    ],
+                    totalDuration: TimeInterval(totalMin * 60),
+                    totalWalkingMinutes: walkToMin + walkFromMin,
+                    departureTime: now.addingTimeInterval(TimeInterval(walkToMin * 60)),
+                    arrivalTime: now.addingTimeInterval(TimeInterval(totalMin * 60)),
+                    transfers: 0,
+                    summary: "Luas via \(originStop.name)"
+                )
+                options.append(option)
+            }
+        }
+        return options
     }
 
     // MARK: - Individual Route Fetchers (stream in as they complete)
