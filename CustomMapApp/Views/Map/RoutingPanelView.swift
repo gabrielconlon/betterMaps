@@ -13,11 +13,21 @@ struct RoutingPanelView: View {
     @Binding var selectedRouteId: UUID?
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
+    @State private var selectedTransitOption: TransitRouteOption?
 
     var body: some View {
         NavigationStack {
             Group {
-                if let route = selectedRoute {
+                if let transitOption = selectedTransitOption {
+                    TransitTimelineView(option: transitOption)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button(action: { selectedTransitOption = nil }) {
+                                    Label("Routes", systemImage: "chevron.left")
+                                }
+                            }
+                        }
+                } else if let route = selectedRoute {
                     // Step-by-step view replaces the route list
                     NavigationStepsView(
                         routeResult: route,
@@ -69,6 +79,33 @@ struct RoutingPanelView: View {
                         Text("Loading more routes...")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 4)
+                }
+
+                // Transit options (multi-modal: walk → bus/tram → walk)
+                if !viewModel.transitOptions.isEmpty || viewModel.isLoadingTransit {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Transit Options")
+                                .font(.subheadline.bold())
+                            if viewModel.isLoadingTransit {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+
+                        ForEach(viewModel.transitOptions) { option in
+                            TransitOptionCard(option: option, onSelect: {
+                                selectedTransitOption = option
+                            })
+                        }
+
+                        if viewModel.transitOptions.isEmpty && !viewModel.isLoadingTransit {
+                            Text("No transit routes found for this trip.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.top, 4)
                 }

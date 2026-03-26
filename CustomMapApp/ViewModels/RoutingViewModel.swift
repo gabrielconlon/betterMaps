@@ -53,12 +53,15 @@ class RoutingViewModel {
     var activeRoutes: [RouteResult] = []
     var isLoading = false
     var errorMessage: String?
-    var failedModes: [TransportMode: String] = [:]  // mode -> reason
+    var failedModes: [TransportMode: String] = [:]
     var bicyclePreference: BicycleRoutePreference = .recommended
+    var transitOptions: [TransitRouteOption] = []  // Multi-modal transit routes
+    var isLoadingTransit = false
 
     private let routingService = RoutingService()
     private let weatherService = WeatherDataService()
     private let bicycleService = BicycleRoutingService()
+    private let transitPlanner = TransitRoutePlanner()
     private var routeCache: [RouteCacheKey: CachedRoute] = [:]
 
     func calculateRoutes(
@@ -118,6 +121,24 @@ class RoutingViewModel {
                     weather: currentWeather,
                     rules: enabledRules
                 )
+            }
+        }
+
+        // Multi-modal transit (GTFS-based, independent)
+        if !(userProfile?.isModeDisabled(.transit) ?? false) {
+            Task { @MainActor in
+                isLoadingTransit = true
+                // Ensure GTFS schedule is loaded
+                await GTFSScheduleService.shared.loadIfNeeded()
+                // Find transit routes
+                let transitStops = await loadTransitStopsForPlanner()
+                transitOptions = await transitPlanner.findRoutes(
+                    from: source,
+                    to: destination,
+                    transitStops: transitStops,
+                    profile: userProfile
+                )
+                isLoadingTransit = false
             }
         }
 
@@ -289,8 +310,27 @@ class RoutingViewModel {
 
     func clearRoutes() {
         activeRoutes = []
+        transitOptions = []
         errorMessage = nil
         failedModes = [:]
+    }
+
+    /// Load transit stops for the planner from cached GTFS + hardcoded data
+    private func loadTransitStopsForPlanner() async -> [TransitStop] {
+        var stops = LuasStopCoordinates.stops
+        let railService = IrishRailService()
+        let stations = await railService.fetchStations()
+        for station in stations {
+            let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
+            stops.append(TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type))
+        }
+        let loader = GTFSStopLoader()
+        let gtfsStops = await loader.loadStops()
+        let existingIDs = Set(stops.map { $0.id })
+        for stop in gtfsStops where !existingIDs.contains(stop.id) {
+            stops.append(stop)
+        }
+        return stops
     }
 
     /// Save current routes to SwiftData for true offline persistence.
