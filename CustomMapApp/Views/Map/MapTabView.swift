@@ -21,6 +21,8 @@ struct MapTabView: View {
     @State private var mapRegion: MKCoordinateRegion?
     @State private var transitStops: [TransitStop] = []
     @State private var showTransitStops: Set<TransitStop.TransitStopType> = []
+    @State private var liveVehicles: [GTFSVehiclePosition] = []
+    @State private var showLiveVehicles = false
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
 
     var filteredPlaces: [Place] {
@@ -50,6 +52,17 @@ struct MapTabView: View {
             }
             .prefix(200) // Performance cap
             .map { $0 }
+    }
+
+    /// Live vehicles filtered to current map region
+    var visibleVehicles: [GTFSVehiclePosition] {
+        guard let region = mapRegion else { return [] }
+        return liveVehicles.filter { v in
+            abs(v.latitude - region.center.latitude) < region.span.latitudeDelta &&
+            abs(v.longitude - region.center.longitude) < region.span.longitudeDelta
+        }
+        .prefix(300)
+        .map { $0 }
     }
 
     var body: some View {
@@ -139,15 +152,31 @@ struct MapTabView: View {
                 transitStops.append(TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type))
             }
 
-            // GTFS bus stops (if NTA key configured and download works)
-            if NTATransitService.isConfigured {
-                let loader = GTFSStopLoader()
-                let gtfsStops = await loader.loadStops()
-                let existingIDs = Set(transitStops.map { $0.id })
-                for stop in gtfsStops where !existingIDs.contains(stop.id) {
-                    transitStops.append(stop)
-                }
+            // GTFS bus stops (open data, no API key needed)
+            let loader = GTFSStopLoader()
+            let gtfsStops = await loader.loadStops()
+            let existingIDs = Set(transitStops.map { $0.id })
+            for stop in gtfsStops where !existingIDs.contains(stop.id) {
+                transitStops.append(stop)
             }
+        }
+        .task(id: showLiveVehicles) {
+            // Refresh live vehicles every 15 seconds when toggled on
+            guard showLiveVehicles, NTATransitService.isConfigured else { return }
+            let service = LiveVehicleService()
+            var interval: Duration = .seconds(30)
+            while !Task.isCancelled && showLiveVehicles {
+                let vehicles = await service.fetchVehiclePositions()
+                if vehicles.isEmpty {
+                    // Backoff on failure/rate limit
+                    interval = min(interval * 2, .seconds(120))
+                } else {
+                    liveVehicles = vehicles
+                    interval = .seconds(30) // reset on success
+                }
+                try? await Task.sleep(for: interval)
+            }
+            liveVehicles = [] // clear when toggled off
         }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
@@ -195,7 +224,8 @@ struct MapTabView: View {
                 filterMode: $filterVM.filterMode,
                 activeWeatherOverlays: $activeWeatherOverlays,
                 bicyclePreference: $routingVM.bicyclePreference,
-                showTransitStops: $showTransitStops
+                showTransitStops: $showTransitStops,
+                showLiveVehicles: $showLiveVehicles
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -217,6 +247,12 @@ struct MapTabView: View {
                 .presentationDetents([.fraction(0.3), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+
+        case .vehicleDetail(let vehicle):
+            VehicleDetailView(vehicle: vehicle)
+                .presentationDetents([.fraction(0.3), .medium])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.3)))
         }
     }
 
@@ -251,6 +287,18 @@ struct MapTabView: View {
                     }
                 }
 
+                // Live vehicle positions
+                if showLiveVehicles {
+                    ForEach(visibleVehicles) { vehicle in
+                        Annotation(vehicle.routeShortName.isEmpty ? vehicle.routeId : vehicle.routeShortName, coordinate: vehicle.coordinate) {
+                            VehicleDot(vehicle: vehicle)
+                                .onTapGesture {
+                                    viewModel.activeSheet = .vehicleDetail(vehicle)
+                                }
+                        }
+                    }
+                }
+
                 ForEach(routingVM.activeRoutes) { routeResult in
                     if let route = routeResult.route {
                         MapPolyline(route)
@@ -276,19 +324,17 @@ struct MapTabView: View {
                 MapCompass()
                 MapScaleView()
             }
-            .onTapGesture { _ in
-                // Dismiss keyboard if searching
-                if isSearchFocused {
-                    isSearchFocused = false
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                }
-            }
             .onLongPressGesture(minimumDuration: 0.5) {
                 guard let location = locationManager.userLocation else { return }
                 viewModel.startNewPlace(at: location)
             }
             .onMapCameraChange(frequency: .onEnd) { context in
                 mapRegion = context.region
+                // Dismiss keyboard when user pans the map
+                if isSearchFocused {
+                    isSearchFocused = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
             }
         }
     }

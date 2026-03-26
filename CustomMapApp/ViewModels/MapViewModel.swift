@@ -15,7 +15,8 @@ enum ActiveSheet: Identifiable {
     case layerSidebar
     case routing(RouteContext?)
     case newPlace(CLLocationCoordinate2D)
-    case transitArrivals(String, CLLocationCoordinate2D) // stationName, coordinate
+    case transitArrivals(String, CLLocationCoordinate2D)
+    case vehicleDetail(GTFSVehiclePosition)
 
     var id: String {
         switch self {
@@ -25,6 +26,7 @@ enum ActiveSheet: Identifiable {
         case .routing: return "routing"
         case .newPlace: return "newPlace"
         case .transitArrivals(let name, _): return "transit-\(name)"
+        case .vehicleDetail(let v): return "vehicle-\(v.id)"
         }
     }
 }

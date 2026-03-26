@@ -8,10 +8,14 @@ struct HamburgerMenuView: View {
     @Binding var activeWeatherOverlays: Set<WeatherOverlay>
     @Binding var bicyclePreference: BicycleRoutePreference
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
+    @Binding var showLiveVehicles: Bool
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
 
+    @Environment(\.modelContext) private var modelContext
     @State private var showLayerForm = false
+    @State private var showEditLayerForm = false
+    @State private var editingLayer: Layer?
     @State private var showSettings = false
     @State private var editingWeatherKey = ""
 
@@ -27,6 +31,22 @@ struct HamburgerMenuView: View {
                         ForEach(layers) { layer in
                             NavigationLink(destination: LayerDetailView(layer: layer)) {
                                 LayerToggleRow(layer: layer)
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    modelContext.delete(layer)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    editingLayer = layer
+                                    showEditLayerForm = true
+                                } label: {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+                                .tint(.blue)
                             }
                         }
                     }
@@ -93,6 +113,17 @@ struct HamburgerMenuView: View {
                         }
                     }
                     .font(.caption)
+
+                    Toggle(isOn: $showLiveVehicles) {
+                        Label("Live Vehicles on Map", systemImage: "bus.fill")
+                    }
+                    .disabled(!NTATransitService.isConfigured)
+
+                    if !NTATransitService.isConfigured {
+                        Text("Add NTA API key to show live bus positions and transit stops.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 // MARK: - Cycling
@@ -213,6 +244,11 @@ struct HamburgerMenuView: View {
             }
             .sheet(isPresented: $showLayerForm) {
                 LayerFormView(layer: nil)
+            }
+            .sheet(isPresented: $showEditLayerForm) {
+                if let layer = editingLayer {
+                    LayerFormView(layer: layer)
+                }
             }
         }
     }

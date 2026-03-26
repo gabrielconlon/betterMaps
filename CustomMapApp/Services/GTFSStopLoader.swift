@@ -68,12 +68,7 @@ actor GTFSStopLoader {
             return cached
         }
 
-        // Download fresh
-        guard NTATransitService.isConfigured else {
-            // Return hardcoded Irish Rail + Luas stops if no NTA key
-            return builtInStops()
-        }
-
+        // Download fresh — static GTFS is open data, no API key needed
         let stops = await downloadAndParseGTFS()
         if !stops.isEmpty {
             saveToCache(stops)
@@ -84,10 +79,25 @@ actor GTFSStopLoader {
     // MARK: - Download GTFS
 
     private func downloadAndParseGTFS() async -> [TransitStop] {
-        guard let url = URL(string: "https://api.nationaltransport.ie/gtfs/v2/gtfsfeed.zip") else { return [] }
+        // Static GTFS feed is open data — no API key needed
+        // Try TFI open data URL first, fallback to data.gov.ie
+        let urls = [
+            "https://www.transportforireland.ie/transitData/Data/GTFS_Scheduled.zip",
+            "https://transitfeeds.com/p/transport-for-ireland/782/latest/download"
+        ]
 
+        for urlString in urls {
+            guard let url = URL(string: urlString) else { continue }
+            if let stops = await tryDownloadGTFS(url: url) {
+                return stops
+            }
+        }
+        return []
+    }
+
+    private func tryDownloadGTFS(url: URL) async -> [TransitStop]? {
         var request = URLRequest(url: url)
-        request.setValue(NTATransitService.apiKey, forHTTPHeaderField: "x-api-key")
+        request.timeoutInterval = 60 // Large file, give it time
 
         let start = Date()
         do {
@@ -96,18 +106,18 @@ actor GTFSStopLoader {
 
             let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
             if httpStatus != 200 {
-                await APILogger.shared.log(service: "NTA", endpoint: "GTFS feed download", status: .failure, durationMs: ms, detail: "HTTP \(httpStatus)")
-                return []
+                await APILogger.shared.log(service: "TFI", endpoint: "GTFS static (\(url.host ?? ""))", status: .failure, durationMs: ms, detail: "HTTP \(httpStatus)")
+                return nil
             }
 
-            await APILogger.shared.log(service: "NTA", endpoint: "GTFS feed download (\(data.count / 1024)KB)", status: .success, durationMs: ms)
+            await APILogger.shared.log(service: "TFI", endpoint: "GTFS static (\(data.count / 1024)KB)", status: .success, durationMs: ms)
 
-            // Extract stops.txt from the ZIP
-            return parseStopsFromZip(data: data)
+            let stops = parseStopsFromZip(data: data)
+            return stops.isEmpty ? nil : stops
         } catch {
             let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "NTA", endpoint: "GTFS feed download", status: .failure, durationMs: ms, detail: error.localizedDescription)
-            return []
+            await APILogger.shared.log(service: "TFI", endpoint: "GTFS static", status: .failure, durationMs: ms, detail: error.localizedDescription)
+            return nil
         }
     }
 
