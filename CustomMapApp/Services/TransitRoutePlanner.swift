@@ -87,13 +87,15 @@ actor TransitRoutePlanner {
         from source: CLLocationCoordinate2D,
         to destination: CLLocationCoordinate2D,
         transitStops: [TransitStop],
-        profile: UserProfile?,
+        maxWalkingMinutes: Int = 15,
+        maxTransfers: Int = 2,
+        preferBusOverTram: Bool = false,
         departureTime: Date = Date()
     ) async -> [TransitRouteOption] {
 
-        let maxWalkMin = profile?.maxWalkingMinutes ?? defaultMaxWalkingMinutes
-        let maxTransfers = profile?.maxTransfers ?? defaultMaxTransfers
-        let preferBus = profile?.preferBusOverTram ?? false
+        let maxWalkMin = maxWalkingMinutes
+        let maxTransfers = maxTransfers
+        let preferBus = preferBusOverTram
 
         let walkRadiusMeters = Double(maxWalkMin) * walkingSpeedMPerMin
 

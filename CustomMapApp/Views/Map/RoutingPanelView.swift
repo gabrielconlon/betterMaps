@@ -84,15 +84,23 @@ struct RoutingPanelView: View {
                 }
 
                 // Transit options (multi-modal: walk → bus/tram → walk)
-                if !viewModel.transitOptions.isEmpty || viewModel.isLoadingTransit {
+                if !viewModel.transitOptions.isEmpty || viewModel.isLoadingTransit || viewModel.transitStatusMessage != nil {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
+                            Image(systemName: "tram.fill")
+                                .foregroundStyle(.green)
                             Text("Transit Options")
                                 .font(.subheadline.bold())
                             if viewModel.isLoadingTransit {
                                 ProgressView()
                                     .controlSize(.small)
                             }
+                        }
+
+                        if let status = viewModel.transitStatusMessage {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
 
                         ForEach(viewModel.transitOptions) { option in

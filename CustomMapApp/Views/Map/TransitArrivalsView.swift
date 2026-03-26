@@ -4,6 +4,7 @@ import CoreLocation
 struct TransitArrivalsView: View {
     let stationName: String
     let coordinate: CLLocationCoordinate2D
+    var stopType: TransitStop.TransitStopType?  // When set, only fetch data for this type
 
     @State private var railArrivals: [IrishRailArrival] = []
     @State private var luasForecast: LuasStopForecast?
@@ -225,44 +226,93 @@ struct TransitArrivalsView: View {
     private func loadArrivals() async {
         isLoading = true
 
-        // Check if near a Luas stop (within 300m) using coordinate-based matching
-        let tapLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let nearbyLuasCoord = LuasStopCoordinates.stops
-            .map { stop in
-                let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                return (stop: stop, distance: stopLoc.distance(from: tapLocation))
+        let shouldCheckLuas = stopType == nil || stopType == .luas
+        let shouldCheckRail = stopType == nil || stopType == .dart || stopType == .rail
+        let shouldCheckBus = stopType == nil || stopType == .bus
+
+        // Check Luas (only if stop type matches or unknown)
+        if shouldCheckLuas {
+            let tapLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            let nearbyLuasCoord = LuasStopCoordinates.stops
+                .map { stop in
+                    let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+                    return (stop: stop, distance: stopLoc.distance(from: tapLocation))
+                }
+                .filter { $0.distance < 300 }
+                .min(by: { $0.distance < $1.distance })
+
+            if let match = nearbyLuasCoord {
+                hasLuas = true
+                let stopCode = String(match.stop.id.replacingOccurrences(of: "LUAS_", with: ""))
+                luasForecast = await luasService.fetchForecast(stopCode: stopCode)
             }
-            .filter { $0.distance < 300 }
-            .min(by: { $0.distance < $1.distance })
-
-        if let match = nearbyLuasCoord {
-            hasLuas = true
-            // LuasStopCoordinates IDs are prefixed with "LUAS_"; strip to get the stop code
-            let stopCode = String(match.stop.id.replacingOccurrences(of: "LUAS_", with: ""))
-            luasForecast = await luasService.fetchForecast(stopCode: stopCode)
         }
 
-        // Check Irish Rail — fetch all stations and find nearby
-        let allStations = await railService.fetchStations()
-        let nearbyStation = allStations.first { station in
-            let stationLoc = CLLocation(latitude: station.latitude, longitude: station.longitude)
+        // Check Irish Rail (only if stop type matches or unknown)
+        if shouldCheckRail {
+            let allStations = await railService.fetchStations()
             let tapLoc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            return stationLoc.distance(from: tapLoc) < 800 // within 800m
+            let nearbyStation = allStations.first { station in
+                let stationLoc = CLLocation(latitude: station.latitude, longitude: station.longitude)
+                return stationLoc.distance(from: tapLoc) < 800
+            }
+
+            if let station = nearbyStation {
+                hasRail = true
+                railArrivals = await railService.fetchArrivals(stationCode: station.id)
+            }
         }
 
-        if let station = nearbyStation {
-            hasRail = true
-            railArrivals = await railService.fetchArrivals(stationCode: station.id)
-        }
+        // NTA bus departures (only if stop type matches or unknown)
+        busFetchAttempted = shouldCheckBus
+        // Bus departures from GTFS schedule data
+        if shouldCheckBus {
+            let scheduleService = GTFSScheduleService.shared
+            await scheduleService.loadIfNeeded()
 
-        // NTA bus departures — endpoint currently stubbed; mark as attempted
-        // so the view can show a placeholder message
-        busFetchAttempted = true
-        if NTATransitService.isConfigured {
-            let stopId = stationName.replacingOccurrences(of: " ", with: "")
-                .prefix(10).lowercased()
-            busDepartures = await ntaService.fetchStopDepartures(stopId: String(stopId))
-            serviceAlerts = await ntaService.fetchServiceAlerts()
+            // Find the stop ID that matches this location
+            // Use the stop name or find by proximity
+            let allStops = LuasStopCoordinates.stops // reuse transit stop data
+            let tapLoc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+            // Load GTFS stops and find nearest bus stop
+            let loader = GTFSStopLoader()
+            let gtfsStops = await loader.loadStops()
+            let nearbyBusStop = gtfsStops
+                .filter { $0.type == .bus }
+                .map { stop in
+                    let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+                    return (stop: stop, distance: stopLoc.distance(from: tapLoc))
+                }
+                .filter { $0.distance < 200 }
+                .min(by: { $0.distance < $1.distance })
+
+            if let busStop = nearbyBusStop {
+                // Get current time as seconds since midnight
+                let calendar = Calendar.current
+                let now = Date()
+                let secondsSinceMidnight = calendar.component(.hour, from: now) * 3600 +
+                    calendar.component(.minute, from: now) * 60 +
+                    calendar.component(.second, from: now)
+
+                let departures = await scheduleService.departuresFromStop(
+                    stopId: busStop.stop.id,
+                    afterSeconds: secondsSinceMidnight,
+                    withinSeconds: 3600
+                )
+
+                busDepartures = departures.prefix(10).map { stopTime, trip in
+                    let dueMinutes = max(0, (stopTime.departureSeconds - secondsSinceMidnight) / 60)
+                    return NTAStopDeparture(
+                        routeShortName: trip.routeShortName,
+                        headsign: trip.directionId == 0 ? "Outbound" : "Inbound",
+                        dueIn: dueMinutes,
+                        scheduledTime: stopTime.departureTime,
+                        isRealTime: false,
+                        operator_: ""
+                    )
+                }
+            }
         }
 
         isLoading = false

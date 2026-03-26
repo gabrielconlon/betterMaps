@@ -442,30 +442,38 @@ struct TransitTypeRow: View {
     }
 
     var body: some View {
-        VStack(spacing: 6) {
-            HStack {
-                Image(systemName: type.systemImage)
-                    .foregroundColor(Color(hex: type.colorHex))
-                    .frame(width: 22)
-                Text(type.displayName)
-                    .font(.subheadline.bold())
-                Spacer()
-            }
-            HStack(spacing: 8) {
-                Toggle(isOn: stopsOn) {
-                    Text("Stops").font(.caption)
-                }
-                .toggleStyle(.switch)
-                .frame(maxWidth: .infinity)
+        HStack(spacing: 12) {
+            // Icon + Name
+            Image(systemName: type.systemImage)
+                .foregroundColor(Color(hex: type.colorHex))
+                .frame(width: 22)
+            Text(type.displayName)
+                .font(.subheadline.bold())
+                .frame(width: 50, alignment: .leading)
 
-                Toggle(isOn: liveOn) {
-                    Text("Live").font(.caption)
-                }
-                .toggleStyle(.switch)
-                .frame(maxWidth: .infinity)
-                .disabled(liveDisabled)
+            Spacer()
+
+            // Stops toggle with label directly attached
+            VStack(spacing: 2) {
+                Text("Stops")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Toggle("", isOn: stopsOn)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+
+            // Live toggle with label directly attached
+            VStack(spacing: 2) {
+                Text("Live")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Toggle("", isOn: liveOn)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(liveDisabled)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 }

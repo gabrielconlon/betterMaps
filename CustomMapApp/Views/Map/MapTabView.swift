@@ -45,7 +45,7 @@ struct MapTabView: View {
         let latDelta = region.span.latitudeDelta
         guard latDelta < 0.15 else { return [] }
         return transitStops
-            .filter { activeTypes.contains($0.type) }
+            .filter { showTransitStops.contains($0.type) }
             .filter { stop in
                 abs(stop.latitude - region.center.latitude) < latDelta &&
                 abs(stop.longitude - region.center.longitude) < region.span.longitudeDelta
@@ -276,8 +276,8 @@ struct MapTabView: View {
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
 
-        case .transitArrivals(let name, let coord):
-            TransitArrivalsView(stationName: name, coordinate: coord)
+        case .transitArrivals(let name, let coord, let type):
+            TransitArrivalsView(stationName: name, coordinate: coord, stopType: type)
                 .presentationDetents([.fraction(0.3), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -322,14 +322,14 @@ struct MapTabView: View {
                     Annotation(stop.name, coordinate: stop.coordinate) {
                         TransitStopPin(stop: stop, zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01)
                             .onTapGesture {
-                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate)
+                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type)
                             }
                     }
                 }
 
                 // Live bus vehicle positions
                 ForEach(visibleVehicles) { vehicle in
-                    Annotation(vehicle.routeShortName.isEmpty ? vehicle.routeId : vehicle.routeShortName, coordinate: vehicle.coordinate) {
+                    Annotation(vehicle.routeShortName.isEmpty ? "" : vehicle.routeShortName, coordinate: vehicle.coordinate) {
                         VehicleDot(vehicle: vehicle)
                             .onTapGesture {
                                 viewModel.activeSheet = .vehicleDetail(vehicle)
@@ -383,16 +383,17 @@ struct MapTabView: View {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                     return
                 }
-                // Debounce: if an annotation tap already set the sheet, skip POI search
-                let currentSheet = viewModel.activeSheet
+                // If a sheet is already showing (from a previous tap), don't POI search
+                if viewModel.activeSheet != nil { return }
+
                 guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
                 Task {
-                    // Small delay to let annotation taps fire first
-                    try? await Task.sleep(for: .milliseconds(250))
-                    // Only search if the sheet didn't change (no annotation was tapped)
-                    if viewModel.activeSheet?.id == currentSheet?.id {
-                        await searchPOI(at: coordinate)
-                    }
+                    // Delay to let annotation taps fire first
+                    try? await Task.sleep(for: .milliseconds(350))
+                    // Only search if no sheet was opened by an annotation tap
+                    guard viewModel.activeSheet == nil else { return }
+                    await searchPOI(at: coordinate)
+                }
                 }
             }
             .onLongPressGesture(minimumDuration: 0.5) {
