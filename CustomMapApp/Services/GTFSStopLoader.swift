@@ -184,6 +184,16 @@ actor GTFSStopLoader {
             routeNameLookup = lookup
         }
         print("GTFS route lookup: \(routeNameLookup.count) routes loaded from cache")
+        // Also log to API Logs so it's visible in-app
+        Task { @MainActor in
+            APILogger.shared.log(
+                service: "TFI",
+                endpoint: "Route name cache",
+                status: routeNameLookup.isEmpty ? .failure : .success,
+                durationMs: 0,
+                detail: "\(routeNameLookup.count) route names loaded"
+            )
+        }
     }
 
     /// Parse stops.txt from GTFS ZIP data

@@ -145,13 +145,14 @@ class RoutingViewModel {
 
                 // Find transit stops near origin and destination only (not all 14K)
                 let allStops = await loadTransitStopsForPlanner()
-                let maxWalkMeters = Double((userProfile?.maxWalkingMinutes ?? 15)) * 80.0 * 1.4
+                // Walking radius: minutes * 80m/min — keep tight to limit search space
+                let walkRadius = Double((userProfile?.maxWalkingMinutes ?? 10)) * 80.0
                 let originLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
                 let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
                 let nearbyStops = allStops.filter { stop in
                     let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                    return stopLoc.distance(from: originLoc) < maxWalkMeters * 2 ||
-                           stopLoc.distance(from: destLoc) < maxWalkMeters * 2
+                    return stopLoc.distance(from: originLoc) < walkRadius ||
+                           stopLoc.distance(from: destLoc) < walkRadius
                 }
                 transitStatusMessage = "Searching \(nearbyStops.count) nearby stops..."
 
