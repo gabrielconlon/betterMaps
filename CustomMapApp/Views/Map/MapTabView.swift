@@ -183,7 +183,11 @@ struct MapTabView: View {
             }
         }
         .task(id: showLiveTransit) {
-            // Live vehicles/trains refresh every 30 seconds while relevant live types are toggled on
+            // Debounce: wait 1 second after last toggle change before making API calls
+            // This prevents rapid toggling from burning through rate limits
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+
             let wantsBus = showLiveTransit.contains(.bus) && NTATransitService.isConfigured
             let wantsTrains = showLiveTransit.contains(.dart) || showLiveTransit.contains(.rail)
             guard wantsBus || wantsTrains else {
@@ -201,6 +205,7 @@ struct MapTabView: View {
                 let anySuccess = !buses.isEmpty || !trains.isEmpty
                 if wantsBus { liveVehicles = buses }
                 if wantsTrains { liveTrains = trains }
+                // Backoff: 30s on success, doubles on failure up to 2 min
                 interval = anySuccess ? .seconds(30) : min(interval * 2, .seconds(120))
                 try? await Task.sleep(for: interval)
             }
