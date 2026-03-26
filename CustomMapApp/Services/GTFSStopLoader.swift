@@ -78,6 +78,9 @@ actor GTFSStopLoader {
         if !stops.isEmpty {
             saveToCache(stops)
         }
+        if GTFSStopLoader.routeNameLookup.isEmpty {
+            await APILogger.shared.log(service: "TFI", endpoint: "GTFS route lookup", status: .failure, durationMs: 0, detail: "routeNameLookup is empty after GTFS load")
+        }
         return stops.isEmpty ? builtInStops() : stops
     }
 
@@ -119,7 +122,7 @@ actor GTFSStopLoader {
 
             let stops = parseStopsFromZip(data: data)
             // Also parse routes.txt for route name lookup
-            parseRoutesFromZip(data: data)
+            await parseRoutesFromZip(data: data)
             return stops.isEmpty ? nil : stops
         } catch {
             let ms = Int(Date().timeIntervalSince(start) * 1000)
@@ -129,13 +132,22 @@ actor GTFSStopLoader {
     }
 
     /// Parse routes.txt to build route_id → route_short_name lookup
-    private func parseRoutesFromZip(data: Data) {
-        guard let routesCSV = extractFileFromZip(data: data, fileName: "routes.txt") else { return }
+    private func parseRoutesFromZip(data: Data) async {
+        guard let routesCSV = extractFileFromZip(data: data, fileName: "routes.txt") else {
+            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
+            return
+        }
         let lines = routesCSV.components(separatedBy: .newlines)
-        guard let headerLine = lines.first else { return }
+        guard let headerLine = lines.first else {
+            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
+            return
+        }
         let headers = parseCSVRow(headerLine)
         guard let idIdx = headers.firstIndex(of: "route_id"),
-              let nameIdx = headers.firstIndex(of: "route_short_name") else { return }
+              let nameIdx = headers.firstIndex(of: "route_short_name") else {
+            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
+            return
+        }
 
         var lookup: [String: String] = [:]
         for line in lines.dropFirst() {
@@ -148,6 +160,12 @@ actor GTFSStopLoader {
             }
         }
         GTFSStopLoader.routeNameLookup = lookup
+
+        if lookup.isEmpty {
+            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
+        } else {
+            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt (\(lookup.count) routes)", status: .success, durationMs: 0)
+        }
 
         // Cache the routes lookup
         if let data = try? JSONEncoder().encode(lookup) {
@@ -165,6 +183,7 @@ actor GTFSStopLoader {
            let lookup = try? JSONDecoder().decode([String: String].self, from: data) {
             routeNameLookup = lookup
         }
+        print("GTFS route lookup: \(routeNameLookup.count) routes loaded from cache")
     }
 
     /// Parse stops.txt from GTFS ZIP data

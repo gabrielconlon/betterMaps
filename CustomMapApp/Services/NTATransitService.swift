@@ -33,77 +33,14 @@ actor NTATransitService {
     /// The stop departures need to be extracted from the full TripUpdates feed,
     /// which requires protobuf parsing. For now this is best-effort.
     func fetchStopDepartures(stopId: String) async -> [NTAStopDeparture] {
-        guard NTATransitService.isConfigured else { return [] }
-
-        // Try the GTFS-RT TripUpdates feed (protobuf)
-        let endpoint = "\(gtfsrBaseURL)?format=json"
-        guard let url = URL(string: endpoint) else { return [] }
-
-        var request = URLRequest(url: url)
-        request.setValue(NTATransitService.apiKey, forHTTPHeaderField: "x-api-key")
-
-        let start = Date()
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.updateQuota(service: "NTA", from: response)
-
-            let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if httpStatus != 200 {
-                let body = String(data: data, encoding: .utf8) ?? ""
-                await APILogger.shared.log(service: "NTA", endpoint: "Departures/\(stopId)", status: .failure, durationMs: ms, detail: "HTTP \(httpStatus): \(String(body.prefix(200)))")
-                return []
-            }
-
-            // Try to parse as JSON
-            if let departures = parseDeparturesJSON(data: data) {
-                await APILogger.shared.log(service: "NTA", endpoint: "Departures/\(stopId)", status: .success, durationMs: ms)
-                return departures
-            }
-
-            await APILogger.shared.log(service: "NTA", endpoint: "Departures/\(stopId)", status: .failure, durationMs: ms, detail: "Could not parse response")
-            return []
-        } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "NTA", endpoint: "Departures/\(stopId)", status: .failure, durationMs: ms, detail: error.localizedDescription)
-            return []
-        }
+        await APILogger.shared.log(service: "NTA", endpoint: "Departures/\(stopId)", status: .cached, durationMs: 0, detail: "Bus departures via GTFS coming soon")
+        return []
     }
 
     /// Fetch service alerts
     func fetchServiceAlerts() async -> [NTAServiceAlert] {
-        guard NTATransitService.isConfigured else { return [] }
-
-        let endpoint = "https://api.nationaltransport.ie/gtfsr/v2/ServiceAlerts"
-        guard let url = URL(string: endpoint) else { return [] }
-
-        var request = URLRequest(url: url)
-        request.setValue(NTATransitService.apiKey, forHTTPHeaderField: "x-api-key")
-
-        let start = Date()
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.updateQuota(service: "NTA", from: response)
-
-            let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if httpStatus != 200 {
-                await APILogger.shared.log(service: "NTA", endpoint: "ServiceAlerts", status: .failure, durationMs: ms, detail: "HTTP \(httpStatus)")
-                return []
-            }
-
-            if let alerts = parseAlertsJSON(data: data) {
-                await APILogger.shared.log(service: "NTA", endpoint: "ServiceAlerts", status: .success, durationMs: ms)
-                return alerts
-            }
-
-            await APILogger.shared.log(service: "NTA", endpoint: "ServiceAlerts", status: .failure, durationMs: ms, detail: "Could not parse")
-            return []
-        } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "NTA", endpoint: "ServiceAlerts", status: .failure, durationMs: ms, detail: error.localizedDescription)
-            return []
-        }
+        await APILogger.shared.log(service: "NTA", endpoint: "ServiceAlerts", status: .cached, durationMs: 0, detail: "Service alerts endpoint not available")
+        return []
     }
 
     // MARK: - JSON Parsing (best-effort — exact format depends on NTA endpoint version)

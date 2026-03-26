@@ -388,7 +388,7 @@ struct MapTabView: View {
                 guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
                 Task {
                     // Small delay to let annotation taps fire first
-                    try? await Task.sleep(for: .milliseconds(150))
+                    try? await Task.sleep(for: .milliseconds(250))
                     // Only search if the sheet didn't change (no annotation was tapped)
                     if viewModel.activeSheet?.id == currentSheet?.id {
                         await searchPOI(at: coordinate)

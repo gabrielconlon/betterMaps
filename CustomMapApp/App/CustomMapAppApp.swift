@@ -8,7 +8,8 @@ struct CustomMapAppApp: App {
             Place.self,
             Layer.self,
             WeatherRule.self,
-            SavedRoute.self
+            SavedRoute.self,
+            UserProfile.self
         ])
         let modelConfiguration = ModelConfiguration(
             schema: schema,
@@ -27,6 +28,7 @@ struct CustomMapAppApp: App {
             ContentView()
                 .onAppear {
                     seedDefaultWeatherRules()
+                    seedDefaultUserProfile()
                     // Load API keys from UserDefaults
                     if let key = UserDefaults.standard.string(forKey: "yelpAPIKey"), !key.isEmpty {
                         YelpService.apiKey = key
@@ -76,5 +78,13 @@ struct CustomMapAppApp: App {
         for rule in defaults {
             context.insert(rule)
         }
+    }
+
+    private func seedDefaultUserProfile() {
+        let context = sharedModelContainer.mainContext
+        let descriptor = FetchDescriptor<UserProfile>()
+        let count = (try? context.fetchCount(descriptor)) ?? 0
+        guard count == 0 else { return }
+        context.insert(UserProfile())
     }
 }

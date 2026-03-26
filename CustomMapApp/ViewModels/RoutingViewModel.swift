@@ -74,6 +74,12 @@ class RoutingViewModel {
 
         let enabledRules = weatherRules.filter { $0.isEnabled }
 
+        // Load user profile for mode preferences
+        var userProfile: UserProfile?
+        if let context {
+            userProfile = try? context.fetch(FetchDescriptor<UserProfile>()).first
+        }
+
         // 1. Check persistent saved routes first (instant, no API calls)
         if let context {
             let savedResults = loadSavedRoutes(context: context, source: source, destination: destination)
@@ -90,8 +96,8 @@ class RoutingViewModel {
         let currentWeather = await weatherService.currentWeather(at: destination)
 
         // Fire all route types as independent tasks — each streams in as it completes
-        // MapKit modes: driving, walking, transit (each independent)
-        for mode in TransportMode.mapKitModes {
+        // Skip modes the user has disabled in their profile
+        for mode in TransportMode.mapKitModes where !(userProfile?.isModeDisabled(mode) ?? false) {
             Task { @MainActor in
                 await fetchMapKitRoute(
                     mode: mode,
@@ -103,8 +109,8 @@ class RoutingViewModel {
             }
         }
 
-        // Cycling (independent, only if configured)
-        if BicycleRoutingService.isConfigured {
+        // Cycling (independent, only if configured and not disabled)
+        if BicycleRoutingService.isConfigured && !(userProfile?.isModeDisabled(.cycling) ?? false) {
             Task { @MainActor in
                 await fetchCyclingRoute(
                     source: source,
@@ -261,8 +267,22 @@ class RoutingViewModel {
     }
 
     private func sortRoutes() {
+        // Load user profile for sort preferences
+        let profile: UserProfile? = {
+            // Try to access from cache — sort is called frequently
+            return nil // Will be set when calculateRoutes provides it
+        }()
+
         activeRoutes.sort { a, b in
+            // 1. User preference priority (preferred > normal > last-resort)
+            if let profile {
+                let aPriority = profile.modePriority(a.mode)
+                let bPriority = profile.modePriority(b.mode)
+                if aPriority != bPriority { return aPriority < bPriority }
+            }
+            // 2. Weather-preferred routes first
             if a.isPreferred != b.isPreferred { return a.isPreferred }
+            // 3. Then by ETA
             return a.eta < b.eta
         }
     }

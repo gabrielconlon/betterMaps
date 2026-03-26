@@ -12,6 +12,7 @@ struct TransitArrivalsView: View {
     @State private var isLoading = true
     @State private var hasRail = false
     @State private var hasLuas = false
+    @State private var busFetchAttempted = false
 
     private let railService = IrishRailService()
     private let luasService = LuasService()
@@ -145,6 +146,17 @@ struct TransitArrivalsView: View {
                     }
                 }
 
+                // Bus timetables placeholder
+                if busFetchAttempted && busDepartures.isEmpty {
+                    Label("Bus timetables coming soon", systemImage: "bus.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
                 // Service alerts
                 if !serviceAlerts.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
@@ -169,7 +181,7 @@ struct TransitArrivalsView: View {
                     }
                 }
 
-                if !isLoading && railArrivals.isEmpty && luasForecast == nil && busDepartures.isEmpty {
+                if !isLoading && railArrivals.isEmpty && luasForecast == nil && busDepartures.isEmpty && !busFetchAttempted {
                     Text("No real-time arrivals available for this location.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -213,17 +225,21 @@ struct TransitArrivalsView: View {
     private func loadArrivals() async {
         isLoading = true
 
-        // Check if near a Luas stop (within ~300m)
-        let nearbyLuas = LuasService.stops.first { stop in
-            // Simple distance check — Luas stops don't have coordinates in the basic API
-            // So we match by name similarity with the tapped station name
-            stationName.localizedCaseInsensitiveContains(stop.name) ||
-            stop.name.localizedCaseInsensitiveContains(stationName)
-        }
+        // Check if near a Luas stop (within 300m) using coordinate-based matching
+        let tapLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let nearbyLuasCoord = LuasStopCoordinates.stops
+            .map { stop in
+                let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+                return (stop: stop, distance: stopLoc.distance(from: tapLocation))
+            }
+            .filter { $0.distance < 300 }
+            .min(by: { $0.distance < $1.distance })
 
-        if let luasStop = nearbyLuas {
+        if let match = nearbyLuasCoord {
             hasLuas = true
-            luasForecast = await luasService.fetchForecast(stopCode: luasStop.id)
+            // LuasStopCoordinates IDs are prefixed with "LUAS_"; strip to get the stop code
+            let stopCode = String(match.stop.id.replacingOccurrences(of: "LUAS_", with: ""))
+            luasForecast = await luasService.fetchForecast(stopCode: stopCode)
         }
 
         // Check Irish Rail — fetch all stations and find nearby
@@ -231,7 +247,7 @@ struct TransitArrivalsView: View {
         let nearbyStation = allStations.first { station in
             let stationLoc = CLLocation(latitude: station.latitude, longitude: station.longitude)
             let tapLoc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            return stationLoc.distance(from: tapLoc) < 500 // within 500m
+            return stationLoc.distance(from: tapLoc) < 800 // within 800m
         }
 
         if let station = nearbyStation {
@@ -239,12 +255,10 @@ struct TransitArrivalsView: View {
             railArrivals = await railService.fetchArrivals(stationCode: station.id)
         }
 
-        // NTA bus departures (if API key configured)
-        // NOTE: We need the stop ID for the NTA API. For now, try the station name
-        // as a stop reference. Full GTFS stop matching is Phase 3.
+        // NTA bus departures — endpoint currently stubbed; mark as attempted
+        // so the view can show a placeholder message
+        busFetchAttempted = true
         if NTATransitService.isConfigured {
-            // Try fetching with a stop ID derived from the station name
-            // In practice, you'd match to GTFS stop_id from the static feed
             let stopId = stationName.replacingOccurrences(of: " ", with: "")
                 .prefix(10).lowercased()
             busDepartures = await ntaService.fetchStopDepartures(stopId: String(stopId))

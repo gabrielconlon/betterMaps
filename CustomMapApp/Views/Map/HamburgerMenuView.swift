@@ -22,6 +22,16 @@ struct HamburgerMenuView: View {
     var body: some View {
         NavigationStack {
             List {
+                // MARK: - My Preferences
+                Section("My Preferences") {
+                    NavigationLink(destination: UserPreferencesView()) {
+                        Label("Transport & Routing", systemImage: "person.fill")
+                    }
+                    NavigationLink(destination: WeatherRulesView()) {
+                        Label("Weather Rules", systemImage: "cloud.sun")
+                    }
+                }
+
                 // MARK: - Place Layers
                 Section("Place Layers") {
                     if layers.isEmpty {
@@ -128,10 +138,7 @@ struct HamburgerMenuView: View {
                 }
 
                 // MARK: - Settings
-                Section("Settings") {
-                    NavigationLink(destination: WeatherRulesView()) {
-                        Label("Routing Weather Rules", systemImage: "cloud.sun")
-                    }
+                Section("Services") {
 
                     NavigationLink(destination: SavedRoutesView()) {
                         Label("Saved Routes (Offline)", systemImage: "arrow.down.circle")
@@ -444,18 +451,18 @@ struct TransitTypeRow: View {
                     .font(.subheadline.bold())
                 Spacer()
             }
-            HStack(spacing: 16) {
+            HStack(spacing: 8) {
                 Toggle(isOn: stopsOn) {
-                    Text("Stops")
-                        .font(.caption)
+                    Text("Stops").font(.caption)
                 }
                 .toggleStyle(.switch)
+                .frame(maxWidth: .infinity)
 
                 Toggle(isOn: liveOn) {
-                    Text("Live")
-                        .font(.caption)
+                    Text("Live").font(.caption)
                 }
                 .toggleStyle(.switch)
+                .frame(maxWidth: .infinity)
                 .disabled(liveDisabled)
             }
         }
