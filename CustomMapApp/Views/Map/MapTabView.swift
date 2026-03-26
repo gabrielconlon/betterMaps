@@ -13,6 +13,7 @@ struct MapTabView: View {
     @State private var locationManager = LocationManager()
 
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
+    @State private var selectedRouteId: UUID?  // When set, only this route shows on map
     @State private var searchText = ""
     @State private var searchResults: [MKMapItem] = []
     @State private var showSearchResults = false
@@ -139,7 +140,10 @@ struct MapTabView: View {
 
                 // Route clear
                 if !routingVM.activeRoutes.isEmpty {
-                    Button(action: { routingVM.clearRoutes() }) {
+                    Button(action: {
+                        routingVM.clearRoutes()
+                        selectedRouteId = nil
+                    }) {
                         Label("Clear Routes", systemImage: "xmark.circle.fill")
                             .font(.caption.bold())
                             .padding(.horizontal, 12)
@@ -165,7 +169,8 @@ struct MapTabView: View {
             let railService = IrishRailService()
             let stations = await railService.fetchStations()
             for station in stations {
-                let type: TransitStop.TransitStopType = station.type == .dart ? .dart : (station.type == .suburban ? .suburban : .rail)
+                // Classify: DART stays as .dart, everything else (Mainline, Suburban) goes under .rail
+                let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
                 transitStops.append(TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type))
             }
 
@@ -259,9 +264,11 @@ struct MapTabView: View {
                 viewModel: routingVM,
                 destinationName: context?.name ?? "",
                 source: locationManager.userLocation,
-                destination: context?.coordinate
+                destination: context?.coordinate,
+                selectedRouteId: $selectedRouteId
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.fraction(0.35), .medium, .large])
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
 
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
@@ -337,7 +344,11 @@ struct MapTabView: View {
                     }
                 }
 
-                ForEach(routingVM.activeRoutes) { routeResult in
+                // Routes — show only selected route if one is picked, otherwise show all
+                let routesToShow = selectedRouteId != nil
+                    ? routingVM.activeRoutes.filter { $0.id == selectedRouteId }
+                    : routingVM.activeRoutes
+                ForEach(routesToShow) { routeResult in
                     if let route = routeResult.route {
                         MapPolyline(route)
                             .stroke(
@@ -361,6 +372,25 @@ struct MapTabView: View {
                 MapUserLocationButton()
                 MapCompass()
                 MapScaleView()
+            }
+            .onTapGesture { screenPoint in
+                // Dismiss keyboard if searching
+                if isSearchFocused {
+                    isSearchFocused = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    return
+                }
+                // Debounce: if an annotation tap already set the sheet, skip POI search
+                let currentSheet = viewModel.activeSheet
+                guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
+                Task {
+                    // Small delay to let annotation taps fire first
+                    try? await Task.sleep(for: .milliseconds(150))
+                    // Only search if the sheet didn't change (no annotation was tapped)
+                    if viewModel.activeSheet?.id == currentSheet?.id {
+                        await searchPOI(at: coordinate)
+                    }
+                }
             }
             .onLongPressGesture(minimumDuration: 0.5) {
                 guard let location = locationManager.userLocation else { return }

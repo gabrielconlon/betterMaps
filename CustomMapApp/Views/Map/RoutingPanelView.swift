@@ -10,6 +10,7 @@ struct RoutingPanelView: View {
     var source: CLLocationCoordinate2D?
     var destination: CLLocationCoordinate2D?
 
+    @Binding var selectedRouteId: UUID?
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
 
@@ -25,11 +26,15 @@ struct RoutingPanelView: View {
                     )
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button(action: { selectedRoute = nil }) {
+                            Button(action: {
+                                selectedRoute = nil
+                                selectedRouteId = nil
+                            }) {
                                 Label("Routes", systemImage: "chevron.left")
                             }
                         }
                     }
+                    .onAppear { selectedRouteId = route.id }
                 } else {
                     routeListView
                 }

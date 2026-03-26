@@ -131,18 +131,9 @@ struct HamburgerMenuView: View {
                         .padding(.vertical, 2)
                     }
 
-                    HStack {
-                        Button("All Stops") {
-                            showTransitStops = [.bus, .luas, .dart, .rail]
-                        }
-                        Button("All Live") {
-                            showLiveTransit = [.bus, .luas, .dart, .rail]
-                        }
-                        Spacer()
-                        Button("Hide All") {
-                            showTransitStops = []
-                            showLiveTransit = []
-                        }
+                    Button("Hide All Transit") {
+                        showTransitStops = []
+                        showLiveTransit = []
                     }
                     .font(.caption)
 
