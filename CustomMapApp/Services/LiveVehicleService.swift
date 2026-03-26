@@ -28,7 +28,22 @@ actor LiveVehicleService {
                 return []
             }
 
-            let vehicles = GTFSRealtimeDecoder.decodeVehiclePositions(data: data)
+            var vehicles = GTFSRealtimeDecoder.decodeVehiclePositions(data: data)
+
+            // Enrich with route short names from static GTFS lookup
+            let lookup = GTFSStopLoader.routeNameLookup
+            if !lookup.isEmpty {
+                vehicles = vehicles.map { v in
+                    let shortName = lookup[v.routeId] ?? ""
+                    return GTFSVehiclePosition(
+                        id: v.id, routeId: v.routeId, routeShortName: shortName,
+                        tripId: v.tripId, latitude: v.latitude, longitude: v.longitude,
+                        bearing: v.bearing, speed: v.speed, timestamp: v.timestamp,
+                        label: v.label, vehicleId: v.vehicleId
+                    )
+                }
+            }
+
             await APILogger.shared.log(service: "NTA", endpoint: "Vehicles (\(vehicles.count) vehicles)", status: .success, durationMs: ms)
             return vehicles
         } catch {

@@ -37,6 +37,8 @@ struct CustomMapAppApp: App {
                     if let key = UserDefaults.standard.string(forKey: "ntaAPIKey"), !key.isEmpty {
                         NTATransitService.apiKey = key
                     }
+                    // Load cached route name lookup
+                    GTFSStopLoader.loadCachedRouteNames()
                 }
         }
         .modelContainer(sharedModelContainer)

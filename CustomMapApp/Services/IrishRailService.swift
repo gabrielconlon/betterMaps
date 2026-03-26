@@ -31,6 +31,21 @@ struct IrishRailStation: Identifiable {
     }
 }
 
+struct IrishRailTrainPosition: Identifiable {
+    let id: String           // TrainCode used as stable identifier
+    let trainCode: String
+    let latitude: Double
+    let longitude: Double
+    let status: String
+    let trainType: String    // DART, Mainline, etc.
+    let direction: String
+    let publicMessage: String
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
 struct IrishRailArrival: Identifiable {
     let id = UUID()
     let trainCode: String
@@ -92,6 +107,26 @@ actor IrishRailService {
         } catch {
             let ms = Int(Date().timeIntervalSince(start) * 1000)
             await APILogger.shared.log(service: "Irish Rail", endpoint: "getStationData/\(stationCode)", status: .failure, durationMs: ms, detail: error.localizedDescription)
+            return []
+        }
+    }
+
+    /// Fetch live positions of all currently running trains
+    func fetchCurrentTrains() async -> [IrishRailTrainPosition] {
+        let endpoint = "\(baseURL)/getCurrentTrainsXML"
+        guard let url = URL(string: endpoint) else { return [] }
+        let start = Date()
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            let parser = IrishRailTrainPositionParser(data: data)
+            let trains = parser.parse()
+            await APILogger.shared.log(service: "Irish Rail", endpoint: "getCurrentTrains", status: .success, durationMs: ms)
+            return trains
+        } catch {
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            await APILogger.shared.log(service: "Irish Rail", endpoint: "getCurrentTrains", status: .failure, durationMs: ms, detail: error.localizedDescription)
             return []
         }
     }
@@ -205,6 +240,58 @@ class IrishRailArrivalParser: NSObject, XMLParserDelegate {
                 trainType: fields["Traintype"] ?? "",
                 lastLocation: fields["Lastlocation"] ?? ""
             ))
+        }
+        currentElement = ""
+    }
+}
+
+class IrishRailTrainPositionParser: NSObject, XMLParserDelegate {
+    private let data: Data
+    private var trains: [IrishRailTrainPosition] = []
+    private var currentElement = ""
+    private var fields: [String: String] = [:]
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func parse() -> [IrishRailTrainPosition] {
+        let parser = XMLParser(data: data)
+        parser.delegate = self
+        parser.parse()
+        return trains
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+        currentElement = elementName
+        if elementName == "objTrainPositions" {
+            fields = [:]
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        fields[currentElement, default: ""] += trimmed
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
+        if elementName == "objTrainPositions" {
+            let trainCode = fields["TrainCode"] ?? ""
+            if let lat = Double(fields["TrainLatitude"] ?? ""),
+               let lng = Double(fields["TrainLongitude"] ?? ""),
+               !trainCode.isEmpty {
+                trains.append(IrishRailTrainPosition(
+                    id: trainCode,
+                    trainCode: trainCode,
+                    latitude: lat,
+                    longitude: lng,
+                    status: fields["TrainStatus"] ?? "",
+                    trainType: fields["TrainType"] ?? "",
+                    direction: fields["Direction"] ?? "",
+                    publicMessage: fields["PublicMessage"] ?? ""
+                ))
+            }
         }
         currentElement = ""
     }

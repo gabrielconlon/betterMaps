@@ -58,7 +58,12 @@ struct TransitStop: Identifiable {
 /// Caches locally so we don't re-download every launch.
 actor GTFSStopLoader {
     private let cacheFileName = "gtfs_stops_cache.json"
+    private let routesCacheFileName = "gtfs_routes_cache.json"
     private let cacheMaxAge: TimeInterval = 7 * 24 * 3600 // 7 days
+
+    /// Route ID → route short name mapping (e.g., "125593" → "39A")
+    /// Shared so LiveVehicleService can look up route names
+    nonisolated(unsafe) static var routeNameLookup: [String: String] = [:]
 
     /// Load stops — from cache if fresh, otherwise download from NTA
     func loadStops() async -> [TransitStop] {
@@ -82,8 +87,8 @@ actor GTFSStopLoader {
         // Static GTFS feed is open data — no API key needed
         // Try TFI open data URL first, fallback to data.gov.ie
         let urls = [
-            "https://www.transportforireland.ie/transitData/Data/GTFS_Scheduled.zip",
-            "https://transitfeeds.com/p/transport-for-ireland/782/latest/download"
+            "https://www.transportforireland.ie/transitData/Data/GTFS_All.zip",
+            "https://www.transportforireland.ie/transitData/Data/GTFS_Realtime.zip"
         ]
 
         for urlString in urls {
@@ -113,6 +118,8 @@ actor GTFSStopLoader {
             await APILogger.shared.log(service: "TFI", endpoint: "GTFS static (\(data.count / 1024)KB)", status: .success, durationMs: ms)
 
             let stops = parseStopsFromZip(data: data)
+            // Also parse routes.txt for route name lookup
+            parseRoutesFromZip(data: data)
             return stops.isEmpty ? nil : stops
         } catch {
             let ms = Int(Date().timeIntervalSince(start) * 1000)
@@ -121,8 +128,46 @@ actor GTFSStopLoader {
         }
     }
 
+    /// Parse routes.txt to build route_id → route_short_name lookup
+    private func parseRoutesFromZip(data: Data) {
+        guard let routesCSV = extractFileFromZip(data: data, fileName: "routes.txt") else { return }
+        let lines = routesCSV.components(separatedBy: .newlines)
+        guard let headerLine = lines.first else { return }
+        let headers = parseCSVRow(headerLine)
+        guard let idIdx = headers.firstIndex(of: "route_id"),
+              let nameIdx = headers.firstIndex(of: "route_short_name") else { return }
+
+        var lookup: [String: String] = [:]
+        for line in lines.dropFirst() {
+            let fields = parseCSVRow(line)
+            guard fields.count > max(idIdx, nameIdx) else { continue }
+            let routeId = fields[idIdx]
+            let shortName = fields[nameIdx]
+            if !routeId.isEmpty && !shortName.isEmpty {
+                lookup[routeId] = shortName
+            }
+        }
+        GTFSStopLoader.routeNameLookup = lookup
+
+        // Cache the routes lookup
+        if let data = try? JSONEncoder().encode(lookup) {
+            let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent(routesCacheFileName)
+            try? data.write(to: url)
+        }
+    }
+
+    /// Load cached route name lookup (call on app launch)
+    static func loadCachedRouteNames() {
+        let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("gtfs_routes_cache.json")
+        if let data = try? Data(contentsOf: url),
+           let lookup = try? JSONDecoder().decode([String: String].self, from: data) {
+            routeNameLookup = lookup
+        }
+    }
+
     /// Parse stops.txt from GTFS ZIP data
-    /// GTFS stops.txt format: stop_id,stop_name,stop_lat,stop_lon,...
     private func parseStopsFromZip(data: Data) -> [TransitStop] {
         // Simple ZIP extraction — look for stops.txt in the archive
         // GTFS ZIPs use standard ZIP format. We extract the stops.txt entry.
