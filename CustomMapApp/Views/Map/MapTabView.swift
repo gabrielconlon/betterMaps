@@ -394,7 +394,6 @@ struct MapTabView: View {
                     guard viewModel.activeSheet == nil else { return }
                     await searchPOI(at: coordinate)
                 }
-                }
             }
             .onLongPressGesture(minimumDuration: 0.5) {
                 guard let location = locationManager.userLocation else { return }
