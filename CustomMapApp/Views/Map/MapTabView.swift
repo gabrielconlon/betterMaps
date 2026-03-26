@@ -136,18 +136,33 @@ struct MapTabView: View {
                     .padding(.bottom, 4)
                 }
 
-                // Route clear
+                // Route controls
                 if !routingVM.activeRoutes.isEmpty {
-                    Button(action: {
-                        routingVM.clearRoutes()
-                        selectedRouteId = nil
-                    }) {
-                        Label("Clear Routes", systemImage: "xmark.circle.fill")
-                            .font(.caption.bold())
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Capsule())
+                    HStack(spacing: 8) {
+                        // Reopen routes panel
+                        Button(action: {
+                            viewModel.showRouting()
+                        }) {
+                            Label("Routes", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+                        }
+
+                        // Clear routes
+                        Button(action: {
+                            routingVM.clearRoutes()
+                            selectedRouteId = nil
+                        }) {
+                            Label("Clear", systemImage: "xmark.circle.fill")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+                        }
                     }
                     .padding(.bottom, 4)
                 }

@@ -145,31 +145,53 @@ class RoutingViewModel {
 
                 // Find transit stops near origin and destination only (not all 14K)
                 let allStops = await loadTransitStopsForPlanner()
-                // Walking radius: minutes * 80m/min — keep tight to limit search space
-                let walkRadius = Double((userProfile?.maxWalkingMinutes ?? 10)) * 80.0
                 let originLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
                 let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
-                let nearbyStops = allStops.filter { stop in
-                    let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                    return stopLoc.distance(from: originLoc) < walkRadius ||
-                           stopLoc.distance(from: destLoc) < walkRadius
-                }
+
+                // Find 25 nearest stops to origin + 25 nearest to destination (max 50 total)
+                let originStops = allStops
+                    .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: originLoc)) }
+                    .sorted { $0.dist < $1.dist }
+                    .prefix(25)
+                    .map { $0.stop }
+                let destStops = allStops
+                    .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: destLoc)) }
+                    .sorted { $0.dist < $1.dist }
+                    .prefix(25)
+                    .map { $0.stop }
+                let nearbyStopIDs = Set(originStops.map { $0.id }).union(destStops.map { $0.id })
+                let nearbyStops = allStops.filter { nearbyStopIDs.contains($0.id) }
                 transitStatusMessage = "Searching \(nearbyStops.count) nearby stops..."
 
                 let maxWalk = userProfile?.maxWalkingMinutes ?? 15
                 let maxTransfers = userProfile?.maxTransfers ?? 2
                 let preferBus = userProfile?.preferBusOverTram ?? false
-                transitOptions = await transitPlanner.findRoutes(
-                    from: source,
-                    to: destination,
-                    transitStops: nearbyStops,
-                    maxWalkingMinutes: maxWalk,
-                    maxTransfers: maxTransfers,
-                    preferBusOverTram: preferBus
-                )
+
+                // 10-second timeout to prevent indefinite searching
+                let result = await withTaskGroup(of: [TransitRouteOption].self) { group in
+                    group.addTask {
+                        await self.transitPlanner.findRoutes(
+                            from: source,
+                            to: destination,
+                            transitStops: nearbyStops,
+                            maxWalkingMinutes: maxWalk,
+                            maxTransfers: maxTransfers,
+                            preferBusOverTram: preferBus
+                        )
+                    }
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(10))
+                        return [] as [TransitRouteOption]
+                    }
+                    // Return whichever finishes first
+                    let first = await group.next() ?? []
+                    group.cancelAll()
+                    return first
+                }
+                transitOptions = result
 
                 if transitOptions.isEmpty {
-                    transitStatusMessage = "No transit connections found for this trip. Try a longer walk distance in preferences."
+                    transitStatusMessage = "No transit routes found. Stops may not have schedule data for this time."
                 } else {
                     transitStatusMessage = nil
                 }

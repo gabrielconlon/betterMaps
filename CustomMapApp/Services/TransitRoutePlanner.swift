@@ -110,7 +110,23 @@ actor TransitRoutePlanner {
             coordinate: destination, radiusMeters: walkRadiusMeters, allStops: transitStops
         )
 
+        // Log diagnostic info
+        await APILogger.shared.log(
+            service: "Transit Planner",
+            endpoint: "findRoutes",
+            status: .success,
+            durationMs: 0,
+            detail: "Origin stops: \(originStopIds.count), Dest stops: \(destStopIds.count). Sample IDs: \(originStopIds.prefix(3).joined(separator: ", "))"
+        )
+
         guard !originStopIds.isEmpty, !destStopIds.isEmpty else {
+            await APILogger.shared.log(
+                service: "Transit Planner",
+                endpoint: "findRoutes",
+                status: .failure,
+                durationMs: 0,
+                detail: "No stops found near origin (\(originStopIds.count)) or destination (\(destStopIds.count))"
+            )
             return []
         }
 
@@ -146,6 +162,17 @@ actor TransitRoutePlanner {
                 afterSeconds: effectiveDepartureSeconds,
                 withinSeconds: departureWindowSeconds
             )
+
+            // Log first origin stop's departure count for diagnostics
+            if originStopId == originStopIds.first {
+                await APILogger.shared.log(
+                    service: "Transit Planner",
+                    endpoint: "departures/\(originStopId)",
+                    status: departures.isEmpty ? .failure : .success,
+                    durationMs: 0,
+                    detail: "\(departures.count) departures found at \(effectiveDepartureSeconds/3600):\(String(format: "%02d", (effectiveDepartureSeconds%3600)/60))"
+                )
+            }
 
             for (boardStopTime, trip) in departures {
 
