@@ -20,7 +20,7 @@ struct RouteResultCard: View {
                     Text(result.mode.displayName)
                         .font(.headline)
                     if result.isPreferred {
-                        Text("Fastest")
+                        Text("Recommended")
                             .font(.caption2.bold())
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
