@@ -11,9 +11,9 @@ struct RoutingPanelView: View {
     var destination: CLLocationCoordinate2D?
 
     @Binding var selectedRouteId: UUID?
+    @Binding var selectedTransitOption: TransitRouteOption?
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
-    @State private var selectedTransitOption: TransitRouteOption?
 
     var body: some View {
         NavigationStack {

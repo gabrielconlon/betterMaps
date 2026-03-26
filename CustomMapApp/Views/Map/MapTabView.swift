@@ -13,7 +13,8 @@ struct MapTabView: View {
     @State private var locationManager = LocationManager()
 
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
-    @State private var selectedRouteId: UUID?  // When set, only this route shows on map
+    @State private var selectedRouteId: UUID?
+    @State private var selectedTransitOption: TransitRouteOption?
     @State private var searchText = ""
     @State private var searchResults: [MKMapItem] = []
     @State private var showSearchResults = false
@@ -155,6 +156,7 @@ struct MapTabView: View {
                         Button(action: {
                             routingVM.clearRoutes()
                             selectedRouteId = nil
+                            selectedTransitOption = nil
                         }) {
                             Label("Clear", systemImage: "xmark.circle.fill")
                                 .font(.caption.bold())
@@ -283,7 +285,8 @@ struct MapTabView: View {
                 destinationName: context?.name ?? "",
                 source: locationManager.userLocation,
                 destination: context?.coordinate,
-                selectedRouteId: $selectedRouteId
+                selectedRouteId: $selectedRouteId,
+                selectedTransitOption: $selectedTransitOption
             )
             .presentationDetents([.fraction(0.35), .medium, .large])
             .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -382,6 +385,41 @@ struct MapTabView: View {
                                     dash: [8, 4]  // Dashed line for cycling
                                 )
                             )
+                    }
+                }
+
+                // Selected transit route legs
+                if let transitOption = selectedTransitOption {
+                    ForEach(transitOption.legs) { leg in
+                        switch leg {
+                        case .walk(_, _, _, let from, let to):
+                            // Walk legs drawn as green dashed line if we have stop coords
+                            if let fromCoord = findStopCoordinate(named: from),
+                               let toCoord = findStopCoordinate(named: to) {
+                                MapPolyline(coordinates: [fromCoord, toCoord])
+                                    .stroke(.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
+                            }
+                        case .ride(_, _, _, let boardStop, let alightStop, _, _, _, let mode):
+                            if let fromCoord = findStopCoordinate(named: boardStop),
+                               let toCoord = findStopCoordinate(named: alightStop) {
+                                let color: Color = {
+                                    switch mode {
+                                    case .bus: return .blue
+                                    case .luas: return .green
+                                    case .dart: return .orange
+                                    case .rail: return .purple
+                                    }
+                                }()
+                                MapPolyline(coordinates: [fromCoord, toCoord])
+                                    .stroke(color, lineWidth: 5)
+                            }
+                        case .transfer(_, _, let from, let to):
+                            if let fromCoord = findStopCoordinate(named: from),
+                               let toCoord = findStopCoordinate(named: to) {
+                                MapPolyline(coordinates: [fromCoord, toCoord])
+                                    .stroke(.gray, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
+                            }
+                        }
                     }
                 }
             }
@@ -523,6 +561,19 @@ struct MapTabView: View {
             mapItem.name = placemark.name ?? placemark.thoroughfare ?? "Tapped Location"
             viewModel.showPOI(mapItem)
         }
+    }
+
+    /// Find a transit stop's coordinate by name (for drawing transit route legs)
+    private func findStopCoordinate(named name: String) -> CLLocationCoordinate2D? {
+        // Check loaded transit stops
+        if let stop = transitStops.first(where: { $0.name == name }) {
+            return stop.coordinate
+        }
+        // Check Luas hardcoded stops
+        if let luas = LuasStopCoordinates.stops.first(where: { $0.name == name }) {
+            return luas.coordinate
+        }
+        return nil
     }
 
     @MainActor
