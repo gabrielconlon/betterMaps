@@ -26,6 +26,8 @@ struct MapTabView: View {
     @State private var showLiveTransit: Set<TransitStop.TransitStopType> = []
     @State private var liveVehicles: [GTFSVehiclePosition] = []
     @State private var liveTrains: [IrishRailTrainPosition] = []
+    @AppStorage("savedTransitStops") private var savedTransitStops = ""
+    @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
 
     var filteredPlaces: [Place] {
@@ -175,6 +177,15 @@ struct MapTabView: View {
         }
         .onAppear {
             locationManager.requestPermission()
+            // Restore persisted transit toggle states
+            showTransitStops = deserializeTransitTypes(savedTransitStops)
+            showLiveTransit = deserializeTransitTypes(savedLiveTransit)
+        }
+        .onChange(of: showTransitStops) { _, newValue in
+            savedTransitStops = serializeTransitTypes(newValue)
+        }
+        .onChange(of: showLiveTransit) { _, newValue in
+            savedLiveTransit = serializeTransitTypes(newValue)
         }
         .task {
             // Load transit stops — Luas from hardcoded coordinates (fixed infrastructure)
@@ -217,12 +228,14 @@ struct MapTabView: View {
                 async let busFetch: [GTFSVehiclePosition] = wantsBus ? vehicleService.fetchVehiclePositions() : []
                 async let trainFetch: [IrishRailTrainPosition] = wantsTrains ? railService.fetchCurrentTrains() : []
                 let (buses, trains) = await (busFetch, trainFetch)
+                // Check cancellation before mutating state — prevents crash from mid-toggle updates
+                guard !Task.isCancelled else { break }
                 let anySuccess = !buses.isEmpty || !trains.isEmpty
                 if wantsBus { liveVehicles = buses }
                 if wantsTrains { liveTrains = trains }
-                // Backoff: 30s on success, doubles on failure up to 2 min
                 interval = anySuccess ? .seconds(30) : min(interval * 2, .seconds(120))
                 try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { break }
             }
             liveVehicles = []
             liveTrains = []
@@ -392,37 +405,31 @@ struct MapTabView: View {
                     }
                 }
 
-                // Selected transit route legs
+                // Selected transit route legs (coordinates embedded in each leg)
                 if let transitOption = selectedTransitOption {
                     ForEach(transitOption.legs) { leg in
                         switch leg {
-                        case .walk(_, _, _, let from, let to):
-                            // Walk legs drawn as green dashed line if we have stop coords
-                            if let fromCoord = findStopCoordinate(named: from),
-                               let toCoord = findStopCoordinate(named: to) {
-                                MapPolyline(coordinates: [fromCoord, toCoord])
-                                    .stroke(.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
-                            }
-                        case .ride(_, _, _, let boardStop, let alightStop, _, _, _, let mode):
-                            if let fromCoord = findStopCoordinate(named: boardStop),
-                               let toCoord = findStopCoordinate(named: alightStop) {
-                                let color: Color = {
-                                    switch mode {
-                                    case .bus: return .blue
-                                    case .luas: return .green
-                                    case .dart: return .orange
-                                    case .rail: return .purple
-                                    }
-                                }()
-                                MapPolyline(coordinates: [fromCoord, toCoord])
+                        case .walk(_, _, _, _, _, let fromCoord, let toCoord):
+                            MapPolyline(coordinates: [fromCoord.clCoordinate, toCoord.clCoordinate])
+                                .stroke(.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
+
+                        case .ride(_, _, _, _, _, _, _, _, let mode, _, _, let pathCoords):
+                            let color: Color = {
+                                switch mode {
+                                case .bus: return .blue
+                                case .luas: return .green
+                                case .dart: return .orange
+                                case .rail: return .purple
+                                }
+                            }()
+                            if pathCoords.count >= 2 {
+                                MapPolyline(coordinates: pathCoords.map { $0.clCoordinate })
                                     .stroke(color, lineWidth: 5)
                             }
-                        case .transfer(_, _, let from, let to):
-                            if let fromCoord = findStopCoordinate(named: from),
-                               let toCoord = findStopCoordinate(named: to) {
-                                MapPolyline(coordinates: [fromCoord, toCoord])
-                                    .stroke(.gray, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
-                            }
+
+                        case .transfer(_, _, _, _, let fromCoord, let toCoord):
+                            MapPolyline(coordinates: [fromCoord.clCoordinate, toCoord.clCoordinate])
+                                .stroke(.gray, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
                         }
                     }
                 }
@@ -567,17 +574,16 @@ struct MapTabView: View {
         }
     }
 
-    /// Find a transit stop's coordinate by name (for drawing transit route legs)
-    private func findStopCoordinate(named name: String) -> CLLocationCoordinate2D? {
-        // Check loaded transit stops
-        if let stop = transitStops.first(where: { $0.name == name }) {
-            return stop.coordinate
-        }
-        // Check Luas hardcoded stops
-        if let luas = LuasStopCoordinates.stops.first(where: { $0.name == name }) {
-            return luas.coordinate
-        }
-        return nil
+
+    // MARK: - Transit Toggle Persistence
+
+    private func serializeTransitTypes(_ types: Set<TransitStop.TransitStopType>) -> String {
+        types.map { $0.rawValue }.sorted().joined(separator: ",")
+    }
+
+    private func deserializeTransitTypes(_ string: String) -> Set<TransitStop.TransitStopType> {
+        guard !string.isEmpty else { return [] }
+        return Set(string.split(separator: ",").compactMap { TransitStop.TransitStopType(rawValue: String($0)) })
     }
 
     @MainActor

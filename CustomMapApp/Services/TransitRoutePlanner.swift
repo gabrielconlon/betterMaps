@@ -20,20 +20,41 @@ enum TransitLegMode: String, Sendable {
     }
 }
 
+// MARK: - Leg Coordinate (Sendable wrapper for CLLocationCoordinate2D)
+
+struct LegCoordinate: Sendable, Equatable {
+    let latitude: Double
+    let longitude: Double
+    var clCoordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+    init(_ coord: CLLocationCoordinate2D) {
+        self.latitude = coord.latitude
+        self.longitude = coord.longitude
+    }
+    init(latitude: Double, longitude: Double) {
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+}
+
 // MARK: - Transit Leg
 
 enum TransitLeg: Identifiable, Sendable {
-    case walk(id: UUID, durationMinutes: Int, distance: Double, from: String, to: String)
+    case walk(id: UUID, durationMinutes: Int, distance: Double, from: String, to: String,
+              fromCoord: LegCoordinate, toCoord: LegCoordinate)
     case ride(id: UUID, routeName: String, routeId: String, boardStop: String,
               alightStop: String, departureTime: String, arrivalTime: String,
-              numStops: Int, mode: TransitLegMode)
-    case transfer(id: UUID, walkMinutes: Int, fromStop: String, toStop: String)
+              numStops: Int, mode: TransitLegMode,
+              boardCoord: LegCoordinate, alightCoord: LegCoordinate, pathCoords: [LegCoordinate])
+    case transfer(id: UUID, walkMinutes: Int, fromStop: String, toStop: String,
+                  fromCoord: LegCoordinate, toCoord: LegCoordinate)
 
     var id: UUID {
         switch self {
-        case .walk(let id, _, _, _, _):           return id
-        case .ride(let id, _, _, _, _, _, _, _, _): return id
-        case .transfer(let id, _, _, _):          return id
+        case .walk(let id, _, _, _, _, _, _):              return id
+        case .ride(let id, _, _, _, _, _, _, _, _, _, _, _): return id
+        case .transfer(let id, _, _, _, _, _):             return id
         }
     }
 }
@@ -59,50 +80,47 @@ actor TransitRoutePlanner {
 
     // MARK: - Constants
 
-    /// Average walking speed in meters per minute.
     private let walkingSpeedMPerMin: Double = 80.0
-    /// Road-routing factor applied to straight-line distance.
     private let roadRoutingFactor: Double = 1.4
-    /// Default walking radius when no profile is provided (15 min * 80 m/min).
-    private let defaultMaxWalkingMinutes: Int = 15
-    /// Default max transfers when no profile is provided.
-    private let defaultMaxTransfers: Int = 2
-    /// Time window (seconds) to search for departures from a stop.
-    private let departureWindowSeconds: Int = 3600
-    /// Maximum number of route options to return.
-    private let maxResults: Int = 5
+    /// 20-minute departure window (was 60 min — users don't want options departing far in the future)
+    private let departureWindowSeconds: Int = 1200
+    /// Max 3 results (was 5 — users want 1-3 fast options, not a wall of choices)
+    private let maxResults: Int = 3
+    /// 15-minute transfer connection window (was 30 min)
+    private let transferConnectionSeconds: Int = 900
+    /// Minimum transfer buffer (2 minutes)
+    private let transferBufferSeconds: Int = 120
+
+    /// Known Dublin interchange stop name keywords — only check these for transfers
+    /// instead of every intermediate stop (kills the O(n⁴) problem)
+    private let interchangeKeywords = [
+        "connolly", "heuston", "abbey", "tara", "pearse",
+        "busáras", "busaras", "o'connell", "oconnell", "dundrum",
+        "stillorgan", "sandyford", "jervis", "stephens", "stephen's",
+        "george's dock", "mayor square", "spencer dock", "marlborough",
+        "ranelagh", "charlemont", "phibsborough", "broombridge"
+    ]
 
     // MARK: - Public API
 
-    /// Find multi-modal transit route options between two coordinates.
-    ///
-    /// - Parameters:
-    ///   - source: Origin coordinate.
-    ///   - destination: Destination coordinate.
-    ///   - transitStops: All known transit stops (from GTFSStopLoader).
-    ///   - profile: Optional user preferences (walk budget, transfer limit, bus vs tram).
-    ///   - departureTime: Requested departure time (defaults to now).
-    /// - Returns: Up to 5 route options sorted by total duration.
     func findRoutes(
         from source: CLLocationCoordinate2D,
         to destination: CLLocationCoordinate2D,
         transitStops: [TransitStop],
         maxWalkingMinutes: Int = 15,
-        maxTransfers: Int = 2,
+        maxTransfers: Int = 1,
         preferBusOverTram: Bool = false,
         departureTime: Date = Date()
     ) async -> [TransitRouteOption] {
 
         let maxWalkMin = maxWalkingMinutes
-        let maxTransfers = maxTransfers
         let preferBus = preferBusOverTram
 
         let walkRadiusMeters = Double(maxWalkMin) * walkingSpeedMPerMin
 
-        // Ensure schedule data is loaded.
         await GTFSScheduleService.shared.loadIfNeeded()
 
-        // Step 1: Find stops near origin and destination.
+        // Find stops near origin and destination
         let originStopIds = await GTFSScheduleService.shared.findNearbyStopIds(
             coordinate: source, radiusMeters: walkRadiusMeters, allStops: transitStops
         )
@@ -110,316 +128,264 @@ actor TransitRoutePlanner {
             coordinate: destination, radiusMeters: walkRadiusMeters, allStops: transitStops
         )
 
-        // Log diagnostic info
-        await APILogger.shared.log(
-            service: "Transit Planner",
-            endpoint: "findRoutes",
-            status: .success,
-            durationMs: 0,
-            detail: "Origin stops: \(originStopIds.count), Dest stops: \(destStopIds.count). Sample IDs: \(originStopIds.prefix(3).joined(separator: ", "))"
-        )
-
         guard !originStopIds.isEmpty, !destStopIds.isEmpty else {
             await APILogger.shared.log(
-                service: "Transit Planner",
-                endpoint: "findRoutes",
-                status: .failure,
+                service: "Transit Planner", endpoint: "findRoutes", status: .failure,
                 durationMs: 0,
-                detail: "No stops found near origin (\(originStopIds.count)) or destination (\(destStopIds.count))"
+                detail: "No stops near origin (\(originStopIds.count)) or dest (\(destStopIds.count))"
             )
             return []
         }
 
-        // Build quick-lookup structures.
         let stopById = Dictionary(uniqueKeysWithValues: transitStops.map { ($0.id, $0) })
         let destStopIdSet = Set(destStopIds)
 
-        // Step 2: Seconds since midnight for the departure time.
         let calendar = Calendar.current
         let components = calendar.dateComponents([.hour, .minute, .second], from: departureTime)
         let secondsSinceMidnight = (components.hour ?? 0) * 3600
                                  + (components.minute ?? 0) * 60
                                  + (components.second ?? 0)
 
-        // Step 3: Collect candidate route options.
         var options: [TransitRouteOption] = []
 
+        // --- Phase 1: Direct routes (no transfer) ---
         for originStopId in originStopIds {
             guard let originStop = stopById[originStopId] else { continue }
 
-            // Walk time from source to this origin stop.
             let walkToOrigin = walkingMinutes(from: source, to: originStop.coordinate)
             if walkToOrigin > maxWalkMin { continue }
-
             let walkToOriginDistance = walkingDistance(from: source, to: originStop.coordinate)
-
-            // Adjust departure seconds to account for walk to the stop.
             let effectiveDepartureSeconds = secondsSinceMidnight + walkToOrigin * 60
 
-            // Step 4: Get departures from this origin stop.
             let departures = await GTFSScheduleService.shared.departuresFromStop(
                 stopId: originStopId,
                 afterSeconds: effectiveDepartureSeconds,
                 withinSeconds: departureWindowSeconds
             )
 
-            // Log first origin stop's departure count for diagnostics
-            if originStopId == originStopIds.first {
-                await APILogger.shared.log(
-                    service: "Transit Planner",
-                    endpoint: "departures/\(originStopId)",
-                    status: departures.isEmpty ? .failure : .success,
-                    durationMs: 0,
-                    detail: "\(departures.count) departures found at \(effectiveDepartureSeconds/3600):\(String(format: "%02d", (effectiveDepartureSeconds%3600)/60))"
-                )
-            }
-
             for (boardStopTime, trip) in departures {
+                // Early exit: found enough direct routes
+                if options.count >= maxResults { break }
 
-                // Step 5: Check direct routes first.
                 for destStopId in destStopIds {
-                    if let alightStopTime = await GTFSScheduleService.shared.tripReachesStop(
-                        tripId: trip.tripId,
-                        stopId: destStopId,
+                    guard let alightStopTime = await GTFSScheduleService.shared.tripReachesStop(
+                        tripId: trip.tripId, stopId: destStopId,
                         afterSequence: boardStopTime.stopSequence
-                    ) {
-                        guard let destStop = stopById[destStopId] else { continue }
+                    ) else { continue }
 
-                        let walkFromDest = walkingMinutes(
-                            from: destStop.coordinate, to: destination
-                        )
-                        if walkFromDest > maxWalkMin { continue }
+                    guard let destStop = stopById[destStopId] else { continue }
 
-                        let walkFromDestDistance = walkingDistance(
-                            from: destStop.coordinate, to: destination
-                        )
+                    let walkFromDest = walkingMinutes(from: destStop.coordinate, to: destination)
+                    if walkFromDest > maxWalkMin { continue }
+                    let walkFromDestDistance = walkingDistance(from: destStop.coordinate, to: destination)
 
-                        // Count intermediate stops.
-                        let numStops = alightStopTime.stopSequence - boardStopTime.stopSequence
+                    let numStops = alightStopTime.stopSequence - boardStopTime.stopSequence
+                    let mode = legMode(for: originStop, trip: trip)
 
-                        let mode = legMode(for: originStop, trip: trip)
-
-                        // Build legs.
-                        var legs: [TransitLeg] = []
-                        if walkToOrigin > 0 {
-                            legs.append(.walk(
-                                id: UUID(),
-                                durationMinutes: walkToOrigin,
-                                distance: walkToOriginDistance,
-                                from: "Current Location",
-                                to: originStop.name
-                            ))
-                        }
-                        legs.append(.ride(
-                            id: UUID(),
-                            routeName: trip.routeShortName,
-                            routeId: trip.routeId,
-                            boardStop: originStop.name,
-                            alightStop: destStop.name,
-                            departureTime: boardStopTime.departureTime,
-                            arrivalTime: alightStopTime.arrivalTime,
-                            numStops: numStops,
-                            mode: mode
-                        ))
-                        if walkFromDest > 0 {
-                            legs.append(.walk(
-                                id: UUID(),
-                                durationMinutes: walkFromDest,
-                                distance: walkFromDestDistance,
-                                from: destStop.name,
-                                to: "Destination"
-                            ))
-                        }
-
-                        let waitSeconds = boardStopTime.departureSeconds - effectiveDepartureSeconds
-                        let rideSeconds = alightStopTime.arrivalSeconds - boardStopTime.departureSeconds
-                        let totalSeconds = Double(walkToOrigin * 60)
-                                         + Double(max(waitSeconds, 0))
-                                         + Double(max(rideSeconds, 0))
-                                         + Double(walkFromDest * 60)
-
-                        let depDate = departureTime.addingTimeInterval(
-                            Double(walkToOrigin * 60)
-                        )
-                        let arrDate = depDate.addingTimeInterval(
-                            Double(max(waitSeconds, 0) + max(rideSeconds, 0))
-                                + Double(walkFromDest * 60)
-                        )
-
-                        options.append(TransitRouteOption(
-                            id: UUID(),
-                            legs: legs,
-                            totalDuration: totalSeconds,
-                            totalWalkingMinutes: walkToOrigin + walkFromDest,
-                            departureTime: depDate,
-                            arrivalTime: arrDate,
-                            transfers: 0,
-                            summary: trip.routeShortName
-                        ))
-                    }
-                }
-
-                // Step 6: One-transfer routes (if allowed).
-                guard maxTransfers > 0 else { continue }
-
-                let tripStops = await GTFSScheduleService.shared.stopsForTrip(tripId: trip.tripId)
-                let boardIdx = boardStopTime.stopSequence
-
-                // Look at every intermediate stop as a potential transfer point.
-                for intermediateStopTime in tripStops where intermediateStopTime.stopSequence > boardIdx {
-                    let midStopId = intermediateStopTime.stopId
-                    // Skip if this is already a destination stop (handled above).
-                    if destStopIdSet.contains(midStopId) { continue }
-
-                    guard let midStop = stopById[midStopId] else { continue }
-
-                    // Allow a short transfer walk — find nearby stops within ~400m.
-                    let transferRadiusMeters: Double = 400.0
-                    let nearbyTransferIds = await GTFSScheduleService.shared.findNearbyStopIds(
-                        coordinate: midStop.coordinate,
-                        radiusMeters: transferRadiusMeters,
-                        allStops: transitStops
+                    // Build path coordinates through intermediate stops
+                    let pathCoords = await buildPathCoords(
+                        tripId: trip.tripId,
+                        fromSequence: boardStopTime.stopSequence,
+                        toSequence: alightStopTime.stopSequence,
+                        stopById: stopById
                     )
 
-                    // Time we arrive at the intermediate stop.
-                    let arrivalAtMid = intermediateStopTime.arrivalSeconds
-                    // Allow 2 min minimum transfer time.
-                    let transferBuffer = 120
+                    var legs: [TransitLeg] = []
+                    if walkToOrigin > 0 {
+                        legs.append(.walk(
+                            id: UUID(), durationMinutes: walkToOrigin, distance: walkToOriginDistance,
+                            from: "Current Location", to: originStop.name,
+                            fromCoord: LegCoordinate(source), toCoord: LegCoordinate(originStop.coordinate)
+                        ))
+                    }
+                    legs.append(.ride(
+                        id: UUID(), routeName: trip.routeShortName, routeId: trip.routeId,
+                        boardStop: originStop.name, alightStop: destStop.name,
+                        departureTime: boardStopTime.departureTime, arrivalTime: alightStopTime.arrivalTime,
+                        numStops: numStops, mode: mode,
+                        boardCoord: LegCoordinate(originStop.coordinate),
+                        alightCoord: LegCoordinate(destStop.coordinate),
+                        pathCoords: pathCoords
+                    ))
+                    if walkFromDest > 0 {
+                        legs.append(.walk(
+                            id: UUID(), durationMinutes: walkFromDest, distance: walkFromDestDistance,
+                            from: destStop.name, to: "Destination",
+                            fromCoord: LegCoordinate(destStop.coordinate), toCoord: LegCoordinate(destination)
+                        ))
+                    }
 
-                    for transferStopId in nearbyTransferIds {
-                        // Avoid transferring back to the same route at same stop.
-                        if transferStopId == midStopId
-                            && nearbyTransferIds.count > 1 { /* allow same-stop transfer */ }
+                    let waitSeconds = boardStopTime.departureSeconds - effectiveDepartureSeconds
+                    let rideSeconds = alightStopTime.arrivalSeconds - boardStopTime.departureSeconds
+                    let totalSeconds = Double(walkToOrigin * 60)
+                                     + Double(max(waitSeconds, 0))
+                                     + Double(max(rideSeconds, 0))
+                                     + Double(walkFromDest * 60)
 
-                        let connectingDepartures = await GTFSScheduleService.shared.departuresFromStop(
-                            stopId: transferStopId,
-                            afterSeconds: arrivalAtMid + transferBuffer,
-                            withinSeconds: 1800 // 30 min window for connection
+                    let depDate = departureTime.addingTimeInterval(Double(walkToOrigin * 60))
+                    let arrDate = depDate.addingTimeInterval(
+                        Double(max(waitSeconds, 0) + max(rideSeconds, 0)) + Double(walkFromDest * 60)
+                    )
+
+                    options.append(TransitRouteOption(
+                        id: UUID(), legs: legs, totalDuration: totalSeconds,
+                        totalWalkingMinutes: walkToOrigin + walkFromDest,
+                        departureTime: depDate, arrivalTime: arrDate,
+                        transfers: 0, summary: trip.routeShortName
+                    ))
+                }
+            }
+            if options.count >= maxResults { break }
+        }
+
+        // --- Phase 2: One-transfer routes (only if <2 direct routes found) ---
+        if options.count < 2 && maxTransfers > 0 {
+            outerTransfer: for originStopId in originStopIds {
+                guard let originStop = stopById[originStopId] else { continue }
+
+                let walkToOrigin = walkingMinutes(from: source, to: originStop.coordinate)
+                if walkToOrigin > maxWalkMin { continue }
+                let walkToOriginDistance = walkingDistance(from: source, to: originStop.coordinate)
+                let effectiveDepartureSeconds = secondsSinceMidnight + walkToOrigin * 60
+
+                let departures = await GTFSScheduleService.shared.departuresFromStop(
+                    stopId: originStopId,
+                    afterSeconds: effectiveDepartureSeconds,
+                    withinSeconds: departureWindowSeconds
+                )
+
+                for (boardStopTime, trip) in departures {
+                    if options.count >= maxResults { break outerTransfer }
+
+                    let tripStops = await GTFSScheduleService.shared.stopsForTrip(tripId: trip.tripId)
+
+                    // Only check known interchange stops as transfer points (not every intermediate stop)
+                    let interchangeStops = tripStops.filter { st in
+                        st.stopSequence > boardStopTime.stopSequence &&
+                        !destStopIdSet.contains(st.stopId) &&
+                        isInterchangeStop(stopId: st.stopId, stopById: stopById)
+                    }
+
+                    for midStopTime in interchangeStops {
+                        if options.count >= maxResults { break outerTransfer }
+
+                        guard let midStop = stopById[midStopTime.stopId] else { continue }
+
+                        let arrivalAtMid = midStopTime.arrivalSeconds
+
+                        // Check departures from this interchange (same stop + nearby within 400m)
+                        let nearbyTransferIds = await GTFSScheduleService.shared.findNearbyStopIds(
+                            coordinate: midStop.coordinate, radiusMeters: 400.0, allStops: transitStops
                         )
 
-                        for (connBoardTime, connTrip) in connectingDepartures {
-                            // Skip same trip.
-                            if connTrip.tripId == trip.tripId { continue }
+                        for transferStopId in nearbyTransferIds {
+                            if options.count >= maxResults { break outerTransfer }
 
-                            // Check if connecting trip reaches any destination stop.
-                            for destStopId in destStopIds {
-                                guard let connAlightTime = await GTFSScheduleService.shared.tripReachesStop(
-                                    tripId: connTrip.tripId,
-                                    stopId: destStopId,
-                                    afterSequence: connBoardTime.stopSequence
-                                ) else { continue }
+                            let connectingDepartures = await GTFSScheduleService.shared.departuresFromStop(
+                                stopId: transferStopId,
+                                afterSeconds: arrivalAtMid + transferBufferSeconds,
+                                withinSeconds: transferConnectionSeconds
+                            )
 
-                                guard let destStop = stopById[destStopId],
-                                      let transferStop = stopById[transferStopId] else { continue }
+                            for (connBoardTime, connTrip) in connectingDepartures {
+                                if connTrip.tripId == trip.tripId { continue }
 
-                                let walkFromDest = walkingMinutes(
-                                    from: destStop.coordinate, to: destination
-                                )
-                                if walkFromDest > maxWalkMin { continue }
+                                for destStopId in destStopIds {
+                                    guard let connAlightTime = await GTFSScheduleService.shared.tripReachesStop(
+                                        tripId: connTrip.tripId, stopId: destStopId,
+                                        afterSequence: connBoardTime.stopSequence
+                                    ) else { continue }
 
-                                let walkFromDestDistance = walkingDistance(
-                                    from: destStop.coordinate, to: destination
-                                )
+                                    guard let destStop = stopById[destStopId],
+                                          let transferStop = stopById[transferStopId] else { continue }
 
-                                // Transfer walk time between intermediate stop and connecting stop.
-                                let transferWalkMin: Int
-                                if transferStopId == midStopId {
-                                    transferWalkMin = 0
-                                } else {
-                                    transferWalkMin = walkingMinutes(
-                                        from: midStop.coordinate,
-                                        to: transferStop.coordinate
+                                    let walkFromDest = walkingMinutes(from: destStop.coordinate, to: destination)
+                                    if walkFromDest > maxWalkMin { continue }
+                                    let walkFromDestDistance = walkingDistance(from: destStop.coordinate, to: destination)
+
+                                    let transferWalkMin: Int = transferStopId == midStopTime.stopId ? 0
+                                        : walkingMinutes(from: midStop.coordinate, to: transferStop.coordinate)
+
+                                    let leg1Stops = midStopTime.stopSequence - boardStopTime.stopSequence
+                                    let leg2Stops = connAlightTime.stopSequence - connBoardTime.stopSequence
+                                    let mode1 = legMode(for: originStop, trip: trip)
+                                    let mode2 = legMode(for: transferStop, trip: connTrip)
+
+                                    let pathCoords1 = await buildPathCoords(
+                                        tripId: trip.tripId,
+                                        fromSequence: boardStopTime.stopSequence,
+                                        toSequence: midStopTime.stopSequence,
+                                        stopById: stopById
                                     )
-                                }
+                                    let pathCoords2 = await buildPathCoords(
+                                        tripId: connTrip.tripId,
+                                        fromSequence: connBoardTime.stopSequence,
+                                        toSequence: connAlightTime.stopSequence,
+                                        stopById: stopById
+                                    )
 
-                                let totalWalkMin = walkToOrigin + transferWalkMin + walkFromDest
+                                    var legs: [TransitLeg] = []
+                                    if walkToOrigin > 0 {
+                                        legs.append(.walk(
+                                            id: UUID(), durationMinutes: walkToOrigin, distance: walkToOriginDistance,
+                                            from: "Current Location", to: originStop.name,
+                                            fromCoord: LegCoordinate(source), toCoord: LegCoordinate(originStop.coordinate)
+                                        ))
+                                    }
+                                    legs.append(.ride(
+                                        id: UUID(), routeName: trip.routeShortName, routeId: trip.routeId,
+                                        boardStop: originStop.name, alightStop: midStop.name,
+                                        departureTime: boardStopTime.departureTime, arrivalTime: midStopTime.arrivalTime,
+                                        numStops: leg1Stops, mode: mode1,
+                                        boardCoord: LegCoordinate(originStop.coordinate),
+                                        alightCoord: LegCoordinate(midStop.coordinate),
+                                        pathCoords: pathCoords1
+                                    ))
+                                    legs.append(.transfer(
+                                        id: UUID(), walkMinutes: max(transferWalkMin, 2),
+                                        fromStop: midStop.name, toStop: transferStop.name,
+                                        fromCoord: LegCoordinate(midStop.coordinate),
+                                        toCoord: LegCoordinate(transferStop.coordinate)
+                                    ))
+                                    legs.append(.ride(
+                                        id: UUID(), routeName: connTrip.routeShortName, routeId: connTrip.routeId,
+                                        boardStop: transferStop.name, alightStop: destStop.name,
+                                        departureTime: connBoardTime.departureTime, arrivalTime: connAlightTime.arrivalTime,
+                                        numStops: leg2Stops, mode: mode2,
+                                        boardCoord: LegCoordinate(transferStop.coordinate),
+                                        alightCoord: LegCoordinate(destStop.coordinate),
+                                        pathCoords: pathCoords2
+                                    ))
+                                    if walkFromDest > 0 {
+                                        legs.append(.walk(
+                                            id: UUID(), durationMinutes: walkFromDest, distance: walkFromDestDistance,
+                                            from: destStop.name, to: "Destination",
+                                            fromCoord: LegCoordinate(destStop.coordinate), toCoord: LegCoordinate(destination)
+                                        ))
+                                    }
 
-                                let leg1Stops = intermediateStopTime.stopSequence - boardStopTime.stopSequence
-                                let leg2Stops = connAlightTime.stopSequence - connBoardTime.stopSequence
-                                let mode1 = legMode(for: originStop, trip: trip)
-                                let mode2 = legMode(for: transferStop, trip: connTrip)
+                                    let waitSeconds1 = boardStopTime.departureSeconds - effectiveDepartureSeconds
+                                    let ride1Seconds = midStopTime.arrivalSeconds - boardStopTime.departureSeconds
+                                    let transferWaitSeconds = connBoardTime.departureSeconds - midStopTime.arrivalSeconds
+                                    let ride2Seconds = connAlightTime.arrivalSeconds - connBoardTime.departureSeconds
 
-                                // Build legs.
-                                var legs: [TransitLeg] = []
-                                if walkToOrigin > 0 {
-                                    legs.append(.walk(
-                                        id: UUID(),
-                                        durationMinutes: walkToOrigin,
-                                        distance: walkToOriginDistance,
-                                        from: "Current Location",
-                                        to: originStop.name
+                                    let totalSeconds = Double(walkToOrigin * 60)
+                                                     + Double(max(waitSeconds1, 0))
+                                                     + Double(max(ride1Seconds, 0))
+                                                     + Double(max(transferWaitSeconds, 0))
+                                                     + Double(max(ride2Seconds, 0))
+                                                     + Double(walkFromDest * 60)
+
+                                    let depDate = departureTime.addingTimeInterval(Double(walkToOrigin * 60))
+                                    let arrDate = depDate.addingTimeInterval(totalSeconds - Double(walkToOrigin * 60))
+
+                                    options.append(TransitRouteOption(
+                                        id: UUID(), legs: legs, totalDuration: totalSeconds,
+                                        totalWalkingMinutes: walkToOrigin + transferWalkMin + walkFromDest,
+                                        departureTime: depDate, arrivalTime: arrDate,
+                                        transfers: 1, summary: "\(trip.routeShortName) → \(connTrip.routeShortName)"
                                     ))
                                 }
-                                legs.append(.ride(
-                                    id: UUID(),
-                                    routeName: trip.routeShortName,
-                                    routeId: trip.routeId,
-                                    boardStop: originStop.name,
-                                    alightStop: midStop.name,
-                                    departureTime: boardStopTime.departureTime,
-                                    arrivalTime: intermediateStopTime.arrivalTime,
-                                    numStops: leg1Stops,
-                                    mode: mode1
-                                ))
-                                legs.append(.transfer(
-                                    id: UUID(),
-                                    walkMinutes: max(transferWalkMin, 2),
-                                    fromStop: midStop.name,
-                                    toStop: transferStop.name
-                                ))
-                                legs.append(.ride(
-                                    id: UUID(),
-                                    routeName: connTrip.routeShortName,
-                                    routeId: connTrip.routeId,
-                                    boardStop: transferStop.name,
-                                    alightStop: destStop.name,
-                                    departureTime: connBoardTime.departureTime,
-                                    arrivalTime: connAlightTime.arrivalTime,
-                                    numStops: leg2Stops,
-                                    mode: mode2
-                                ))
-                                if walkFromDest > 0 {
-                                    legs.append(.walk(
-                                        id: UUID(),
-                                        durationMinutes: walkFromDest,
-                                        distance: walkFromDestDistance,
-                                        from: destStop.name,
-                                        to: "Destination"
-                                    ))
-                                }
-
-                                // Timing.
-                                let waitSeconds1 = boardStopTime.departureSeconds - effectiveDepartureSeconds
-                                let ride1Seconds = intermediateStopTime.arrivalSeconds - boardStopTime.departureSeconds
-                                let transferWaitSeconds = connBoardTime.departureSeconds - intermediateStopTime.arrivalSeconds
-                                let ride2Seconds = connAlightTime.arrivalSeconds - connBoardTime.departureSeconds
-
-                                let totalSeconds = Double(walkToOrigin * 60)
-                                                 + Double(max(waitSeconds1, 0))
-                                                 + Double(max(ride1Seconds, 0))
-                                                 + Double(max(transferWaitSeconds, 0))
-                                                 + Double(max(ride2Seconds, 0))
-                                                 + Double(walkFromDest * 60)
-
-                                let depDate = departureTime.addingTimeInterval(
-                                    Double(walkToOrigin * 60)
-                                )
-                                let arrDate = depDate.addingTimeInterval(
-                                    totalSeconds - Double(walkToOrigin * 60)
-                                )
-
-                                let summary = "\(trip.routeShortName) -> \(connTrip.routeShortName)"
-
-                                options.append(TransitRouteOption(
-                                    id: UUID(),
-                                    legs: legs,
-                                    totalDuration: totalSeconds,
-                                    totalWalkingMinutes: totalWalkMin,
-                                    departureTime: depDate,
-                                    arrivalTime: arrDate,
-                                    transfers: 1,
-                                    summary: summary
-                                ))
                             }
                         }
                     }
@@ -427,17 +393,16 @@ actor TransitRoutePlanner {
             }
         }
 
-        // Step 7: Sort and deduplicate.
+        // --- Sort and deduplicate ---
         var sorted = options.sorted { lhs, rhs in
             if preferBus {
-                let lhsHasBus = lhs.legs.contains { if case .ride(_, _, _, _, _, _, _, _, .bus) = $0 { true } else { false } }
-                let rhsHasBus = rhs.legs.contains { if case .ride(_, _, _, _, _, _, _, _, .bus) = $0 { true } else { false } }
+                let lhsHasBus = lhs.legs.contains { if case .ride(_, _, _, _, _, _, _, _, .bus, _, _, _) = $0 { true } else { false } }
+                let rhsHasBus = rhs.legs.contains { if case .ride(_, _, _, _, _, _, _, _, .bus, _, _, _) = $0 { true } else { false } }
                 if lhsHasBus != rhsHasBus { return lhsHasBus }
             }
             return lhs.totalDuration < rhs.totalDuration
         }
 
-        // Deduplicate by summary + transfer count (keep earliest).
         var seen = Set<String>()
         sorted = sorted.filter { option in
             let key = "\(option.summary)|\(option.transfers)"
@@ -446,13 +411,10 @@ actor TransitRoutePlanner {
 
         let results = Array(sorted.prefix(maxResults))
 
-        // Step 8: Log result.
         await APILogger.shared.log(
-            service: "Transit Planner",
-            endpoint: "findRoutes",
-            status: results.isEmpty ? .failure : .success,
-            durationMs: 0,
-            detail: "\(results.count) route(s) found from \(originStopIds.count) origin stop(s), \(destStopIds.count) dest stop(s)"
+            service: "Transit Planner", endpoint: "findRoutes",
+            status: results.isEmpty ? .failure : .success, durationMs: 0,
+            detail: "\(results.count) route(s) from \(originStopIds.count) origin, \(destStopIds.count) dest stops"
         )
 
         return results
@@ -460,41 +422,46 @@ actor TransitRoutePlanner {
 
     // MARK: - Helpers
 
-    /// Estimate walking time in minutes between two coordinates,
-    /// using straight-line distance * road routing factor / walking speed.
-    private func walkingMinutes(
-        from: CLLocationCoordinate2D,
-        to: CLLocationCoordinate2D
-    ) -> Int {
+    /// Build an array of coordinates for all stops on a trip between two sequences (inclusive).
+    /// Used to draw multi-segment polylines on the map that follow the actual route path.
+    private func buildPathCoords(
+        tripId: String,
+        fromSequence: Int,
+        toSequence: Int,
+        stopById: [String: TransitStop]
+    ) async -> [LegCoordinate] {
+        let tripStops = await GTFSScheduleService.shared.stopsForTrip(tripId: tripId)
+        return tripStops
+            .filter { $0.stopSequence >= fromSequence && $0.stopSequence <= toSequence }
+            .sorted { $0.stopSequence < $1.stopSequence }
+            .compactMap { stopById[$0.stopId]?.coordinate }
+            .map { LegCoordinate($0) }
+    }
+
+    /// Check if a stop is a known interchange (by name keyword match).
+    private func isInterchangeStop(stopId: String, stopById: [String: TransitStop]) -> Bool {
+        guard let stop = stopById[stopId] else { return false }
+        let lowercaseName = stop.name.lowercased()
+        return interchangeKeywords.contains { lowercaseName.contains($0) }
+    }
+
+    private func walkingMinutes(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Int {
         let distance = walkingDistance(from: from, to: to)
         return Int(ceil(distance / walkingSpeedMPerMin))
     }
 
-    /// Estimate walking distance in meters (straight-line * road routing factor).
-    private func walkingDistance(
-        from: CLLocationCoordinate2D,
-        to: CLLocationCoordinate2D
-    ) -> Double {
+    private func walkingDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
         let locA = CLLocation(latitude: from.latitude, longitude: from.longitude)
         let locB = CLLocation(latitude: to.latitude, longitude: to.longitude)
         return locA.distance(from: locB) * roadRoutingFactor
     }
 
-    /// Determine the transit leg mode from the stop type and trip route ID.
     private func legMode(for stop: TransitStop, trip: GTFSTrip) -> TransitLegMode {
-        // Use stop type as primary signal.
         switch stop.type {
         case .luas: return .luas
         case .dart: return .dart
         case .rail, .suburban: return .rail
         case .bus: return .bus
         }
-    }
-
-    /// Convert HH:MM:SS string to seconds since midnight (mirrors GTFSStopTime).
-    private func timeStringToSeconds(_ time: String) -> Int {
-        let parts = time.split(separator: ":").compactMap { Int($0) }
-        guard parts.count == 3 else { return 0 }
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
     }
 }

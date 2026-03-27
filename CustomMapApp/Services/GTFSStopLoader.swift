@@ -265,6 +265,17 @@ actor GTFSStopLoader {
         return fields
     }
 
+    /// Known DART station name keywords (Malahide–Greystones coastal line)
+    private static let dartStationNames: Set<String> = [
+        "malahide", "portmarnock", "clongriffin", "howth", "howth junction",
+        "sutton", "bayside", "kilbarrack", "raheny", "harmonstown",
+        "killester", "clontarf road", "connolly", "tara street", "pearse",
+        "grand canal dock", "lansdowne road", "sandymount", "sydney parade",
+        "booterstown", "blackrock", "seapoint", "salthill", "monkstown",
+        "dún laoghaire", "dun laoghaire", "sandycove", "glenageary",
+        "dalkey", "killiney", "shankill", "bray", "greystones"
+    ]
+
     /// Classify a stop as bus/luas/dart/rail based on ID patterns and name
     private func classifyStop(id: String, name: String) -> TransitStop.TransitStopType {
         let lowerId = id.lowercased()
@@ -274,6 +285,10 @@ actor GTFSStopLoader {
             return .luas
         }
         if lowerName.contains("dart") || lowerId.contains("dart") {
+            return .dart
+        }
+        // Check known DART station names (GTFS feeds don't always tag these as DART)
+        if Self.dartStationNames.contains(where: { lowerName.contains($0) }) {
             return .dart
         }
         if lowerId.hasPrefix("ir_") || lowerId.hasPrefix("rail") ||

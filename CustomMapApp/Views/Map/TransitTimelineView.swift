@@ -97,7 +97,7 @@ struct TransitOptionCard: View {
             switch leg {
             case .walk:
                 key = "walk"
-            case .ride(_, _, _, _, _, _, _, _, let mode):
+            case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
                 key = mode.rawValue
             case .transfer:
                 continue
@@ -251,7 +251,7 @@ struct TransitTimelineView: View {
     @ViewBuilder
     private func legContent(leg: TransitLeg) -> some View {
         switch leg {
-        case .walk(_, let durationMinutes, let distance, let from, let to):
+        case .walk(_, let durationMinutes, let distance, let from, let to, _, _):
             walkLegContent(
                 durationMinutes: durationMinutes,
                 distance: distance,
@@ -260,7 +260,7 @@ struct TransitTimelineView: View {
             )
 
         case .ride(_, let routeName, _, let boardStop, let alightStop,
-                   let departureTime, let arrivalTime, let numStops, let mode):
+                   let departureTime, let arrivalTime, let numStops, let mode, _, _, _):
             rideLegContent(
                 routeName: routeName,
                 boardStop: boardStop,
@@ -271,7 +271,7 @@ struct TransitTimelineView: View {
                 mode: mode
             )
 
-        case .transfer(_, let walkMinutes, let fromStop, let toStop):
+        case .transfer(_, let walkMinutes, let fromStop, let toStop, _, _):
             transferLegContent(
                 walkMinutes: walkMinutes,
                 fromStop: fromStop,
@@ -492,7 +492,7 @@ private func legColor(for leg: TransitLeg) -> Color {
     switch leg {
     case .walk:
         return .green
-    case .ride(_, _, _, _, _, _, _, _, let mode):
+    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
         return color(for: mode.rawValue)
     case .transfer:
         return .green
@@ -503,7 +503,7 @@ private func legIcon(for leg: TransitLeg) -> String {
     switch leg {
     case .walk:
         return "figure.walk"
-    case .ride(_, _, _, _, _, _, _, _, let mode):
+    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
         return iconName(for: mode.rawValue)
     case .transfer:
         return "figure.walk"
@@ -514,7 +514,7 @@ private func connectorColor(for leg: TransitLeg) -> Color {
     switch leg {
     case .walk:
         return .green
-    case .ride(_, _, _, _, _, _, _, _, let mode):
+    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
         return color(for: mode.rawValue)
     case .transfer:
         return .gray
@@ -558,20 +558,26 @@ private func color(for modeKey: String) -> Color {
 // MARK: - Preview
 
 #Preview("Timeline") {
+    let dublin = LegCoordinate(latitude: 53.35, longitude: -6.26)
     NavigationStack {
         TransitTimelineView(
             option: TransitRouteOption(
                 id: UUID(),
                 legs: [
-                    .walk(id: UUID(), durationMinutes: 5, distance: 350, from: "", to: "Cabra Stop"),
+                    .walk(id: UUID(), durationMinutes: 5, distance: 350, from: "", to: "Cabra Stop",
+                          fromCoord: dublin, toCoord: dublin),
                     .ride(id: UUID(), routeName: "39A", routeId: "39A", boardStop: "Cabra Stop",
                           alightStop: "City Centre", departureTime: "12:05",
-                          arrivalTime: "12:23", numStops: 12, mode: .bus),
-                    .transfer(id: UUID(), walkMinutes: 2, fromStop: "Abbey St", toStop: "Abbey St Luas"),
+                          arrivalTime: "12:23", numStops: 12, mode: .bus,
+                          boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
+                    .transfer(id: UUID(), walkMinutes: 2, fromStop: "Abbey St", toStop: "Abbey St Luas",
+                              fromCoord: dublin, toCoord: dublin),
                     .ride(id: UUID(), routeName: "Luas Green", routeId: "LUAS_GREEN",
                           boardStop: "Abbey St", alightStop: "Bride's Glen",
-                          departureTime: "12:28", arrivalTime: "12:42", numStops: 8, mode: .luas),
-                    .walk(id: UUID(), durationMinutes: 3, distance: 200, from: "Bride's Glen", to: "Destination"),
+                          departureTime: "12:28", arrivalTime: "12:42", numStops: 8, mode: .luas,
+                          boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
+                    .walk(id: UUID(), durationMinutes: 3, distance: 200, from: "Bride's Glen", to: "Destination",
+                          fromCoord: dublin, toCoord: dublin),
                 ],
                 totalDuration: 2520,
                 totalWalkingMinutes: 10,
@@ -585,17 +591,21 @@ private func color(for modeKey: String) -> Color {
 }
 
 #Preview("Option Card") {
+    let dublin = LegCoordinate(latitude: 53.35, longitude: -6.26)
     TransitOptionCard(
         option: TransitRouteOption(
             id: UUID(),
             legs: [
-                .walk(id: UUID(), durationMinutes: 5, distance: 350, from: "", to: "Cabra Stop"),
+                .walk(id: UUID(), durationMinutes: 5, distance: 350, from: "", to: "Cabra Stop",
+                      fromCoord: dublin, toCoord: dublin),
                 .ride(id: UUID(), routeName: "39A", routeId: "39A", boardStop: "Cabra Stop",
                       alightStop: "City Centre", departureTime: "12:05",
-                      arrivalTime: "12:23", numStops: 12, mode: .bus),
+                      arrivalTime: "12:23", numStops: 12, mode: .bus,
+                      boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
                 .ride(id: UUID(), routeName: "Luas Green", routeId: "LUAS_GREEN",
                       boardStop: "Abbey St", alightStop: "Bride's Glen",
-                      departureTime: "12:28", arrivalTime: "12:42", numStops: 8, mode: .luas),
+                      departureTime: "12:28", arrivalTime: "12:42", numStops: 8, mode: .luas,
+                      boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
             ],
             totalDuration: 2520,
             totalWalkingMinutes: 10,

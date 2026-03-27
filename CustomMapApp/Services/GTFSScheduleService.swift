@@ -3,7 +3,7 @@ import CoreLocation
 
 // MARK: - GTFS Schedule Models
 
-struct GTFSTrip {
+struct GTFSTrip: Codable {
     let tripId: String
     let routeId: String
     let serviceId: String
@@ -11,7 +11,7 @@ struct GTFSTrip {
     var routeShortName: String // from routes.txt lookup
 }
 
-struct GTFSStopTime: Comparable {
+struct GTFSStopTime: Comparable, Codable {
     let tripId: String
     let stopId: String
     let arrivalTime: String    // HH:MM:SS (can be > 24:00 for next-day)
@@ -38,7 +38,7 @@ struct GTFSStopTime: Comparable {
     }
 }
 
-struct GTFSServiceCalendar {
+struct GTFSServiceCalendar: Codable {
     let serviceId: String
     let monday: Bool
     let tuesday: Bool
@@ -73,10 +73,14 @@ actor GTFSScheduleService {
     static let shared = GTFSScheduleService()
 
     private var trips: [String: GTFSTrip] = [:]           // tripId → trip
-    private var stopTimes: [String: [GTFSStopTime]] = [:] // stopId → sorted stop times
-    private var tripStopTimes: [String: [GTFSStopTime]] = [:] // tripId → sorted stop times
+    private var stopTimes: [String: [GTFSStopTime]] = [:] // stopId → sorted by departureSeconds
+    private var tripStopTimes: [String: [GTFSStopTime]] = [:] // tripId → sorted by stopSequence
     private var calendars: [String: GTFSServiceCalendar] = [:] // serviceId → calendar
     private var isLoaded = false
+
+    // Cached active service IDs for today (avoids repeated calendar lookups)
+    private var cachedActiveServiceIds: Set<String> = []
+    private var cachedWeekday: Int = -1
 
     /// Load schedule data from the cached GTFS ZIP
     func loadIfNeeded() async {
@@ -112,6 +116,7 @@ actor GTFSScheduleService {
 
                 guard httpStatus == 200 else { continue }
 
+                await APILogger.shared.trackBytes(data.count)
                 await parseScheduleFromZip(data: data)
                 await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule parsed", status: .success, durationMs: ms, detail: "\(trips.count) trips, \(stopTimes.count) stops")
                 isLoaded = true
@@ -127,28 +132,34 @@ actor GTFSScheduleService {
 
     // MARK: - Query Methods
 
-    /// Find trips departing from a stop within a time window
-    func departuresFromStop(stopId: String, afterSeconds: Int, withinSeconds: Int = 3600) -> [(GTFSStopTime, GTFSTrip)] {
-        guard let times = stopTimes[stopId] else { return [] }
-        let today = Calendar.current.component(.weekday, from: Date())
+    /// Find trips departing from a stop within a time window.
+    /// Uses binary search on pre-sorted stop times for O(log n + results) instead of O(n).
+    func departuresFromStop(stopId: String, afterSeconds: Int, withinSeconds: Int = 1200) -> [(GTFSStopTime, GTFSTrip)] {
+        guard let times = stopTimes[stopId], !times.isEmpty else { return [] }
+        let activeServices = activeServiceIds()
+        let upperBound = afterSeconds + withinSeconds
 
-        return times
-            .filter { st in
-                st.departureSeconds >= afterSeconds &&
-                st.departureSeconds <= afterSeconds + withinSeconds
-            }
-            .compactMap { st in
-                guard let trip = trips[st.tripId] else { return nil }
-                // Check if this trip runs today
-                guard let cal = calendars[trip.serviceId], cal.runsOn(weekday: today) else { return nil }
-                return (st, trip)
-            }
-            .sorted { $0.0.departureSeconds < $1.0.departureSeconds }
+        // Binary search for the first departure >= afterSeconds
+        var lo = 0, hi = times.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if times[mid].departureSeconds < afterSeconds { lo = mid + 1 } else { hi = mid }
+        }
+
+        var results: [(GTFSStopTime, GTFSTrip)] = []
+        for i in lo..<times.count {
+            let st = times[i]
+            guard st.departureSeconds <= upperBound else { break }
+            guard let trip = trips[st.tripId],
+                  activeServices.contains(trip.serviceId) else { continue }
+            results.append((st, trip))
+        }
+        return results
     }
 
     /// Get all stops for a trip (in order)
     func stopsForTrip(tripId: String) -> [GTFSStopTime] {
-        (tripStopTimes[tripId] ?? []).sorted()
+        tripStopTimes[tripId] ?? []
     }
 
     /// Check if a trip passes through a specific stop (after a given sequence)
@@ -170,6 +181,16 @@ actor GTFSScheduleService {
 
     var tripCount: Int { trips.count }
     var stopCount: Int { stopTimes.count }
+
+    /// Compute and cache active service IDs for today's weekday.
+    /// Invalidates automatically when the weekday changes.
+    private func activeServiceIds() -> Set<String> {
+        let today = Calendar.current.component(.weekday, from: Date())
+        if today == cachedWeekday { return cachedActiveServiceIds }
+        cachedActiveServiceIds = Set(calendars.filter { $0.value.runsOn(weekday: today) }.map { $0.key })
+        cachedWeekday = today
+        return cachedActiveServiceIds
+    }
 
     // MARK: - Parsing
 
@@ -249,6 +270,15 @@ actor GTFSScheduleService {
             stopTimes[stopId, default: []].append(st)
             tripStopTimes[tripId, default: []].append(st)
         }
+
+        // Sort stopTimes by departureSeconds for binary search in departuresFromStop
+        for key in stopTimes.keys {
+            stopTimes[key]?.sort { $0.departureSeconds < $1.departureSeconds }
+        }
+        // Sort tripStopTimes by stopSequence for ordered traversal
+        for key in tripStopTimes.keys {
+            tripStopTimes[key]?.sort { $0.stopSequence < $1.stopSequence }
+        }
     }
 
     private func parseCalendar(csv: String) {
@@ -304,21 +334,60 @@ actor GTFSScheduleService {
         return fields
     }
 
-    // MARK: - Parsed Cache
+    // MARK: - Binary Parsed Cache
+
+    private static let cacheMaxAge: TimeInterval = 7 * 24 * 3600 // 7 days
+
+    /// Serializable wrapper for the full parsed schedule
+    private struct ScheduleCache: Codable {
+        let trips: [String: GTFSTrip]
+        let stopTimes: [String: [GTFSStopTime]]
+        let tripStopTimes: [String: [GTFSStopTime]]
+        let calendars: [String: GTFSServiceCalendar]
+    }
 
     private func saveParsedCache(to dir: URL) {
-        // Save trip/stop counts for quick validation
-        let meta = ["trips": trips.count, "stops": stopTimes.count]
-        if let data = try? JSONEncoder().encode(meta) {
-            try? data.write(to: dir.appendingPathComponent("gtfs_schedule_meta.json"))
+        let cache = ScheduleCache(
+            trips: trips,
+            stopTimes: stopTimes,
+            tripStopTimes: tripStopTimes,
+            calendars: calendars
+        )
+        do {
+            let data = try JSONEncoder().encode(cache)
+            try data.write(to: dir.appendingPathComponent("gtfs_schedule_cache.json"))
+            await APILogger.shared.log(
+                service: "TFI", endpoint: "GTFS schedule cache saved",
+                status: .success, durationMs: 0,
+                detail: "\(data.count / 1024)KB — \(trips.count) trips, \(stopTimes.count) stops"
+            )
+        } catch {
+            // Cache save failure is non-fatal — next launch will re-parse
         }
     }
 
     private func loadParsedCache(from dir: URL) -> Bool {
-        // For now, rely on the GTFS ZIP cache + re-parse
-        // Full parsed cache (serializing all stop times) would be large
-        // TODO: Implement binary cache for faster startup
-        return false
+        let cacheFile = dir.appendingPathComponent("gtfs_schedule_cache.json")
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: cacheFile.path),
+              let modDate = attrs[.modificationDate] as? Date,
+              Date().timeIntervalSince(modDate) < Self.cacheMaxAge else {
+            return false
+        }
+
+        do {
+            let start = Date()
+            let data = try Data(contentsOf: cacheFile)
+            let cache = try JSONDecoder().decode(ScheduleCache.self, from: data)
+            self.trips = cache.trips
+            self.stopTimes = cache.stopTimes
+            self.tripStopTimes = cache.tripStopTimes
+            self.calendars = cache.calendars
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            // Log will be called by the caller
+            return !trips.isEmpty
+        } catch {
+            return false
+        }
     }
 }
 

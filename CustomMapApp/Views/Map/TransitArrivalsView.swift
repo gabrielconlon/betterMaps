@@ -35,7 +35,8 @@ struct TransitArrivalsView: View {
                 Text(stationName)
                     .font(.title3.bold())
 
-                if isLoading {
+                // Only show loading spinner when no data has arrived yet
+                if isLoading && luasForecast == nil && railArrivals.isEmpty && busDepartures.isEmpty {
                     HStack { Spacer(); ProgressView("Loading arrivals..."); Spacer() }
                         .padding()
                 }
@@ -43,9 +44,17 @@ struct TransitArrivalsView: View {
                 // Luas arrivals
                 if let forecast = luasForecast {
                     if !forecast.message.isEmpty {
-                        Label(forecast.message, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                        let isNormal = forecast.message.localizedCaseInsensitiveContains("operating normally")
+                            || forecast.message.localizedCaseInsensitiveContains("normal service")
+                        if isNormal {
+                            Label(forecast.message, systemImage: "checkmark.circle")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        } else {
+                            Label(forecast.message, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
 
                     if !forecast.inbound.isEmpty {
@@ -149,7 +158,7 @@ struct TransitArrivalsView: View {
 
                 // Bus timetables placeholder
                 if busFetchAttempted && busDepartures.isEmpty {
-                    Label("Bus timetables coming soon", systemImage: "bus.fill")
+                    Label("No bus departures found nearby", systemImage: "bus.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(10)
@@ -263,19 +272,12 @@ struct TransitArrivalsView: View {
             }
         }
 
-        // NTA bus departures (only if stop type matches or unknown)
+        // Bus departures from GTFS schedule data (pre-loaded at app startup)
         busFetchAttempted = shouldCheckBus
-        // Bus departures from GTFS schedule data
         if shouldCheckBus {
-            let scheduleService = GTFSScheduleService.shared
-            await scheduleService.loadIfNeeded()
-
-            // Find the stop ID that matches this location
-            // Use the stop name or find by proximity
-            let allStops = LuasStopCoordinates.stops // reuse transit stop data
             let tapLoc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
 
-            // Load GTFS stops and find nearest bus stop
+            // Use cached GTFS stops (already loaded at startup, hits cache instantly)
             let loader = GTFSStopLoader()
             let gtfsStops = await loader.loadStops()
             let nearbyBusStop = gtfsStops
@@ -288,14 +290,14 @@ struct TransitArrivalsView: View {
                 .min(by: { $0.distance < $1.distance })
 
             if let busStop = nearbyBusStop {
-                // Get current time as seconds since midnight
                 let calendar = Calendar.current
                 let now = Date()
                 let secondsSinceMidnight = calendar.component(.hour, from: now) * 3600 +
                     calendar.component(.minute, from: now) * 60 +
                     calendar.component(.second, from: now)
 
-                let departures = await scheduleService.departuresFromStop(
+                // Schedule data is pre-loaded at startup — no download needed
+                let departures = await GTFSScheduleService.shared.departuresFromStop(
                     stopId: busStop.stop.id,
                     afterSeconds: secondsSinceMidnight,
                     withinSeconds: 3600

@@ -46,6 +46,30 @@ class APILogger {
     var entries: [APILogEntry] = []
     var quotas: [String: APIQuota] = [:]  // keyed by service name
 
+    /// Total bytes downloaded, persisted across sessions
+    var totalBytesDownloaded: Int {
+        get { UserDefaults.standard.integer(forKey: "totalBytesDownloaded") }
+        set { UserDefaults.standard.set(newValue, forKey: "totalBytesDownloaded") }
+    }
+
+    /// Formatted data usage string
+    var formattedDataUsage: String {
+        let bytes = totalBytesDownloaded
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1_048_576 { return String(format: "%.1f KB", Double(bytes) / 1024.0) }
+        return String(format: "%.1f MB", Double(bytes) / 1_048_576.0)
+    }
+
+    /// Record bytes from a network response
+    func trackBytes(_ count: Int) {
+        totalBytesDownloaded += count
+    }
+
+    /// Reset data usage counter
+    func resetDataUsage() {
+        totalBytesDownloaded = 0
+    }
+
     var recentFailures: Int {
         let cutoff = Date().addingTimeInterval(-3600)
         return entries.filter { $0.timestamp > cutoff && $0.status == .failure }.count

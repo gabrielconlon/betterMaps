@@ -129,51 +129,39 @@ class RoutingViewModel {
         if !(userProfile?.isModeDisabled(.transit) ?? false) {
             Task { @MainActor in
                 isLoadingTransit = true
-                transitStatusMessage = "Loading GTFS schedule..."
+                transitStatusMessage = "Finding routes..."
 
-                // Ensure GTFS schedule is loaded
-                await GTFSScheduleService.shared.loadIfNeeded()
+                // GTFS schedule is pre-loaded at app startup; loadIfNeeded() is a no-op if already loaded
+                // The planner calls it internally as a safety check
                 let tripCount = await GTFSScheduleService.shared.tripCount
-                let stopCount = await GTFSScheduleService.shared.stopCount
-                transitStatusMessage = "Schedule: \(tripCount) trips, \(stopCount) stops. Finding routes..."
 
                 if tripCount == 0 {
-                    transitStatusMessage = "GTFS schedule not available. Download may have failed — check API Logs."
-                    isLoadingTransit = false
-                    return
+                    // Schedule not loaded yet (startup still in progress) — trigger load
+                    await GTFSScheduleService.shared.loadIfNeeded()
+                    let retryCount = await GTFSScheduleService.shared.tripCount
+                    if retryCount == 0 {
+                        transitStatusMessage = "GTFS schedule not available — check API Logs."
+                        isLoadingTransit = false
+                        return
+                    }
                 }
 
-                // Find transit stops near origin and destination only (not all 14K)
+                // Mode-aware stop selection: closest stops per mode, not 5 nearest of any type
                 let allStops = await loadTransitStopsForPlanner()
-                let originLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
-                let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
-
-                // Find 5 nearest stops to origin + 5 nearest to destination
-                // Most people won't walk past a few stops
-                let originStops = allStops
-                    .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: originLoc)) }
-                    .sorted { $0.dist < $1.dist }
-                    .prefix(5)
-                    .map { $0.stop }
-                let destStops = allStops
-                    .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: destLoc)) }
-                    .sorted { $0.dist < $1.dist }
-                    .prefix(5)
-                    .map { $0.stop }
-                let nearbyStopIDs = Set(originStops.map { $0.id }).union(destStops.map { $0.id })
-                let nearbyStops = allStops.filter { nearbyStopIDs.contains($0.id) }
+                let nearbyStops = findNearbyStopsPerMode(
+                    allStops: allStops, origin: source, destination: destination
+                )
                 transitStatusMessage = "Searching \(nearbyStops.count) nearby stops..."
 
                 let maxWalk = userProfile?.maxWalkingMinutes ?? 15
-                let maxTransfers = userProfile?.maxTransfers ?? 2
+                let maxTransfers = userProfile?.maxTransfers ?? 1
                 let preferBus = userProfile?.preferBusOverTram ?? false
 
-                // 10-second timeout to prevent indefinite searching
+                // 5-second timeout (search is now much faster with narrowed scope)
                 let result = await withTaskGroup(of: [TransitRouteOption].self) { group in
                     group.addTask {
                         await self.transitPlanner.findRoutes(
-                            from: source,
-                            to: destination,
+                            from: source, to: destination,
                             transitStops: nearbyStops,
                             maxWalkingMinutes: maxWalk,
                             maxTransfers: maxTransfers,
@@ -181,23 +169,17 @@ class RoutingViewModel {
                         )
                     }
                     group.addTask {
-                        try? await Task.sleep(for: .seconds(10))
+                        try? await Task.sleep(for: .seconds(5))
                         return [] as [TransitRouteOption]
                     }
-                    // Return whichever finishes first
                     let first = await group.next() ?? []
                     group.cancelAll()
                     return first
                 }
+
                 var allTransitOptions = result
-
-                // Also check Luas direct routes (not in GTFS feed)
-                let luasOptions = await findLuasRoutes(from: source, to: destination, maxWalkMin: maxWalk)
-                allTransitOptions.append(contentsOf: luasOptions)
-
-                // Sort by total duration
                 allTransitOptions.sort { $0.totalDuration < $1.totalDuration }
-                transitOptions = Array(allTransitOptions.prefix(5))
+                transitOptions = Array(allTransitOptions.prefix(3))
 
                 if transitOptions.isEmpty {
                     transitStatusMessage = "No transit routes found for this time."
@@ -218,73 +200,49 @@ class RoutingViewModel {
         }
     }
 
-    // MARK: - Luas Direct Route Finder
+    // MARK: - Mode-Aware Stop Selection
 
-    /// Check if origin and destination are both near Luas stops on the same line
-    private func findLuasRoutes(from source: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D, maxWalkMin: Int) async -> [TransitRouteOption] {
-        let walkRadius = Double(maxWalkMin) * 80.0
-        let originLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
+    /// Find the closest stops per mode near both origin and destination.
+    /// Instead of sorting all 14K stops, we partition by type and pick the closest few per mode.
+    /// Bus: 2 closest within 600m. Luas: 1 closest within 1000m. DART/Rail: 1 closest within 1500m.
+    private func findNearbyStopsPerMode(
+        allStops: [TransitStop],
+        origin: CLLocationCoordinate2D,
+        destination: CLLocationCoordinate2D
+    ) -> [TransitStop] {
+        let originLoc = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
         let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
 
-        // Find nearest Luas stops
-        let nearOrigin = LuasStopCoordinates.stops
-            .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: originLoc)) }
-            .filter { $0.dist < walkRadius }
-            .sorted { $0.dist < $1.dist }
-            .prefix(2)
+        struct ModeConfig {
+            let types: [TransitStop.TransitStopType]
+            let radiusMeters: Double
+            let maxCount: Int
+        }
 
-        let nearDest = LuasStopCoordinates.stops
-            .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: destLoc)) }
-            .filter { $0.dist < walkRadius }
-            .sorted { $0.dist < $1.dist }
-            .prefix(2)
+        let configs: [ModeConfig] = [
+            ModeConfig(types: [.bus], radiusMeters: 600, maxCount: 2),
+            ModeConfig(types: [.luas], radiusMeters: 1000, maxCount: 1),
+            ModeConfig(types: [.dart], radiusMeters: 1500, maxCount: 1),
+            ModeConfig(types: [.rail, .suburban], radiusMeters: 1500, maxCount: 1),
+        ]
 
-        guard !nearOrigin.isEmpty, !nearDest.isEmpty else { return [] }
+        var selectedIds = Set<String>()
 
-        var options: [TransitRouteOption] = []
-        let luasService = LuasService()
-
-        for originMatch in nearOrigin {
-            for destMatch in nearDest {
-                let originStop = originMatch.stop
-                let destStop = destMatch.stop
-                guard originStop.id != destStop.id else { continue }
-
-                // Get Luas forecast for the origin stop
-                let stopCode = originStop.id.replacingOccurrences(of: "LUAS_", with: "")
-                guard let forecast = await luasService.fetchForecast(stopCode: stopCode) else { continue }
-
-                // Find the next tram heading in the right direction
-                let allForecasts = forecast.inbound + forecast.outbound
-                guard let nextTram = allForecasts.first(where: { $0.dueMinutes != nil }) else { continue }
-
-                let walkToMin = Int(originMatch.dist / 80.0)
-                let walkFromMin = Int(destMatch.dist / 80.0)
-                let waitMin = nextTram.dueMinutes ?? 5
-                let rideMin = 2 * abs(LuasStopCoordinates.stops.firstIndex(where: { $0.id == originStop.id }) ?? 0 -
-                                       (LuasStopCoordinates.stops.firstIndex(where: { $0.id == destStop.id }) ?? 0))
-                let totalMin = walkToMin + waitMin + rideMin + walkFromMin
-
-                let now = Date()
-                let option = TransitRouteOption(
-                    id: UUID(),
-                    legs: [
-                        .walk(id: UUID(), durationMinutes: walkToMin, distance: originMatch.dist, from: "Start", to: originStop.name),
-                        .ride(id: UUID(), routeName: "Luas", routeId: "luas", boardStop: originStop.name, alightStop: destStop.name,
-                              departureTime: nextTram.dueIn, arrivalTime: "", numStops: abs(rideMin / 2), mode: .luas),
-                        .walk(id: UUID(), durationMinutes: walkFromMin, distance: destMatch.dist, from: destStop.name, to: "Destination")
-                    ],
-                    totalDuration: TimeInterval(totalMin * 60),
-                    totalWalkingMinutes: walkToMin + walkFromMin,
-                    departureTime: now.addingTimeInterval(TimeInterval(walkToMin * 60)),
-                    arrivalTime: now.addingTimeInterval(TimeInterval(totalMin * 60)),
-                    transfers: 0,
-                    summary: "Luas via \(originStop.name)"
-                )
-                options.append(option)
+        for loc in [originLoc, destLoc] {
+            for config in configs {
+                let modeStops = allStops
+                    .filter { config.types.contains($0.type) }
+                    .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: loc)) }
+                    .filter { $0.dist <= config.radiusMeters }
+                    .sorted { $0.dist < $1.dist }
+                    .prefix(config.maxCount)
+                for match in modeStops {
+                    selectedIds.insert(match.stop.id)
+                }
             }
         }
-        return options
+
+        return allStops.filter { selectedIds.contains($0.id) }
     }
 
     // MARK: - Individual Route Fetchers (stream in as they complete)
@@ -450,17 +408,21 @@ class RoutingViewModel {
         failedModes = [:]
     }
 
-    /// Load transit stops for the planner from cached GTFS + hardcoded data
+    /// Load transit stops for the planner from cached GTFS + hardcoded data.
+    /// Irish Rail and GTFS fetches run in parallel (both hit caches after startup preload).
     private func loadTransitStopsForPlanner() async -> [TransitStop] {
         var stops = LuasStopCoordinates.stops
-        let railService = IrishRailService()
-        let stations = await railService.fetchStations()
+
+        // Fetch Irish Rail stations and GTFS stops in parallel
+        async let railFetch = IrishRailService().fetchStations()
+        async let gtfsFetch = GTFSStopLoader().loadStops()
+
+        let (stations, gtfsStops) = await (railFetch, gtfsFetch)
+
         for station in stations {
             let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
             stops.append(TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type))
         }
-        let loader = GTFSStopLoader()
-        let gtfsStops = await loader.loadStops()
         let existingIDs = Set(stops.map { $0.id })
         for stop in gtfsStops where !existingIDs.contains(stop.id) {
             stops.append(stop)

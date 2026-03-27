@@ -157,6 +157,20 @@ struct HamburgerMenuView: View {
                         }
                     }
 
+                    // Data usage
+                    HStack {
+                        Label("Data Used", systemImage: "arrow.down.circle.fill")
+                        Spacer()
+                        Text(APILogger.shared.formattedDataUsage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Reset") {
+                            APILogger.shared.resetDataUsage()
+                        }
+                        .font(.caption2)
+                        .buttonStyle(.bordered)
+                    }
+
                     // Yelp API key
                     NavigationLink(destination: YelpKeySettingsView()) {
                         VStack(alignment: .leading, spacing: 4) {
