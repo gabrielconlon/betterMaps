@@ -442,24 +442,24 @@ actor TransitRoutePlanner {
     }
 
     /// Check if a stop is a known interchange (by name keyword match).
-    private func isInterchangeStop(stopId: String, stopById: [String: TransitStop]) -> Bool {
+    func isInterchangeStop(stopId: String, stopById: [String: TransitStop]) -> Bool {
         guard let stop = stopById[stopId] else { return false }
         let lowercaseName = stop.name.lowercased()
         return interchangeKeywords.contains { lowercaseName.contains($0) }
     }
 
-    private func walkingMinutes(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Int {
+    func walkingMinutes(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Int {
         let distance = walkingDistance(from: from, to: to)
         return Int(ceil(distance / walkingSpeedMPerMin))
     }
 
-    private func walkingDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
+    func walkingDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
         let locA = CLLocation(latitude: from.latitude, longitude: from.longitude)
         let locB = CLLocation(latitude: to.latitude, longitude: to.longitude)
         return locA.distance(from: locB) * roadRoutingFactor
     }
 
-    private func legMode(for stop: TransitStop, trip: GTFSTrip) -> TransitLegMode {
+    func legMode(for stop: TransitStop, trip: GTFSTrip) -> TransitLegMode {
         // Use GTFS route_type + route_short_name for accurate mode detection.
         // All Irish Rail services share route_type=2, so we check the route name
         // to distinguish DART from Commuter/InterCity.
