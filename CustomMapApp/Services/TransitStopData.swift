@@ -121,9 +121,16 @@ struct DARTStationCoordinates {
         CLLocationCoordinate2D(latitude: 53.3651, longitude: -6.1574),  // Harmonstown
         CLLocationCoordinate2D(latitude: 53.3588, longitude: -6.1705),  // Killester
         CLLocationCoordinate2D(latitude: 53.3586, longitude: -6.1884),  // Clontarf Road
+        // Waypoints: track curves south along coast through docks area
+        CLLocationCoordinate2D(latitude: 53.3555, longitude: -6.1960),  // curve past Fairview
+        CLLocationCoordinate2D(latitude: 53.3520, longitude: -6.2100),  // East Wall
+        CLLocationCoordinate2D(latitude: 53.3505, longitude: -6.2250),  // Docklands area
+        CLLocationCoordinate2D(latitude: 53.3510, longitude: -6.2380),  // approaching Connolly
         CLLocationCoordinate2D(latitude: 53.3531, longitude: -6.2497),  // Connolly
         CLLocationCoordinate2D(latitude: 53.3472, longitude: -6.2541),  // Tara Street
         CLLocationCoordinate2D(latitude: 53.3436, longitude: -6.2493),  // Pearse
+        // Waypoint: track curves east toward Grand Canal Dock
+        CLLocationCoordinate2D(latitude: 53.3420, longitude: -6.2400),  // between Pearse & GCD
         CLLocationCoordinate2D(latitude: 53.3396, longitude: -6.2295),  // Grand Canal Dock
         CLLocationCoordinate2D(latitude: 53.3328, longitude: -6.2274),  // Lansdowne Road
         CLLocationCoordinate2D(latitude: 53.3279, longitude: -6.2186),  // Sandymount
