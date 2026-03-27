@@ -381,11 +381,31 @@ actor GTFSScheduleService {
         return ids
     }
 
-    /// Authoritative stop classification using GTFS route_type data.
-    /// Returns stop_id → route_type for stops served by tram (0) or rail (2).
+    /// Authoritative stop classification using GTFS route_type and route_short_name.
+    /// Returns stop_id → TransitStopType string ("luas", "dart", or "rail").
+    /// DART is identified by route_short_name = 'DART' (the only reliable marker
+    /// in the TFI GTFS feed — all Irish Rail services share route_type=2).
     /// Stops NOT in the result should be classified as bus.
-    /// This replaces the unreliable name-based guessing.
-    func tramAndRailStopIds() -> [String: Int] {
+    func classifyTramAndRailStops() -> [String: String] {
+        // Step 1: Find all stops served by DART specifically
+        let dartSQL = """
+            SELECT DISTINCT st.stop_id
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE r.route_type = 2 AND UPPER(r.route_short_name) = 'DART'
+        """
+        var dartStopIds = Set<String>()
+        if let stmt = db.prepare(dartSQL) {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let stopId = db.columnText(stmt, index: 0) {
+                    dartStopIds.insert(stopId)
+                }
+            }
+            db.finalize(stmt)
+        }
+
+        // Step 2: Find all stops served by tram (0) or rail (2)
         let sql = """
             SELECT st.stop_id, MIN(r.route_type)
             FROM stop_times st
@@ -397,18 +417,23 @@ actor GTFSScheduleService {
         guard let stmt = db.prepare(sql) else { return [:] }
         defer { db.finalize(stmt) }
 
-        var result: [String: Int] = [:]
+        var result: [String: String] = [:]
         while sqlite3_step(stmt) == SQLITE_ROW {
             if let stopId = db.columnText(stmt, index: 0) {
-                result[stopId] = db.columnInt(stmt, index: 1)
+                let routeType = db.columnInt(stmt, index: 1)
+                if routeType == 0 {
+                    result[stopId] = "luas"
+                } else if dartStopIds.contains(stopId) {
+                    result[stopId] = "dart"
+                } else {
+                    result[stopId] = "rail"
+                }
             }
         }
         return result
     }
 
     /// Find one representative shape per route+direction for a given GTFS route_type.
-    /// The old LIMIT 50 on DISTINCT shape_id grabbed arbitrary shapes that could all
-    /// come from the same 2-3 routes, leaving entire lines (e.g. southern DART) undrawn.
     /// GROUP BY route_id, direction_id ensures every route/direction gets one shape.
     /// route_type: 0=tram, 1=subway, 2=rail, 3=bus
     func shapeCoordinatesForRouteType(_ routeType: Int) -> [[CLLocationCoordinate2D]] {
@@ -422,6 +447,52 @@ actor GTFSScheduleService {
         guard let stmt = db.prepare(sql) else { return [] }
         defer { db.finalize(stmt) }
         sqlite3_bind_int(stmt, 1, Int32(routeType))
+
+        var shapeIds: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let id = db.columnText(stmt, index: 0) { shapeIds.append(id) }
+        }
+
+        return shapeIds.compactMap { id in
+            let coords = shapeCoordinates(for: id)
+            return coords.count >= 2 ? coords : nil
+        }
+    }
+
+    /// Shape coordinates for DART routes only (route_short_name = 'DART').
+    func shapeCoordinatesForDART() -> [[CLLocationCoordinate2D]] {
+        let sql = """
+            SELECT MIN(t.shape_id)
+            FROM trips t
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE r.route_type = 2 AND UPPER(r.route_short_name) = 'DART' AND t.shape_id != ''
+            GROUP BY r.route_id, t.direction_id
+        """
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
+
+        var shapeIds: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let id = db.columnText(stmt, index: 0) { shapeIds.append(id) }
+        }
+
+        return shapeIds.compactMap { id in
+            let coords = shapeCoordinates(for: id)
+            return coords.count >= 2 ? coords : nil
+        }
+    }
+
+    /// Shape coordinates for non-DART rail (Commuter, InterCity, etc.)
+    func shapeCoordinatesForNonDartRail() -> [[CLLocationCoordinate2D]] {
+        let sql = """
+            SELECT MIN(t.shape_id)
+            FROM trips t
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE r.route_type = 2 AND UPPER(r.route_short_name) != 'DART' AND t.shape_id != ''
+            GROUP BY r.route_id, t.direction_id
+        """
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
 
         var shapeIds: [String] = []
         while sqlite3_step(stmt) == SQLITE_ROW {

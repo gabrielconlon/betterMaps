@@ -30,7 +30,8 @@ struct MapTabView: View {
     @State private var selectedBusRouteName: String = ""
     @State private var selectedBusRouteStopIds: Set<String> = [] // stops on selected bus route
     @State private var showFavoritesPanel = false
-    @State private var dartShapeLines: [[CLLocationCoordinate2D]] = [] // GTFS shapes for DART
+    @State private var dartShapeLines: [[CLLocationCoordinate2D]] = [] // GTFS shapes for DART only
+    @State private var railShapeLines: [[CLLocationCoordinate2D]] = [] // GTFS shapes for non-DART rail
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
     @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
@@ -302,10 +303,24 @@ struct MapTabView: View {
         }
         .task {
             // Load transit stops from three sources.
-            // Priority: Luas hardcoded > Irish Rail API > GTFS static feed
-            var allStops: [TransitStop] = LuasStopCoordinates.stops
+            // Priority: GTFS static feed (has correct stop IDs for schedule lookups)
+            //   then Luas hardcoded, then Irish Rail API (only for stops GTFS misses).
+            let loader = GTFSStopLoader()
+            let gtfsStops = await loader.loadStops()
 
-            // Irish Rail stations from API
+            // Start with GTFS stops — these have IDs that match stop_times for timetables
+            var allStops: [TransitStop] = gtfsStops
+
+            // Add hardcoded Luas stops only if not near an existing GTFS stop
+            for luasStop in LuasStopCoordinates.stops {
+                if !isNearExistingStop(luasStop, in: allStops, thresholdMeters: 250) {
+                    allStops.append(luasStop)
+                }
+            }
+
+            // Irish Rail API stations — add only if GTFS doesn't already cover them.
+            // Irish Rail API IDs (e.g. "BRAY") don't match GTFS stop_times, so we
+            // only add stations that GTFS missed to avoid orphan stops with no timetable.
             let railService = IrishRailService()
             let stations = await railService.fetchStations()
             for station in stations {
@@ -316,40 +331,29 @@ struct MapTabView: View {
                 }
             }
 
-            // GTFS stops — only proximity-check against fixed infrastructure (~100 stops),
-            // NOT against all 14K GTFS stops. The old approach was O(n²) and froze the app
-            // for 10-30 seconds doing ~100M CLLocation.distance() calls.
-            let fixedStops = allStops  // Snapshot: ~100 Luas + Irish Rail stops
-            let loader = GTFSStopLoader()
-            let gtfsStops = await loader.loadStops()
-            let existingIDs = Set(allStops.map { $0.id })
-            for stop in gtfsStops where !existingIDs.contains(stop.id) {
-                if !isNearExistingStop(stop, in: fixedStops, thresholdMeters: 150) {
-                    allStops.append(stop)
-                }
-            }
-
             transitStops = allStops
 
             // Open schedule database (already built by GTFSSetupView on first install,
             // or cached SQLite on subsequent launches — this is fast)
             await GTFSScheduleService.shared.loadIfNeeded()
 
-            // Reclassify stops using authoritative GTFS route_type data.
-            let tramRail = await GTFSScheduleService.shared.tramAndRailStopIds()
-            if !tramRail.isEmpty {
+            // Reclassify stops using GTFS route_type + route_short_name.
+            // Distinguishes DART (route_short_name='DART') from other rail (Commuter/InterCity).
+            let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
+            if !classification.isEmpty {
                 transitStops = transitStops.map { stop in
-                    guard let routeType = tramRail[stop.id] else { return stop }
-                    let newType: TransitStop.TransitStopType = routeType == 0 ? .luas : .dart
-                    guard stop.type != newType else { return stop }
+                    guard let typeStr = classification[stop.id],
+                          let newType = TransitStop.TransitStopType(rawValue: typeStr),
+                          stop.type != newType else { return stop }
                     return TransitStop(id: stop.id, name: stop.name,
                                        latitude: stop.latitude, longitude: stop.longitude,
                                        type: newType)
                 }
             }
 
-            // Load rail route shapes from GTFS SQLite (route_type=2 = rail, includes DART)
-            dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForRouteType(2)
+            // Load shapes separately for DART vs other rail
+            dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForDART()
+            railShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
         }
         .task(id: showLiveTransit) {
             // Debounce: wait 1 second after last toggle change before making API calls
@@ -520,15 +524,17 @@ struct MapTabView: View {
                         .stroke(.green.opacity(0.6), lineWidth: 3)
                 }
 
-                // Rail route lines (from GTFS shapes — accurate track geometry)
-                // Color matches active toggle: orange for DART, purple for Rail
+                // DART lines (orange) — only the Dublin coastal line
                 if showTransitStops.contains(.dart) {
                     ForEach(Array(dartShapeLines.enumerated()), id: \.offset) { _, coords in
                         MapPolyline(coordinates: coords)
                             .stroke(.orange.opacity(0.6), lineWidth: 3)
                     }
-                } else if showTransitStops.contains(.rail) {
-                    ForEach(Array(dartShapeLines.enumerated()), id: \.offset) { _, coords in
+                }
+
+                // Irish Rail lines (purple) — Commuter, InterCity (non-DART)
+                if showTransitStops.contains(.rail) {
+                    ForEach(Array(railShapeLines.enumerated()), id: \.offset) { _, coords in
                         MapPolyline(coordinates: coords)
                             .stroke(Color(red: 0.69, green: 0.32, blue: 0.87).opacity(0.6), lineWidth: 3)
                     }

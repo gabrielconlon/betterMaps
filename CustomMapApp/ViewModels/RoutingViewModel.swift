@@ -429,14 +429,14 @@ class RoutingViewModel {
     private func loadTransitStopsForPlanner() async -> [TransitStop] {
         var stops = await GTFSStopLoader().loadStops()
 
-        // Reclassify stops using actual GTFS route types from the database.
-        // Name-based classification misidentifies bus stops as DART/Luas.
-        let tramRail = await GTFSScheduleService.shared.tramAndRailStopIds()
-        if !tramRail.isEmpty {
+        // Reclassify stops using GTFS route_type + route_short_name.
+        // Distinguishes DART (route_short_name='DART') from other rail (Commuter/InterCity).
+        let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
+        if !classification.isEmpty {
             stops = stops.map { stop in
-                guard let routeType = tramRail[stop.id] else { return stop }
-                let newType: TransitStop.TransitStopType = routeType == 0 ? .luas : .dart
-                guard stop.type != newType else { return stop }
+                guard let typeStr = classification[stop.id],
+                      let newType = TransitStop.TransitStopType(rawValue: typeStr),
+                      stop.type != newType else { return stop }
                 return TransitStop(id: stop.id, name: stop.name,
                                    latitude: stop.latitude, longitude: stop.longitude,
                                    type: newType)

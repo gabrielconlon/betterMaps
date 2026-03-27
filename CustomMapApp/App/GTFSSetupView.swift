@@ -228,18 +228,19 @@ struct GTFSSetupView: View {
                detail: "Identifying Luas, DART, and bus stops from route data",
                progress: 0.85)
 
-        let tramRail = await GTFSScheduleService.shared.tramAndRailStopIds()
+        let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
 
         update(status: "Loading route shapes...",
-               detail: "\(tramRail.count) rail/tram stops identified",
+               detail: "\(classification.count) rail/tram stops identified",
                progress: 0.92)
 
-        let shapes = await GTFSScheduleService.shared.shapeCoordinatesForRouteType(2)
+        let dartShapes = await GTFSScheduleService.shared.shapeCoordinatesForDART()
+        let railShapes = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
 
         // Done
         timerTask?.cancel()
         update(status: "All set!",
-               detail: "\(stops.count.formatted()) stops \u{00B7} \(tripCount.formatted()) trips \u{00B7} \(shapes.count) DART shapes",
+               detail: "\(stops.count.formatted()) stops \u{00B7} \(tripCount.formatted()) trips \u{00B7} \(dartShapes.count) DART + \(railShapes.count) Rail shapes",
                progress: 1.0)
         isDone = true
         isWorking = false
@@ -247,7 +248,7 @@ struct GTFSSetupView: View {
         await APILogger.shared.log(
             service: "Setup", endpoint: "First-time install",
             status: .success, durationMs: elapsedSeconds * 1000,
-            detail: "\(stops.count) stops, \(tripCount) trips, \(shapes.count) shapes, \(tramRail.count) rail/tram classified in \(elapsedSeconds)s"
+            detail: "\(stops.count) stops, \(tripCount) trips, \(dartShapes.count + railShapes.count) shapes, \(classification.count) rail/tram classified in \(elapsedSeconds)s"
         )
     }
 

@@ -457,12 +457,12 @@ actor TransitRoutePlanner {
     }
 
     private func legMode(for stop: TransitStop, trip: GTFSTrip) -> TransitLegMode {
-        // Use GTFS route_type for accurate mode detection — stop classification
-        // can be wrong (e.g. GTFS Luas stop classified as bus), but the route_type
-        // from the routes table is authoritative.
+        // Use GTFS route_type + route_short_name for accurate mode detection.
+        // All Irish Rail services share route_type=2, so we check the route name
+        // to distinguish DART from Commuter/InterCity.
         switch trip.routeType {
         case 0: return .luas   // Tram/Light Rail = Luas
-        case 2: return stop.type == .dart ? .dart : .rail  // Rail (DART or mainline)
+        case 2: return trip.routeShortName.uppercased() == "DART" ? .dart : .rail
         case 3: return .bus
         default: return TransitLegMode(stopType: stop.type)
         }
