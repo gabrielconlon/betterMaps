@@ -331,30 +331,46 @@ actor GTFSScheduleService {
         return ids
     }
 
-    /// Find all unique shapes for routes whose name matches a keyword (e.g., "DART", "Luas")
-    /// Returns distinct shape coordinates arrays for drawing route lines.
-    func shapeCoordinatesForRoutes(nameContaining keyword: String) -> [[CLLocationCoordinate2D]] {
-        // Find distinct shape_ids for matching routes
+    /// Find all unique shapes for routes of a given GTFS route_type.
+    /// route_type: 0=tram, 1=subway, 2=rail, 3=bus
+    func shapeCoordinatesForRouteType(_ routeType: Int) -> [[CLLocationCoordinate2D]] {
         let sql = """
             SELECT DISTINCT t.shape_id FROM trips t
-            WHERE t.route_short_name LIKE ? AND t.shape_id != ''
-            LIMIT 20
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE r.route_type = ? AND t.shape_id != ''
+            LIMIT 50
         """
         guard let stmt = db.prepare(sql) else { return [] }
         defer { db.finalize(stmt) }
-        let pattern = "%\(keyword)%"
-        sqlite3_bind_text(stmt, 1, (pattern as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(stmt, 1, Int32(routeType))
 
         var shapeIds: [String] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             if let id = db.columnText(stmt, index: 0) { shapeIds.append(id) }
         }
 
-        // Load coordinates for each shape
         return shapeIds.compactMap { id in
             let coords = shapeCoordinates(for: id)
             return coords.count >= 2 ? coords : nil
         }
+    }
+
+    /// Log what route types and names exist in the database (for debugging)
+    func logRouteTypes() async {
+        let sql = "SELECT route_type, route_short_name, route_long_name, COUNT(*) FROM routes GROUP BY route_type ORDER BY route_type"
+        guard let stmt = db.prepare(sql) else { return }
+        defer { db.finalize(stmt) }
+
+        var detail = ""
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let type = db.columnInt(stmt, index: 0)
+            let name = db.columnText(stmt, index: 1) ?? "?"
+            let longName = db.columnText(stmt, index: 2) ?? ""
+            let count = db.columnInt(stmt, index: 3)
+            let typeName = ["Tram", "Subway", "Rail", "Bus"][min(type, 3)]
+            detail += "\(typeName)(\(type)): \(count) routes (e.g. \(name) \(longName)). "
+        }
+        await APILogger.shared.log(service: "GTFS", endpoint: "route_types", status: .success, durationMs: 0, detail: detail)
     }
 
     /// Database age description for staleness display
@@ -376,6 +392,9 @@ actor GTFSScheduleService {
         }
         if let shapesCSV = await loader.extractFile(from: data, named: "shapes.txt") {
             parseShapes(csv: shapesCSV)
+        }
+        if let routesCSV = await loader.extractFile(from: data, named: "routes.txt") {
+            parseRoutes(csv: routesCSV)
         }
     }
 
@@ -552,6 +571,41 @@ actor GTFSScheduleService {
                 db.commitTransaction()
                 db.beginTransaction()
             }
+        }
+
+        db.commitTransaction()
+        db.finalize(stmt)
+    }
+
+    private func parseRoutes(csv: String) {
+        let lines = csv.components(separatedBy: .newlines)
+        guard let header = lines.first else { return }
+        let headers = parseCSVRow(header)
+
+        guard let idIdx = headers.firstIndex(of: "route_id") else { return }
+        let nameIdx = headers.firstIndex(of: "route_short_name")
+        let longNameIdx = headers.firstIndex(of: "route_long_name")
+        let typeIdx = headers.firstIndex(of: "route_type")
+
+        guard let stmt = db.prepareInsertRoute() else { return }
+        db.beginTransaction()
+
+        for line in lines.dropFirst() {
+            let fields = parseCSVRow(line)
+            guard fields.count > idIdx else { continue }
+            let routeId = fields[idIdx]
+            guard !routeId.isEmpty else { continue }
+
+            let shortName = nameIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
+            let longName = longNameIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
+            let routeType = typeIdx.flatMap { fields.count > $0 ? Int(fields[$0]) : nil } ?? 3
+
+            sqlite3_bind_text(stmt, 1, (routeId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (shortName as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 3, (longName as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(stmt, 4, Int32(routeType))
+            sqlite3_step(stmt)
+            sqlite3_reset(stmt)
         }
 
         db.commitTransaction()

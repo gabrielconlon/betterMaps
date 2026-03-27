@@ -291,35 +291,37 @@ struct MapTabView: View {
             savedLiveTransit = serializeTransitTypes(newValue)
         }
         .task {
-            // Load transit stops — Luas from hardcoded coordinates (fixed infrastructure)
-            transitStops = LuasStopCoordinates.stops
+            // Load transit stops from three sources, deduplicating aggressively.
+            // Priority: Luas hardcoded > Irish Rail API > GTFS static feed
+            var allStops: [TransitStop] = LuasStopCoordinates.stops
 
-            // Irish Rail stations from API (has coordinates)
+            // Irish Rail stations from API
             let railService = IrishRailService()
             let stations = await railService.fetchStations()
             for station in stations {
                 let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
                 let newStop = TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type)
-                // Skip if a stop already exists within 100m (prevents duplicates across sources)
-                if !isNearExistingStop(newStop, in: transitStops, thresholdMeters: 200) {
-                    transitStops.append(newStop)
+                if !isNearExistingStop(newStop, in: allStops, thresholdMeters: 250) {
+                    allStops.append(newStop)
                 }
             }
 
-            // GTFS bus stops (open data, no API key needed)
+            // GTFS stops — dedup ALL types by proximity (not just non-bus)
             let loader = GTFSStopLoader()
             let gtfsStops = await loader.loadStops()
-            let existingIDs = Set(transitStops.map { $0.id })
+            let existingIDs = Set(allStops.map { $0.id })
             for stop in gtfsStops where !existingIDs.contains(stop.id) {
-                // For non-bus stops, also check proximity to avoid duplicates
-                if stop.type == .bus || !isNearExistingStop(stop, in: transitStops, thresholdMeters: 200) {
-                    transitStops.append(stop)
+                if !isNearExistingStop(stop, in: allStops, thresholdMeters: 150) {
+                    allStops.append(stop)
                 }
             }
 
-            // Load DART route shapes from GTFS SQLite (accurate track geometry)
+            transitStops = allStops
+
+            // Load rail route shapes from GTFS SQLite (route_type=2 = rail, includes DART)
             await GTFSScheduleService.shared.loadIfNeeded()
-            dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForRoutes(nameContaining: "DART")
+            await GTFSScheduleService.shared.logRouteTypes()
+            dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForRouteType(2)
         }
         .task(id: showLiveTransit) {
             // Debounce: wait 1 second after last toggle change before making API calls

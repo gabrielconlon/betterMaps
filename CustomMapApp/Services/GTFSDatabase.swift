@@ -112,6 +112,19 @@ final class GTFSDatabase {
                 sequence INTEGER NOT NULL
             )
         """)
+
+        execute("""
+            CREATE TABLE IF NOT EXISTS routes (
+                route_id TEXT PRIMARY KEY,
+                route_short_name TEXT,
+                route_long_name TEXT,
+                route_type INTEGER DEFAULT 3
+            )
+        """)
+    }
+
+    func prepareInsertRoute() -> OpaquePointer? {
+        prepare("INSERT OR REPLACE INTO routes VALUES (?, ?, ?, ?)")
     }
 
     func createIndexes() {
