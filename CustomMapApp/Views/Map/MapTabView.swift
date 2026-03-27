@@ -28,6 +28,7 @@ struct MapTabView: View {
     @State private var liveTrains: [IrishRailTrainPosition] = []
     @State private var selectedBusRouteCoords: [CLLocationCoordinate2D] = []
     @State private var selectedBusRouteName: String = ""
+    @State private var showFavoritesPanel = false
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
     @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
@@ -94,6 +95,25 @@ struct MapTabView: View {
             // NOTE: Weather tile overlays require MKMapView (not SwiftUI Map).
             // Visual radar is blocked until the map layer is refactored.
             // Weather-based routing rules still work via WeatherKit.
+
+            // Favorites panel overlay (top-left)
+            if showFavoritesPanel {
+                VStack {
+                    HStack {
+                        FavoritesPanel(
+                            showTransitStops: $showTransitStops,
+                            showLiveTransit: $showLiveTransit,
+                            isPresented: $showFavoritesPanel
+                        )
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                        Spacer()
+                    }
+                    .padding(.top, 60)
+                    .padding(.leading, 12)
+                    Spacer()
+                }
+                .zIndex(10)
+            }
 
             // UI overlays
             VStack(spacing: 0) {
@@ -287,9 +307,7 @@ struct MapTabView: View {
             HamburgerMenuView(
                 filterMode: $filterVM.filterMode,
                 activeWeatherOverlays: $activeWeatherOverlays,
-                bicyclePreference: $routingVM.bicyclePreference,
-                showTransitStops: $showTransitStops,
-                showLiveTransit: $showLiveTransit
+                bicyclePreference: $routingVM.bicyclePreference
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -506,9 +524,25 @@ struct MapTabView: View {
 
     private var bottomBar: some View {
         HStack(spacing: 10) {
-            // Layers button
-            Button(action: { viewModel.showLayerSidebar() }) {
+            // Favorites / Layers quick-toggle (top-left panel)
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showFavoritesPanel.toggle()
+                }
+            }) {
                 Image(systemName: "square.3.layers.3d")
+                    .font(.body)
+                    .padding(10)
+                    .background(showFavoritesPanel
+                        ? AnyShapeStyle(Color.blue.opacity(0.2))
+                        : AnyShapeStyle(.ultraThinMaterial))
+                    .foregroundStyle(showFavoritesPanel ? .blue : .primary)
+                    .clipShape(Circle())
+            }
+
+            // Settings (full hamburger menu)
+            Button(action: { viewModel.showLayerSidebar() }) {
+                Image(systemName: "gearshape.fill")
                     .font(.body)
                     .padding(10)
                     .background(.ultraThinMaterial)

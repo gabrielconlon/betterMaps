@@ -7,8 +7,6 @@ struct HamburgerMenuView: View {
     @Binding var filterMode: FilterMode
     @Binding var activeWeatherOverlays: Set<WeatherOverlay>
     @Binding var bicyclePreference: BicycleRoutePreference
-    @Binding var showTransitStops: Set<TransitStop.TransitStopType>
-    @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
 
@@ -97,25 +95,7 @@ struct HamburgerMenuView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // MARK: - Transit Layers
-                Section("Transit") {
-                    TransitTypeRow(type: .bus, showStops: $showTransitStops, showLive: $showLiveTransit, liveDisabled: !NTATransitService.isConfigured)
-                    TransitTypeRow(type: .luas, showStops: $showTransitStops, showLive: $showLiveTransit)
-                    TransitTypeRow(type: .dart, showStops: $showTransitStops, showLive: $showLiveTransit)
-                    TransitTypeRow(type: .rail, showStops: $showTransitStops, showLive: $showLiveTransit)
-
-                    Button("Hide All Transit") {
-                        showTransitStops = []
-                        showLiveTransit = []
-                    }
-                    .font(.caption)
-
-                    if !NTATransitService.isConfigured {
-                        Text("Add NTA API key for live bus positions.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                // Transit toggles have moved to the Layers quick-panel (top-left map button)
 
                 // MARK: - Cycling
                 Section("Cycling Routes") {
