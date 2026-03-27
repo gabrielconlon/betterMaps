@@ -14,6 +14,8 @@ struct NTAStopDeparture: Identifiable {
     let scheduledTime: String
     let isRealTime: Bool         // true if from GTFS-RT, false if scheduled
     let operator_: String        // "Dublin Bus", "Bus Éireann", "Go-Ahead"
+    var routeId: String = ""     // GTFS route_id for shape lookup
+    var tripId: String = ""      // GTFS trip_id for shape lookup
 }
 
 // MARK: - NTA Transit Service

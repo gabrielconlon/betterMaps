@@ -65,6 +65,24 @@ actor GTFSStopLoader {
     /// Shared so LiveVehicleService can look up route names
     nonisolated(unsafe) static var routeNameLookup: [String: String] = [:]
 
+    /// Path to the cached raw GTFS ZIP (for lazy shapes.txt extraction)
+    static var cachedZipURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("gtfs_all_cache.zip")
+    }
+
+    /// Cache the raw GTFS ZIP data to disk
+    static func cacheRawZip(_ data: Data) {
+        try? data.write(to: cachedZipURL)
+    }
+
+    /// Check if cached ZIP exists and is fresh
+    static var hasCachedZip: Bool {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: cachedZipURL.path),
+              let modDate = attrs[.modificationDate] as? Date else { return false }
+        return Date().timeIntervalSince(modDate) < 7 * 24 * 3600
+    }
+
     /// Load stops — from cache if fresh, otherwise download from NTA
     func loadStops() async -> [TransitStop] {
         // Check cache first
@@ -119,6 +137,10 @@ actor GTFSStopLoader {
             }
 
             await APILogger.shared.log(service: "TFI", endpoint: "GTFS static (\(data.count / 1024)KB)", status: .success, durationMs: ms)
+            await APILogger.shared.trackBytes(data.count)
+
+            // Cache the raw ZIP for lazy shapes.txt extraction later
+            Self.cacheRawZip(data)
 
             let stops = parseStopsFromZip(data: data)
             // Also parse routes.txt for route name lookup

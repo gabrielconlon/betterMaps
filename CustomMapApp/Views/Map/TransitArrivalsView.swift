@@ -5,6 +5,8 @@ struct TransitArrivalsView: View {
     let stationName: String
     let coordinate: CLLocationCoordinate2D
     var stopType: TransitStop.TransitStopType?  // When set, only fetch data for this type
+    /// Callback when user taps a bus route to view it on the map
+    var onSelectRoute: ((String, String) -> Void)?  // (routeId, routeName)
 
     @State private var railArrivals: [IrishRailArrival] = []
     @State private var luasForecast: LuasStopForecast?
@@ -118,37 +120,50 @@ struct TransitArrivalsView: View {
                             .foregroundStyle(.secondary)
 
                         ForEach(busDepartures) { dep in
-                            HStack {
-                                Text(dep.routeShortName)
-                                    .font(.subheadline.bold())
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(.blue.opacity(0.15))
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(dep.headsign)
-                                        .font(.subheadline)
-                                    if !dep.operator_.isEmpty {
-                                        Text(dep.operator_)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
+                            Button(action: {
+                                if !dep.routeId.isEmpty {
+                                    onSelectRoute?(dep.routeId, dep.routeShortName)
                                 }
+                            }) {
+                                HStack {
+                                    Text(dep.routeShortName)
+                                        .font(.subheadline.bold())
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(.blue.opacity(0.15))
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
 
-                                Spacer()
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(dep.headsign)
+                                            .font(.subheadline)
+                                        if !dep.operator_.isEmpty {
+                                            Text(dep.operator_)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
 
-                                VStack(alignment: .trailing) {
-                                    Text(dep.dueIn == 0 ? "DUE" : "\(dep.dueIn) min")
-                                        .font(.headline)
-                                        .foregroundStyle(dep.dueIn <= 3 ? .red : .primary)
-                                    if dep.isRealTime {
-                                        Text("Live")
-                                            .font(.caption2)
-                                            .foregroundStyle(.green)
+                                    Spacer()
+
+                                    VStack(alignment: .trailing) {
+                                        Text(dep.dueIn == 0 ? "DUE" : "\(dep.dueIn) min")
+                                            .font(.headline)
+                                            .foregroundStyle(dep.dueIn <= 3 ? .red : .primary)
+                                        if dep.isRealTime {
+                                            Text("Live")
+                                                .font(.caption2)
+                                                .foregroundStyle(.green)
+                                        }
+                                    }
+
+                                    if !dep.routeId.isEmpty {
+                                        Image(systemName: "map")
+                                            .font(.caption)
+                                            .foregroundStyle(.blue)
                                     }
                                 }
                             }
+                            .buttonStyle(.plain)
                             .padding(10)
                             .background(Color(.systemGray6))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -311,7 +326,9 @@ struct TransitArrivalsView: View {
                         dueIn: dueMinutes,
                         scheduledTime: stopTime.departureTime,
                         isRealTime: false,
-                        operator_: ""
+                        operator_: "",
+                        routeId: trip.routeId,
+                        tripId: trip.tripId
                     )
                 }
             }

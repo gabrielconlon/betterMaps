@@ -9,6 +9,7 @@ struct GTFSTrip: Codable {
     let serviceId: String
     let directionId: Int       // 0 or 1
     var routeShortName: String // from routes.txt lookup
+    var shapeId: String        // maps to shapes.txt for route geometry
 }
 
 struct GTFSStopTime: Comparable, Codable {
@@ -117,6 +118,7 @@ actor GTFSScheduleService {
                 guard httpStatus == 200 else { continue }
 
                 await APILogger.shared.trackBytes(data.count)
+                GTFSStopLoader.cacheRawZip(data)  // Cache for lazy shapes.txt extraction
                 await parseScheduleFromZip(data: data)
                 await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule parsed", status: .success, durationMs: ms, detail: "\(trips.count) trips, \(stopTimes.count) stops")
                 isLoaded = true
@@ -182,6 +184,17 @@ actor GTFSScheduleService {
     var tripCount: Int { trips.count }
     var stopCount: Int { stopTimes.count }
 
+    /// Get shape ID for a trip (used for lazy shapes.txt loading)
+    func shapeId(forTripId tripId: String) -> String? {
+        guard let trip = trips[tripId], !trip.shapeId.isEmpty else { return nil }
+        return trip.shapeId
+    }
+
+    /// Find any trip for a given route ID (for looking up shape when we only have route info)
+    func anyTripForRoute(routeId: String) -> GTFSTrip? {
+        trips.values.first { $0.routeId == routeId && !$0.shapeId.isEmpty }
+    }
+
     /// Compute and cache active service IDs for today's weekday.
     /// Invalidates automatically when the weekday changes.
     private func activeServiceIds() -> Set<String> {
@@ -222,6 +235,7 @@ actor GTFSScheduleService {
               let routeIdx = headers.firstIndex(of: "route_id"),
               let serviceIdx = headers.firstIndex(of: "service_id") else { return }
         let dirIdx = headers.firstIndex(of: "direction_id")
+        let shapeIdx = headers.firstIndex(of: "shape_id")
 
         let routeLookup = GTFSStopLoader.routeNameLookup
 
@@ -237,7 +251,8 @@ actor GTFSScheduleService {
                 routeId: routeId,
                 serviceId: fields[serviceIdx],
                 directionId: dirIdx.flatMap { fields.count > $0 ? Int(fields[$0]) : nil } ?? 0,
-                routeShortName: routeLookup[routeId] ?? routeId
+                routeShortName: routeLookup[routeId] ?? routeId,
+                shapeId: shapeIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
             )
         }
     }

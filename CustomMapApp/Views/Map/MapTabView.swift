@@ -26,6 +26,8 @@ struct MapTabView: View {
     @State private var showLiveTransit: Set<TransitStop.TransitStopType> = []
     @State private var liveVehicles: [GTFSVehiclePosition] = []
     @State private var liveTrains: [IrishRailTrainPosition] = []
+    @State private var selectedBusRouteCoords: [CLLocationCoordinate2D] = []
+    @State private var selectedBusRouteName: String = ""
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
     @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
@@ -308,7 +310,21 @@ struct MapTabView: View {
             PlaceFormView(coordinate: coordinate)
 
         case .transitArrivals(let name, let coord, let type):
-            TransitArrivalsView(stationName: name, coordinate: coord, stopType: type)
+            TransitArrivalsView(
+                stationName: name,
+                coordinate: coord,
+                stopType: type,
+                onSelectRoute: { routeId, routeName in
+                    // User tapped a bus route — load and display its shape on the map
+                    selectedBusRouteName = routeName
+                    viewModel.activeSheet = nil  // Dismiss the arrivals sheet
+                    Task {
+                        if let coords = await GTFSShapeService.shared.shapeCoordinates(forRouteId: routeId) {
+                            selectedBusRouteCoords = coords
+                        }
+                    }
+                }
+            )
                 .presentationDetents([.fraction(0.3), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -433,6 +449,12 @@ struct MapTabView: View {
                         }
                     }
                 }
+
+                // Selected bus route (from shapes.txt, shown when user taps a route)
+                if selectedBusRouteCoords.count >= 2 {
+                    MapPolyline(coordinates: selectedBusRouteCoords)
+                        .stroke(.blue, lineWidth: 4)
+                }
             }
             .mapStyle(.standard(elevation: .realistic))
             .mapControls {
@@ -445,6 +467,12 @@ struct MapTabView: View {
                 if isSearchFocused {
                     isSearchFocused = false
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    return
+                }
+                // Clear any displayed bus route overlay
+                if !selectedBusRouteCoords.isEmpty {
+                    selectedBusRouteCoords = []
+                    selectedBusRouteName = ""
                     return
                 }
                 // If a sheet is already showing (from a previous tap), don't POI search
