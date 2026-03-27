@@ -96,24 +96,42 @@ struct MapTabView: View {
             // Visual radar is blocked until the map layer is refactored.
             // Weather-based routing rules still work via WeatherKit.
 
-            // Favorites panel overlay (bottom-left, above bottom bar)
-            if showFavoritesPanel {
-                VStack {
-                    Spacer()
-                    HStack {
-                        FavoritesPanel(
-                            showTransitStops: $showTransitStops,
-                            showLiveTransit: $showLiveTransit,
-                            isPresented: $showFavoritesPanel
-                        )
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        Spacer()
+            // Top-left layers button + panel
+            VStack {
+                HStack {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                showFavoritesPanel.toggle()
+                            }
+                        }) {
+                            Image(systemName: "square.3.layers.3d")
+                                .font(.body)
+                                .padding(10)
+                                .background(showFavoritesPanel
+                                    ? AnyShapeStyle(Color.blue.opacity(0.2))
+                                    : AnyShapeStyle(.ultraThinMaterial))
+                                .foregroundStyle(showFavoritesPanel ? .blue : .primary)
+                                .clipShape(Circle())
+                                .shadow(color: .black.opacity(0.1), radius: 2)
+                        }
+
+                        if showFavoritesPanel {
+                            FavoritesPanel(
+                                showTransitStops: $showTransitStops,
+                                showLiveTransit: $showLiveTransit,
+                                isPresented: $showFavoritesPanel
+                            )
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                        }
                     }
                     .padding(.leading, 12)
-                    .padding(.bottom, 65) // above the bottom bar
+                    .padding(.top, 55)
+                    Spacer()
                 }
-                .zIndex(10)
+                Spacer()
             }
+            .zIndex(10)
 
             // UI overlays
             VStack(spacing: 0) {
@@ -524,22 +542,6 @@ struct MapTabView: View {
 
     private var bottomBar: some View {
         HStack(spacing: 10) {
-            // Favorites / Layers quick-toggle (top-left panel)
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    showFavoritesPanel.toggle()
-                }
-            }) {
-                Image(systemName: "square.3.layers.3d")
-                    .font(.body)
-                    .padding(10)
-                    .background(showFavoritesPanel
-                        ? AnyShapeStyle(Color.blue.opacity(0.2))
-                        : AnyShapeStyle(.ultraThinMaterial))
-                    .foregroundStyle(showFavoritesPanel ? .blue : .primary)
-                    .clipShape(Circle())
-            }
-
             // Settings (full hamburger menu)
             Button(action: { viewModel.showLayerSidebar() }) {
                 Image(systemName: "gearshape.fill")

@@ -16,6 +16,7 @@ struct TransitArrivalsView: View {
     @State private var hasRail = false
     @State private var hasLuas = false
     @State private var busFetchAttempted = false
+    @State private var busRoutes: [(routeId: String, routeName: String)] = []
 
     private let railService = IrishRailService()
     private let luasService = LuasService()
@@ -112,12 +113,46 @@ struct TransitArrivalsView: View {
                     }
                 }
 
-                // NTA Bus departures
-                if !busDepartures.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Bus")
+                // Routes serving this stop
+                if !busRoutes.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Routes at this stop")
                             .font(.subheadline.bold())
                             .foregroundStyle(.secondary)
+
+                        FlowLayout(spacing: 6) {
+                            ForEach(busRoutes, id: \.routeId) { route in
+                                Button(action: {
+                                    onSelectRoute?(route.routeId, route.routeName)
+                                }) {
+                                    Text(route.routeName)
+                                        .font(.caption.bold())
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(.blue.opacity(0.15))
+                                        .foregroundStyle(.blue)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
+
+                // Bus departures
+                if !busDepartures.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Next Departures")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            if let age = GTFSDatabase.ageDescription {
+                                Text(age)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
 
                         ForEach(busDepartures) { dep in
                             Button(action: {
@@ -287,12 +322,14 @@ struct TransitArrivalsView: View {
             }
         }
 
-        // Bus departures from GTFS schedule data (pre-loaded at app startup)
+        // Bus departures from GTFS SQLite database
         busFetchAttempted = shouldCheckBus
         if shouldCheckBus {
+            // Ensure SQLite database is ready (instant if already built, downloads if first time)
+            await GTFSScheduleService.shared.loadIfNeeded()
+
             let tapLoc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
 
-            // Use cached GTFS stops (already loaded at startup, hits cache instantly)
             let loader = GTFSStopLoader()
             let gtfsStops = await loader.loadStops()
             let nearbyBusStop = gtfsStops
@@ -311,7 +348,11 @@ struct TransitArrivalsView: View {
                     calendar.component(.minute, from: now) * 60 +
                     calendar.component(.second, from: now)
 
-                // Schedule data is pre-loaded at startup — no download needed
+                // Query routes that serve this stop
+                let routes = await GTFSScheduleService.shared.routesForStop(stopId: busStop.stop.id)
+                busRoutes = routes
+
+                // Query next departures
                 let departures = await GTFSScheduleService.shared.departuresFromStop(
                     stopId: busStop.stop.id,
                     afterSeconds: secondsSinceMidnight,
@@ -335,5 +376,47 @@ struct TransitArrivalsView: View {
         }
 
         isLoading = false
+    }
+}
+
+// MARK: - Flow Layout (wrapping horizontal layout for route pills)
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        for (index, position) in result.positions.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
+        let maxWidth = proposal.width ?? .infinity
+        var positions: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var maxX: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth && x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            positions.append(CGPoint(x: x, y: y))
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+            maxX = max(maxX, x)
+        }
+
+        return (CGSize(width: maxX, height: y + rowHeight), positions)
     }
 }
