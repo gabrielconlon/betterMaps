@@ -47,6 +47,7 @@ struct MapTabView: View {
     }
 
     /// Transit stops filtered by active types and current map region (limit count for performance).
+    /// DART and Rail stations are shared infrastructure — show on either toggle.
     /// When a bus route is selected, only show stops on that route.
     var visibleTransitStops: [TransitStop] {
         guard !showTransitStops.isEmpty, let region = mapRegion else { return [] }
@@ -54,13 +55,23 @@ struct MapTabView: View {
         guard latDelta < 0.15 else { return [] }
 
         let hasBusRouteSelected = !selectedBusRouteStopIds.isEmpty
+        let wantsDart = showTransitStops.contains(.dart)
+        let wantsRail = showTransitStops.contains(.rail)
 
         return transitStops
             .filter { stop in
-                guard showTransitStops.contains(stop.type) else { return false }
-                // When a bus route is selected, hide bus stops not on the route
-                if hasBusRouteSelected && stop.type == .bus {
-                    return selectedBusRouteStopIds.contains(stop.id)
+                switch stop.type {
+                case .dart:
+                    // DART stations also show when Rail is on (shared infrastructure)
+                    guard wantsDart || wantsRail else { return false }
+                case .rail, .suburban:
+                    // Rail stations also show when DART is on (shared infrastructure)
+                    guard wantsRail || wantsDart else { return false }
+                case .bus:
+                    guard showTransitStops.contains(.bus) else { return false }
+                    if hasBusRouteSelected { return selectedBusRouteStopIds.contains(stop.id) }
+                default:
+                    guard showTransitStops.contains(stop.type) else { return false }
                 }
                 return true
             }
@@ -489,8 +500,9 @@ struct MapTabView: View {
 
                 // Transit stop annotations (toggled layer)
                 ForEach(visibleTransitStops) { stop in
+                    let pinColor = pinColorForStop(stop)
                     Annotation(stop.name, coordinate: stop.coordinate) {
-                        TransitStopPin(stop: stop, zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01)
+                        TransitStopPin(stop: stop, zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01, colorOverride: pinColor)
                             .onTapGesture {
                                 viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type)
                             }
@@ -759,6 +771,26 @@ struct MapTabView: View {
 
 
     // MARK: - Transit Toggle Persistence
+
+    /// Determine pin color for a stop, accounting for shared DART/Rail stations
+    private func pinColorForStop(_ stop: TransitStop) -> Color? {
+        let wantsDart = showTransitStops.contains(.dart)
+        let wantsRail = showTransitStops.contains(.rail)
+
+        // Shared DART/Rail station with both toggles on → combined color
+        if (stop.type == .dart || stop.type == .rail || stop.type == .suburban) && wantsDart && wantsRail {
+            return Color(red: 0.7, green: 0.4, blue: 0.9) // blended orange-purple
+        }
+        // DART station shown via Rail toggle only → purple
+        if stop.type == .dart && !wantsDart && wantsRail {
+            return .purple
+        }
+        // Rail station shown via DART toggle only → orange
+        if (stop.type == .rail || stop.type == .suburban) && wantsDart && !wantsRail {
+            return .orange
+        }
+        return nil // default color from stop type
+    }
 
     private func serializeTransitTypes(_ types: Set<TransitStop.TransitStopType>) -> String {
         types.map { $0.rawValue }.sorted().joined(separator: ",")

@@ -22,6 +22,19 @@ struct TransitArrivalsView: View {
     private let luasService = LuasService()
     private let ntaService = NTATransitService()
 
+    /// Filter rail arrivals by stop type — DART-only shows DART trains, Rail-only shows non-DART
+    private var filteredRailArrivals: [IrishRailArrival] {
+        guard !railArrivals.isEmpty else { return [] }
+        switch stopType {
+        case .dart:
+            return railArrivals.filter { $0.trainType.uppercased() == "DART" }
+        case .rail:
+            return railArrivals.filter { $0.trainType.uppercased() != "DART" }
+        default:
+            return railArrivals // show all when type is nil or mixed
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -68,14 +81,14 @@ struct TransitArrivalsView: View {
                     }
                 }
 
-                // Irish Rail arrivals
-                if !railArrivals.isEmpty {
+                // Irish Rail arrivals (filtered by stop type if set)
+                if !filteredRailArrivals.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Trains")
+                        Text(stopType == .dart ? "DART" : stopType == .rail ? "Rail" : "Trains")
                             .font(.subheadline.bold())
                             .foregroundStyle(.secondary)
 
-                        ForEach(railArrivals) { arrival in
+                        ForEach(filteredRailArrivals) { arrival in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 4) {
@@ -241,7 +254,7 @@ struct TransitArrivalsView: View {
                     }
                 }
 
-                if !isLoading && railArrivals.isEmpty && luasForecast == nil && busDepartures.isEmpty && !busFetchAttempted {
+                if !isLoading && filteredRailArrivals.isEmpty && luasForecast == nil && busDepartures.isEmpty && !busFetchAttempted {
                     Text("No real-time arrivals available for this location.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

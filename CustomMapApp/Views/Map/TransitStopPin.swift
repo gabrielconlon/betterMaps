@@ -3,13 +3,15 @@ import SwiftUI
 struct TransitStopPin: View {
     let stop: TransitStop
     let zoomDelta: Double
+    /// Optional color override (e.g., combined DART+Rail color)
+    var colorOverride: Color?
 
     var size: AnnotationSize {
         AnnotationSize(latitudeDelta: zoomDelta)
     }
 
     var color: Color {
-        Color(hex: stop.type.colorHex) ?? .blue
+        colorOverride ?? Color(hex: stop.type.colorHex) ?? .blue
     }
 
     var body: some View {
