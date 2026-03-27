@@ -496,7 +496,8 @@ struct MapTabView: View {
                 UserAnnotation()
 
                 ForEach(filteredPlaces) { place in
-                    Annotation(place.name, coordinate: place.coordinate) {
+                    let isDot = AnnotationSize(latitudeDelta: mapRegion?.span.latitudeDelta ?? 0.01) == .dot
+                    Annotation(isDot ? "" : place.name, coordinate: place.coordinate) {
                         PlaceAnnotationView(
                             place: place,
                             layers: layers,
@@ -504,7 +505,7 @@ struct MapTabView: View {
                             zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01
                         )
                         .onTapGesture {
-                            viewModel.selectPlace(place)
+                            if !isDot { viewModel.selectPlace(place) }
                         }
                     }
                 }
@@ -536,11 +537,17 @@ struct MapTabView: View {
                 // Transit stop annotations (toggled layer)
                 ForEach(visibleTransitStops) { stop in
                     let pinColor = pinColorForStop(stop)
-                    Annotation(stop.name, coordinate: stop.coordinate) {
-                        TransitStopPin(stop: stop, zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01, colorOverride: pinColor)
-                            .onTapGesture {
+                    let pin = TransitStopPin(stop: stop, zoomDelta: mapRegion?.span.latitudeDelta ?? 0.01, colorOverride: pinColor)
+                    // Suppress title and tap target for dot-sized pins — they're too small
+                    // to tap intentionally and steal taps from nearby visible annotations
+                    Annotation(pin.isTappable ? stop.name : "", coordinate: stop.coordinate) {
+                        if pin.isTappable {
+                            pin.onTapGesture {
                                 viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type)
                             }
+                        } else {
+                            pin
+                        }
                     }
                 }
 
@@ -625,17 +632,20 @@ struct MapTabView: View {
                     MapPolyline(coordinates: selectedBusRouteCoords)
                         .stroke(.blue, lineWidth: 4)
 
-                    // Route label at midpoint
-                    let mid = selectedBusRouteCoords[selectedBusRouteCoords.count / 2]
-                    Annotation(selectedBusRouteName, coordinate: mid) {
-                        Text(selectedBusRouteName)
-                            .font(.caption.bold())
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.blue)
-                            .foregroundStyle(.white)
-                            .clipShape(Capsule())
-                            .shadow(radius: 2)
+                    // Route labels at intervals along the line so one is always visible
+                    // regardless of zoom level. Spaced at ~25% intervals.
+                    let labelIndices = busRouteLabelIndices(count: selectedBusRouteCoords.count)
+                    ForEach(labelIndices, id: \.self) { idx in
+                        Annotation("", coordinate: selectedBusRouteCoords[idx], anchor: .center) {
+                            Text(selectedBusRouteName)
+                                .font(.caption.bold())
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.blue)
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                                .shadow(radius: 2)
+                        }
                     }
 
                     // Start and end markers
@@ -804,6 +814,17 @@ struct MapTabView: View {
         }
     }
 
+
+    // MARK: - Bus Route Labels
+
+    /// Indices along the bus route shape where labels should be placed.
+    /// Returns ~4 evenly spaced indices so a label is always visible at any zoom.
+    private func busRouteLabelIndices(count: Int) -> [Int] {
+        guard count >= 2 else { return [] }
+        if count < 8 { return [count / 2] }  // short routes: just midpoint
+        let step = count / 4
+        return [step, step * 2, step * 3]
+    }
 
     // MARK: - Stop Deduplication
 

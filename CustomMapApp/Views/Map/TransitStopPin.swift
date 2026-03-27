@@ -10,6 +10,9 @@ struct TransitStopPin: View {
         AnnotationSize(latitudeDelta: zoomDelta)
     }
 
+    /// Whether this pin is tappable at the current zoom (dots are too small to tap intentionally)
+    var isTappable: Bool { size != .dot }
+
     var color: Color {
         colorOverride ?? Color(hex: stop.type.colorHex) ?? .blue
     }
@@ -20,6 +23,7 @@ struct TransitStopPin: View {
             Circle()
                 .fill(color)
                 .frame(width: 6, height: 6)
+                .allowsHitTesting(false) // prevent tiny dots from stealing taps
         case .compact:
             Image(systemName: stop.type.systemImage)
                 .font(.system(size: 9, weight: .bold))

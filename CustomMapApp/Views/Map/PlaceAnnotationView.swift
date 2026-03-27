@@ -65,6 +65,7 @@ struct PlaceAnnotationView: View {
             .fill(pinColor)
             .frame(width: 8, height: 8)
             .shadow(color: pinColor.opacity(0.5), radius: 2)
+            .allowsHitTesting(false) // prevent tiny dots from stealing taps at far zoom
     }
 
     // MARK: - Compact (medium zoom)
