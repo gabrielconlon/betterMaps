@@ -211,7 +211,33 @@ struct MapTabView: View {
                     .padding(.bottom, 4)
                 }
 
-                // Bottom bar: [hamburger] [search] [filter chips]
+                // Bus route label + dismiss
+                if !selectedBusRouteCoords.isEmpty {
+                    HStack(spacing: 8) {
+                        Label("Route \(selectedBusRouteName)", systemImage: "bus.fill")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.blue.opacity(0.15))
+                            .foregroundStyle(.blue)
+                            .clipShape(Capsule())
+
+                        Button(action: {
+                            selectedBusRouteCoords = []
+                            selectedBusRouteName = ""
+                        }) {
+                            Label("Dismiss", systemImage: "xmark.circle.fill")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
+
+                // Bottom bar: [settings] [search] [filter chips]
                 bottomBar
             }
         }
@@ -490,6 +516,37 @@ struct MapTabView: View {
                 if selectedBusRouteCoords.count >= 2 {
                     MapPolyline(coordinates: selectedBusRouteCoords)
                         .stroke(.blue, lineWidth: 4)
+
+                    // Route label at midpoint
+                    let mid = selectedBusRouteCoords[selectedBusRouteCoords.count / 2]
+                    Annotation(selectedBusRouteName, coordinate: mid) {
+                        Text(selectedBusRouteName)
+                            .font(.caption.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.blue)
+                            .foregroundStyle(.white)
+                            .clipShape(Capsule())
+                            .shadow(radius: 2)
+                    }
+
+                    // Start and end markers
+                    if let first = selectedBusRouteCoords.first {
+                        Annotation("Start", coordinate: first) {
+                            Circle()
+                                .fill(.blue)
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().stroke(.white, lineWidth: 2))
+                        }
+                    }
+                    if let last = selectedBusRouteCoords.last {
+                        Annotation("End", coordinate: last) {
+                            Circle()
+                                .fill(.blue)
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().stroke(.white, lineWidth: 2))
+                        }
+                    }
                 }
             }
             .mapStyle(.standard(elevation: .realistic))
