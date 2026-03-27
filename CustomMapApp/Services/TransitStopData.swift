@@ -128,16 +128,18 @@ struct DARTLineBuilder {
     ]
 
     /// DART+ Western line: Maynooth direction → Connolly
+    /// Route: Maynooth → Clonsilla → Broombridge → Drumcondra → Connolly
     static let westernLineNames = [
         "Maynooth", "Leixlip", "Coolmine", "Clonsilla",
         "Castleknock", "Navan Road", "Ashtown", "Broombridge",
         "Drumcondra", "Connolly"
     ]
 
-    /// DART+ South-western: Kildare direction → Connolly (via Park West)
+    /// DART+ South-western: Kildare direction, branches from western line at Clonsilla
+    /// Then goes south through Heuston to join the main line
     static let southWesternLineNames = [
         "Hazelhatch", "Adamstown", "Clondalkin", "Kishoge",
-        "Park West", "Cherry Orchard", "Drumcondra", "Connolly"
+        "Park West", "Cherry Orchard", "Heuston"
     ]
 
     /// Build coordinates for a branch by matching station names against loaded transit stops.

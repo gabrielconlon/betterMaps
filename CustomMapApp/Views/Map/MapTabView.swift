@@ -297,9 +297,12 @@ struct MapTabView: View {
             let railService = IrishRailService()
             let stations = await railService.fetchStations()
             for station in stations {
-                // Classify: DART stays as .dart, everything else (Mainline, Suburban) goes under .rail
                 let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
-                transitStops.append(TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type))
+                let newStop = TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type)
+                // Skip if a stop already exists within 100m (prevents duplicates across sources)
+                if !isNearExistingStop(newStop, in: transitStops, thresholdMeters: 100) {
+                    transitStops.append(newStop)
+                }
             }
 
             // GTFS bus stops (open data, no API key needed)
@@ -307,7 +310,10 @@ struct MapTabView: View {
             let gtfsStops = await loader.loadStops()
             let existingIDs = Set(transitStops.map { $0.id })
             for stop in gtfsStops where !existingIDs.contains(stop.id) {
-                transitStops.append(stop)
+                // For non-bus stops, also check proximity to avoid duplicates
+                if stop.type == .bus || !isNearExistingStop(stop, in: transitStops, thresholdMeters: 100) {
+                    transitStops.append(stop)
+                }
             }
         }
         .task(id: showLiveTransit) {
@@ -768,6 +774,17 @@ struct MapTabView: View {
         }
     }
 
+
+    // MARK: - Stop Deduplication
+
+    /// Check if a stop is within threshold meters of any existing stop (same type)
+    private func isNearExistingStop(_ stop: TransitStop, in stops: [TransitStop], thresholdMeters: Double) -> Bool {
+        let loc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+        return stops.contains { existing in
+            let existingLoc = CLLocation(latitude: existing.latitude, longitude: existing.longitude)
+            return existingLoc.distance(from: loc) < thresholdMeters
+        }
+    }
 
     // MARK: - Transit Toggle Persistence
 
