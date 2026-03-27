@@ -313,6 +313,24 @@ actor GTFSScheduleService {
         return coords
     }
 
+    /// Get all unique stop IDs served by a route (for filtering map annotations)
+    func stopIdsForRoute(routeId: String) -> Set<String> {
+        let sql = """
+            SELECT DISTINCT st.stop_id FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            WHERE t.route_id = ?
+        """
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (routeId as NSString).utf8String, -1, nil)
+
+        var ids = Set<String>()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let id = db.columnText(stmt, index: 0) { ids.insert(id) }
+        }
+        return ids
+    }
+
     /// Database age description for staleness display
     var dataAge: String? { GTFSDatabase.ageDescription }
 

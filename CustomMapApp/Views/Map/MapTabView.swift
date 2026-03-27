@@ -28,6 +28,7 @@ struct MapTabView: View {
     @State private var liveTrains: [IrishRailTrainPosition] = []
     @State private var selectedBusRouteCoords: [CLLocationCoordinate2D] = []
     @State private var selectedBusRouteName: String = ""
+    @State private var selectedBusRouteStopIds: Set<String> = [] // stops on selected bus route
     @State private var showFavoritesPanel = false
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
     @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
@@ -45,18 +46,29 @@ struct MapTabView: View {
         filterVM.filterMode == .intersection && activeLayerCount > 1
     }
 
-    /// Transit stops filtered by active types and current map region (limit count for performance)
+    /// Transit stops filtered by active types and current map region (limit count for performance).
+    /// When a bus route is selected, only show stops on that route.
     var visibleTransitStops: [TransitStop] {
         guard !showTransitStops.isEmpty, let region = mapRegion else { return [] }
         let latDelta = region.span.latitudeDelta
         guard latDelta < 0.15 else { return [] }
+
+        let hasBusRouteSelected = !selectedBusRouteStopIds.isEmpty
+
         return transitStops
-            .filter { showTransitStops.contains($0.type) }
+            .filter { stop in
+                guard showTransitStops.contains(stop.type) else { return false }
+                // When a bus route is selected, hide bus stops not on the route
+                if hasBusRouteSelected && stop.type == .bus {
+                    return selectedBusRouteStopIds.contains(stop.id)
+                }
+                return true
+            }
             .filter { stop in
                 abs(stop.latitude - region.center.latitude) < latDelta &&
                 abs(stop.longitude - region.center.longitude) < region.span.longitudeDelta
             }
-            .prefix(200) // Performance cap
+            .prefix(200)
             .map { $0 }
     }
 
@@ -237,6 +249,7 @@ struct MapTabView: View {
                         Button(action: {
                             selectedBusRouteCoords = []
                             selectedBusRouteName = ""
+                            selectedBusRouteStopIds = []
                         }) {
                             Label("Dismiss", systemImage: "xmark.circle.fill")
                                 .font(.caption.bold())
@@ -393,9 +406,13 @@ struct MapTabView: View {
                     selectedBusRouteName = routeName
                     viewModel.activeSheet = nil  // Dismiss the arrivals sheet
                     Task {
-                        if let coords = await GTFSShapeService.shared.shapeCoordinates(forRouteId: routeId) {
+                        async let shapeLoad = GTFSShapeService.shared.shapeCoordinates(forRouteId: routeId)
+                        async let stopsLoad = GTFSScheduleService.shared.stopIdsForRoute(routeId: routeId)
+                        let (coords, stopIds) = await (shapeLoad, stopsLoad)
+                        if let coords {
                             selectedBusRouteCoords = coords
                         }
+                        selectedBusRouteStopIds = stopIds
                     }
                 }
             )
@@ -435,6 +452,38 @@ struct MapTabView: View {
                         .onTapGesture {
                             viewModel.selectPlace(place)
                         }
+                    }
+                }
+
+                // Luas route lines (always visible when Luas stops are on)
+                if showTransitStops.contains(.luas) {
+                    MapPolyline(coordinates: LuasStopCoordinates.lineCoordinates(LuasStopCoordinates.redLineMain))
+                        .stroke(.red.opacity(0.6), lineWidth: 3)
+                    MapPolyline(coordinates: LuasStopCoordinates.lineCoordinates(LuasStopCoordinates.redLineSaggart))
+                        .stroke(.red.opacity(0.6), lineWidth: 3)
+                    MapPolyline(coordinates: LuasStopCoordinates.lineCoordinates(LuasStopCoordinates.greenLine))
+                        .stroke(.green.opacity(0.6), lineWidth: 3)
+                }
+
+                // DART route line (always visible when DART stops are on)
+                if showTransitStops.contains(.dart) {
+                    let dartStops = transitStops
+                        .filter { $0.type == .dart }
+                        .sorted { $0.latitude > $1.latitude } // North to south
+                    if dartStops.count >= 2 {
+                        MapPolyline(coordinates: dartStops.map { $0.coordinate })
+                            .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    }
+                }
+
+                // Rail route lines (connect rail stations when visible)
+                if showTransitStops.contains(.rail) {
+                    let railStops = transitStops
+                        .filter { $0.type == .rail }
+                        .sorted { $0.latitude > $1.latitude }
+                    if railStops.count >= 2 {
+                        MapPolyline(coordinates: railStops.map { $0.coordinate })
+                            .stroke(.purple.opacity(0.4), lineWidth: 2)
                     }
                 }
 

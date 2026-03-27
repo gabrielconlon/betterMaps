@@ -68,4 +68,29 @@ struct LuasStopCoordinates {
         TransitStop(id: "LUAS_CHE", name: "Cherrywood", latitude: 53.2413, longitude: -6.1461, type: .luas),
         TransitStop(id: "LUAS_BRI", name: "Bride's Glen", latitude: 53.2380, longitude: -6.1424, type: .luas),
     ]
+
+    /// Red Line stop IDs in order (The Point → Tallaght, with Belgard branch to Saggart)
+    static let redLineMain: [String] = [
+        "LUAS_TPT", "LUAS_SDK", "LUAS_MYS", "LUAS_GDK", "LUAS_CON", "LUAS_BUS",
+        "LUAS_ABB", "LUAS_JER", "LUAS_FOU", "LUAS_SMI", "LUAS_MUS", "LUAS_HEU",
+        "LUAS_JAM", "LUAS_FAT", "LUAS_RIA", "LUAS_SUI", "LUAS_GOL", "LUAS_DRI",
+        "LUAS_BLA", "LUAS_BLU", "LUAS_KYL", "LUAS_RED", "LUAS_BEL", "LUAS_TAL"
+    ]
+    static let redLineSaggart: [String] = ["LUAS_BEL", "LUAS_SAG"]
+
+    /// Green Line stop IDs in order (Broombridge → Bride's Glen)
+    static let greenLine: [String] = [
+        "LUAS_BRO", "LUAS_CAB", "LUAS_PHI", "LUAS_GRA", "LUAS_BRD", "LUAS_DOM",
+        "LUAS_PAR", "LUAS_OUP", "LUAS_OGP", "LUAS_MAR", "LUAS_WES", "LUAS_TRI",
+        "LUAS_DAW", "LUAS_STS", "LUAS_HAR", "LUAS_CHA", "LUAS_RAN", "LUAS_BEE",
+        "LUAS_COW", "LUAS_MIL", "LUAS_WIN", "LUAS_DUN", "LUAS_BAL", "LUAS_KIL",
+        "LUAS_STI", "LUAS_SAN", "LUAS_CPK", "LUAS_GLE", "LUAS_GAL", "LUAS_LEO",
+        "LUAS_BAW", "LUAS_CAR", "LUAS_LAU", "LUAS_CHE", "LUAS_BRI"
+    ]
+
+    /// Convert a line's stop IDs to coordinates
+    static func lineCoordinates(_ stopIds: [String]) -> [CLLocationCoordinate2D] {
+        let lookup = Dictionary(uniqueKeysWithValues: stops.map { ($0.id, $0) })
+        return stopIds.compactMap { lookup[$0]?.coordinate }
+    }
 }
