@@ -132,6 +132,18 @@ struct MapTabView: View {
                 Spacer()
             }
             .zIndex(10)
+            // Tap-outside dismiss for layers panel
+            .background(
+                showFavoritesPanel ?
+                    Color.black.opacity(0.001) // Nearly invisible but tappable
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                showFavoritesPanel = false
+                            }
+                        }
+                    : nil
+            )
 
             // UI overlays
             VStack(spacing: 0) {
@@ -603,6 +615,7 @@ struct MapTabView: View {
             Button(action: { viewModel.showLayerSidebar() }) {
                 Image(systemName: "gearshape.fill")
                     .font(.body)
+                    .foregroundStyle(.secondary)
                     .padding(10)
                     .background(.ultraThinMaterial)
                     .clipShape(Circle())

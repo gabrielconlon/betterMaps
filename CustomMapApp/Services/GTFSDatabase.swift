@@ -103,12 +103,26 @@ final class GTFSDatabase {
                 value TEXT
             )
         """)
+
+        execute("""
+            CREATE TABLE IF NOT EXISTS shapes (
+                shape_id TEXT NOT NULL,
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                sequence INTEGER NOT NULL
+            )
+        """)
     }
 
     func createIndexes() {
         execute("CREATE INDEX IF NOT EXISTS idx_st_stop_dep ON stop_times(stop_id, departure_seconds)")
         execute("CREATE INDEX IF NOT EXISTS idx_st_trip_seq ON stop_times(trip_id, stop_sequence)")
         execute("CREATE INDEX IF NOT EXISTS idx_trips_route ON trips(route_id)")
+        execute("CREATE INDEX IF NOT EXISTS idx_shapes_id ON shapes(shape_id, sequence)")
+    }
+
+    func prepareInsertShape() -> OpaquePointer? {
+        prepare("INSERT INTO shapes VALUES (?, ?, ?, ?)")
     }
 
     // MARK: - Transactions

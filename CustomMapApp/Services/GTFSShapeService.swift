@@ -1,27 +1,29 @@
 import Foundation
 import CoreLocation
 
-/// Lazily parses individual shapes from the cached GTFS ZIP.
-/// Only loads the ONE requested shape, not all 2M+ shape points.
+/// Queries route shapes from the SQLite database (indexed, ~10ms per shape).
+/// Previously extracted shapes.txt from ZIP on every request (~5-10 seconds).
 actor GTFSShapeService {
     static let shared = GTFSShapeService()
 
-    /// Small cache for recently viewed shapes (max 5 to limit memory)
+    /// Small LRU cache for recently viewed shapes
     private var shapeCache: [String: [CLLocationCoordinate2D]] = [:]
     private var cacheOrder: [String] = []
     private let maxCacheSize = 5
 
-    /// Get the coordinates for a shape ID. Parses ONLY this shape from shapes.txt.
+    /// Get the coordinates for a shape ID from SQLite.
     func shapeCoordinates(for shapeId: String) async -> [CLLocationCoordinate2D]? {
         if let cached = shapeCache[shapeId] {
             return cached
         }
 
-        guard let coords = await parseShapeFromZip(shapeId: shapeId), !coords.isEmpty else {
-            return nil
-        }
+        // Ensure database is ready
+        await GTFSScheduleService.shared.loadIfNeeded()
 
-        // Cache with LRU eviction
+        let coords = await GTFSScheduleService.shared.shapeCoordinates(for: shapeId)
+        guard !coords.isEmpty else { return nil }
+
+        // LRU cache
         shapeCache[shapeId] = coords
         cacheOrder.append(shapeId)
         if cacheOrder.count > maxCacheSize {
@@ -48,71 +50,8 @@ actor GTFSShapeService {
         return await shapeCoordinates(for: shapeId)
     }
 
-    /// Clear cache to free memory
     func clearCache() {
         shapeCache.removeAll()
         cacheOrder.removeAll()
-    }
-
-    // MARK: - Single-Shape Parsing
-
-    /// Parse ONLY the matching shape_id from shapes.txt, skipping everything else.
-    /// This reads the file line by line instead of loading all 2M+ points into memory.
-    private func parseShapeFromZip(shapeId: String) async -> [CLLocationCoordinate2D]? {
-        let zipURL = GTFSStopLoader.cachedZipURL
-        guard let zipData = try? Data(contentsOf: zipURL) else {
-            await APILogger.shared.log(
-                service: "TFI", endpoint: "shapes.txt",
-                status: .failure, durationMs: 0, detail: "No cached GTFS ZIP"
-            )
-            return nil
-        }
-
-        let start = Date()
-        let loader = GTFSStopLoader()
-        guard let csv = await loader.extractFile(from: zipData, named: "shapes.txt") else {
-            return nil
-        }
-
-        // Parse header
-        let lines = csv.components(separatedBy: .newlines)
-        guard let header = lines.first else { return nil }
-        let headers = header.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-        guard let idIdx = headers.firstIndex(of: "shape_id"),
-              let latIdx = headers.firstIndex(of: "shape_pt_lat"),
-              let lonIdx = headers.firstIndex(of: "shape_pt_lon"),
-              let seqIdx = headers.firstIndex(of: "shape_pt_sequence") else { return nil }
-
-        let maxIdx = max(idIdx, latIdx, lonIdx, seqIdx)
-
-        // Collect only matching entries
-        var points: [(lat: Double, lon: Double, seq: Int)] = []
-        for line in lines.dropFirst() {
-            let fields = line.split(separator: ",", omittingEmptySubsequences: false)
-                .map { String($0).trimmingCharacters(in: .whitespaces) }
-            guard fields.count > maxIdx else { continue }
-
-            // Skip non-matching shapes (this is the key optimization)
-            guard fields[idIdx] == shapeId else { continue }
-
-            guard let lat = Double(fields[latIdx]),
-                  let lon = Double(fields[lonIdx]),
-                  let seq = Int(fields[seqIdx]) else { continue }
-
-            points.append((lat, lon, seq))
-        }
-
-        let ms = Int(Date().timeIntervalSince(start) * 1000)
-        if !points.isEmpty {
-            await APILogger.shared.log(
-                service: "TFI", endpoint: "shape/\(shapeId)",
-                status: .success, durationMs: ms,
-                detail: "\(points.count) points"
-            )
-        }
-
-        return points
-            .sorted { $0.seq < $1.seq }
-            .map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
     }
 }

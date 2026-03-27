@@ -297,6 +297,22 @@ actor GTFSScheduleService {
         )
     }
 
+    /// Query shape coordinates from SQLite (indexed, ~10ms)
+    func shapeCoordinates(for shapeId: String) -> [CLLocationCoordinate2D] {
+        let sql = "SELECT lat, lon FROM shapes WHERE shape_id = ? ORDER BY sequence"
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (shapeId as NSString).utf8String, -1, nil)
+
+        var coords: [CLLocationCoordinate2D] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let lat = sqlite3_column_double(stmt, 0)
+            let lon = sqlite3_column_double(stmt, 1)
+            coords.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+        }
+        return coords
+    }
+
     /// Database age description for staleness display
     var dataAge: String? { GTFSDatabase.ageDescription }
 
@@ -313,6 +329,9 @@ actor GTFSScheduleService {
         }
         if let calendarCSV = await loader.extractFile(from: data, named: "calendar.txt") {
             parseCalendar(csv: calendarCSV)
+        }
+        if let shapesCSV = await loader.extractFile(from: data, named: "shapes.txt") {
+            parseShapes(csv: shapesCSV)
         }
     }
 
@@ -450,6 +469,49 @@ actor GTFSScheduleService {
         let parts = time.split(separator: ":").compactMap { Int($0) }
         guard parts.count == 3 else { return 0 }
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    }
+
+    private func parseShapes(csv: String) {
+        let lines = csv.components(separatedBy: .newlines)
+        guard let header = lines.first else { return }
+        let headers = header.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+
+        guard let idIdx = headers.firstIndex(of: "shape_id"),
+              let latIdx = headers.firstIndex(of: "shape_pt_lat"),
+              let lonIdx = headers.firstIndex(of: "shape_pt_lon"),
+              let seqIdx = headers.firstIndex(of: "shape_pt_sequence") else { return }
+
+        let maxIdx = max(idIdx, latIdx, lonIdx, seqIdx)
+        guard let stmt = db.prepareInsertShape() else { return }
+        db.beginTransaction()
+
+        var count = 0
+        for line in lines.dropFirst() {
+            let fields = line.split(separator: ",", omittingEmptySubsequences: false)
+                .map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard fields.count > maxIdx else { continue }
+            let shapeId = fields[idIdx]
+            guard !shapeId.isEmpty,
+                  let lat = Double(fields[latIdx]),
+                  let lon = Double(fields[lonIdx]),
+                  let seq = Int(fields[seqIdx]) else { continue }
+
+            sqlite3_bind_text(stmt, 1, (shapeId as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(stmt, 2, lat)
+            sqlite3_bind_double(stmt, 3, lon)
+            sqlite3_bind_int(stmt, 4, Int32(seq))
+            sqlite3_step(stmt)
+            sqlite3_reset(stmt)
+
+            count += 1
+            if count % 100_000 == 0 {
+                db.commitTransaction()
+                db.beginTransaction()
+            }
+        }
+
+        db.commitTransaction()
+        db.finalize(stmt)
     }
 
     private func parseCSVRow(_ row: String) -> [String] {
