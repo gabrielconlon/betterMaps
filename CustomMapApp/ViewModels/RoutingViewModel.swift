@@ -157,7 +157,7 @@ class RoutingViewModel {
                 let maxTransfers = userProfile?.maxTransfers ?? 1
                 let preferBus = userProfile?.preferBusOverTram ?? false
 
-                // 5-second timeout (search is now much faster with narrowed scope)
+                // 8-second timeout (wider stop search needs slightly more time)
                 let result = await withTaskGroup(of: [TransitRouteOption].self) { group in
                     group.addTask {
                         await self.transitPlanner.findRoutes(
@@ -169,7 +169,7 @@ class RoutingViewModel {
                         )
                     }
                     group.addTask {
-                        try? await Task.sleep(for: .seconds(5))
+                        try? await Task.sleep(for: .seconds(8))
                         return [] as [TransitRouteOption]
                     }
                     let first = await group.next() ?? []
@@ -204,7 +204,8 @@ class RoutingViewModel {
 
     /// Find the closest stops per mode near both origin and destination.
     /// Instead of sorting all 14K stops, we partition by type and pick the closest few per mode.
-    /// Bus: 2 closest within 600m. Luas: 1 closest within 1000m. DART/Rail: 1 closest within 1500m.
+    /// Also includes a catch-all that picks closest stops of any type, ensuring misclassified
+    /// Luas/DART stops (which may appear as bus in GTFS) are still considered.
     private func findNearbyStopsPerMode(
         allStops: [TransitStop],
         origin: CLLocationCoordinate2D,
@@ -220,10 +221,10 @@ class RoutingViewModel {
         }
 
         let configs: [ModeConfig] = [
-            ModeConfig(types: [.bus], radiusMeters: 600, maxCount: 2),
-            ModeConfig(types: [.luas], radiusMeters: 1000, maxCount: 1),
-            ModeConfig(types: [.dart], radiusMeters: 1500, maxCount: 1),
-            ModeConfig(types: [.rail, .suburban], radiusMeters: 1500, maxCount: 1),
+            ModeConfig(types: [.bus], radiusMeters: 800, maxCount: 5),
+            ModeConfig(types: [.luas], radiusMeters: 1200, maxCount: 2),
+            ModeConfig(types: [.dart], radiusMeters: 2000, maxCount: 2),
+            ModeConfig(types: [.rail, .suburban], radiusMeters: 2000, maxCount: 2),
         ]
 
         var selectedIds = Set<String>()
@@ -239,6 +240,17 @@ class RoutingViewModel {
                 for match in modeStops {
                     selectedIds.insert(match.stop.id)
                 }
+            }
+
+            // Catch-all: closest stops of ANY type within 1000m.
+            // Ensures misclassified stops (e.g. Luas stop tagged as bus) are still considered.
+            let closest = allStops
+                .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: loc)) }
+                .filter { $0.dist <= 1000 }
+                .sorted { $0.dist < $1.dist }
+                .prefix(3)
+            for match in closest {
+                selectedIds.insert(match.stop.id)
             }
         }
 
@@ -408,24 +420,27 @@ class RoutingViewModel {
         failedModes = [:]
     }
 
-    /// Load transit stops for the planner from cached GTFS + hardcoded data.
-    /// Irish Rail and GTFS fetches run in parallel (both hit caches after startup preload).
+    /// Load transit stops for the planner using ONLY GTFS stops.
+    /// Hardcoded Luas stops (LUAS_* IDs) and Irish Rail API stops use IDs
+    /// that don't exist in the GTFS stop_times table, so departuresFromStop()
+    /// would never find any departures for them. GTFS stops have the correct
+    /// stop_ids that match the schedule database.
+    /// Also reclassifies stops using GTFS route_type for accurate mode selection.
     private func loadTransitStopsForPlanner() async -> [TransitStop] {
-        var stops = LuasStopCoordinates.stops
+        var stops = await GTFSStopLoader().loadStops()
 
-        // Fetch Irish Rail stations and GTFS stops in parallel
-        async let railFetch = IrishRailService().fetchStations()
-        async let gtfsFetch = GTFSStopLoader().loadStops()
-
-        let (stations, gtfsStops) = await (railFetch, gtfsFetch)
-
-        for station in stations {
-            let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
-            stops.append(TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type))
-        }
-        let existingIDs = Set(stops.map { $0.id })
-        for stop in gtfsStops where !existingIDs.contains(stop.id) {
-            stops.append(stop)
+        // Reclassify stops using actual GTFS route types from the database.
+        // Name-based classification misidentifies bus stops as DART/Luas.
+        let tramRail = await GTFSScheduleService.shared.tramAndRailStopIds()
+        if !tramRail.isEmpty {
+            stops = stops.map { stop in
+                guard let routeType = tramRail[stop.id] else { return stop }
+                let newType: TransitStop.TransitStopType = routeType == 0 ? .luas : .dart
+                guard stop.type != newType else { return stop }
+                return TransitStop(id: stop.id, name: stop.name,
+                                   latitude: stop.latitude, longitude: stop.longitude,
+                                   type: newType)
+            }
         }
         return stops
     }

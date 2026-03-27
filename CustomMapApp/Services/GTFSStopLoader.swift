@@ -123,7 +123,7 @@ actor GTFSStopLoader {
 
     private func tryDownloadGTFS(url: URL) async -> [TransitStop]? {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 60 // Large file, give it time
+        request.timeoutInterval = 300 // TFI server can be very slow for this ~65 MB file
 
         let start = Date()
         do {
@@ -269,11 +269,13 @@ actor GTFSStopLoader {
     }
 
     private func parseCSVRow(_ row: String) -> [String] {
+        // Strip BOM if present (common in CSV files, breaks header matching)
+        let cleanRow = row.hasPrefix("\u{FEFF}") ? String(row.dropFirst()) : row
         var fields: [String] = []
         var current = ""
         var inQuotes = false
 
-        for char in row {
+        for char in cleanRow {
             if char == "\"" {
                 inQuotes.toggle()
             } else if char == "," && !inQuotes {
@@ -287,103 +289,98 @@ actor GTFSStopLoader {
         return fields
     }
 
-    /// Known DART station names — must match the stop name closely (not just substring)
-    private static let dartStationNames: Set<String> = [
-        // Coastal line
-        "malahide", "portmarnock", "clongriffin", "howth", "howth junction",
-        "sutton", "bayside", "kilbarrack", "raheny", "harmonstown",
-        "killester", "clontarf road", "connolly", "tara street", "pearse",
-        "grand canal dock", "lansdowne road", "sandymount", "sydney parade",
-        "booterstown", "blackrock", "seapoint", "salthill & monkstown",
-        "dún laoghaire", "dun laoghaire", "sandycove", "glenageary",
-        "dalkey", "killiney", "shankill", "bray", "greystones",
-        // DART+ western line (Maynooth direction)
-        "broombridge", "drumcondra", "pelletstown", "ashtown",
-        "navan road parkway", "castleknock", "coolmine", "clonsilla",
-        "leixlip confey", "leixlip louisa bridge", "maynooth",
-        "m3 parkway", "dunboyne",
-        // DART+ south-western (Kildare direction)
-        "park west", "cherry orchard", "clondalkin", "hazelhatch",
-        "adamstown", "kishoge"
-    ]
-
-    /// Classify a stop as bus/luas/dart/rail based on ID patterns and name.
-    /// DART matching requires the stop name to START WITH or EQUAL a known station name
-    /// to avoid false positives like "Ashtown Grove" or "Castleknock Gate" (bus stops).
+    /// Initial stop classification based on ID/name patterns.
+    /// This is a rough guess — stops are reclassified using actual GTFS route_type
+    /// data after the schedule database loads (see MapTabView and RoutingViewModel).
+    /// Only match when we're very confident to avoid false positives like
+    /// bus stops named "Connolly Road" being tagged as DART.
     private func classifyStop(id: String, name: String) -> TransitStop.TransitStopType {
         let lowerId = id.lowercased()
         let lowerName = name.lowercased()
 
+        // Only match Luas if explicitly in the ID or name
         if lowerId.hasPrefix("luas") || lowerName.contains("luas") {
             return .luas
         }
-        // DART: name must start with or equal a known station name
-        // This prevents "Ashtown Grove" matching "ashtown" or "Castleknock Gate" matching "castleknock"
-        if Self.dartStationNames.contains(where: { station in
-            lowerName == station ||
-            lowerName.hasPrefix(station + " ") ||
-            lowerName.hasPrefix(station + " station") ||
-            lowerName == station + " station"
-        }) {
-            return .dart
-        }
+        // Only match rail if ID has a rail prefix or name explicitly says train/rail station
         if lowerId.hasPrefix("ir_") || lowerId.hasPrefix("rail") ||
            (lowerName.contains("station") && (lowerName.contains("train") || lowerName.contains("rail"))) {
             return .rail
         }
+        // Default everything else to bus — reclassified later from database
         return .bus
     }
 
     // MARK: - ZIP Extraction
 
-    /// Extract a single file from a ZIP archive using Compression framework
+    /// Extract a single file from a ZIP archive using the central directory.
+    /// The old sequential local-header approach broke when entries used "data descriptors"
+    /// (bit 3 of general purpose flag), which sets compressedSize=0 in the local header.
+    /// This caused the offset to the next entry to be wrong, skipping all subsequent files.
+    /// The central directory at the end of the ZIP always has correct sizes.
     func extractFileFromZip(data: Data, fileName: String) -> String? {
-        // ZIP local file header signature
-        let sig: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
-        var offset = 0
+        // Step 1: Find End of Central Directory record (PK\x05\x06)
+        // Search backwards from end of data (EOCD is within last 65557 bytes)
+        var eocdOffset = -1
+        let searchStart = max(0, data.count - 65557)
+        for i in stride(from: data.count - 4, through: searchStart, by: -1) {
+            if data[i] == 0x50 && data[i+1] == 0x4B && data[i+2] == 0x05 && data[i+3] == 0x06 {
+                eocdOffset = i
+                break
+            }
+        }
+        guard eocdOffset >= 0, eocdOffset + 22 <= data.count else { return nil }
 
-        while offset + 30 < data.count {
-            let headerBytes = [UInt8](data[offset..<offset+4])
-            guard headerBytes == sig else { break }
+        // Step 2: Read central directory location
+        let cdOffset = Int(readUInt32(data, at: eocdOffset + 16))
+        let numEntries = Int(readUInt16(data, at: eocdOffset + 10))
+        guard cdOffset >= 0, cdOffset < data.count else { return nil }
 
-            let compressionMethod = readUInt16(data, at: offset + 8)
-            let compressedSize = readUInt32(data, at: offset + 18)
-            let uncompressedSize = readUInt32(data, at: offset + 22)
-            let nameLength = readUInt16(data, at: offset + 26)
-            let extraLength = readUInt16(data, at: offset + 28)
+        // Step 3: Iterate central directory entries (PK\x01\x02)
+        var offset = cdOffset
+        for _ in 0..<numEntries {
+            guard offset + 46 <= data.count,
+                  data[offset] == 0x50, data[offset+1] == 0x4B,
+                  data[offset+2] == 0x01, data[offset+3] == 0x02 else { break }
 
-            let nameStart = offset + 30
-            let nameEnd = nameStart + Int(nameLength)
+            let compressionMethod = readUInt16(data, at: offset + 10)
+            let compressedSize = Int(readUInt32(data, at: offset + 20))
+            let uncompressedSize = Int(readUInt32(data, at: offset + 24))
+            let nameLength = Int(readUInt16(data, at: offset + 28))
+            let extraLength = Int(readUInt16(data, at: offset + 30))
+            let commentLength = Int(readUInt16(data, at: offset + 32))
+            let localHeaderOffset = Int(readUInt32(data, at: offset + 42))
+
+            let nameStart = offset + 46
+            let nameEnd = nameStart + nameLength
             guard nameEnd <= data.count else { break }
 
             let entryName = String(data: data[nameStart..<nameEnd], encoding: .utf8) ?? ""
-            let dataStart = nameEnd + Int(extraLength)
 
-            if entryName == fileName || entryName.hasSuffix("/\(fileName)") {
-                if compressionMethod == 0 {
-                    // Stored (uncompressed)
-                    let dataEnd = dataStart + Int(uncompressedSize)
-                    guard dataEnd <= data.count else { return nil }
-                    return String(data: data[dataStart..<dataEnd], encoding: .utf8)
-                } else if compressionMethod == 8 {
-                    // Deflate — use Compression framework with raw deflate
-                    let dataEnd = dataStart + Int(compressedSize)
-                    guard dataEnd <= data.count else { return nil }
-                    let compressed = data[dataStart..<dataEnd]
+            // Advance to next central directory entry
+            offset = nameEnd + extraLength + commentLength
 
-                    // Raw deflate decompression using Compression framework
-                    let decompressed = decompressRawDeflate(
-                        compressed: compressed,
-                        expectedSize: Int(uncompressedSize)
-                    )
-                    if let decompressed {
-                        return String(data: decompressed, encoding: .utf8)
-                    }
-                    return nil
-                }
+            // Check if this is the file we want
+            guard entryName == fileName || entryName.hasSuffix("/\(fileName)") else { continue }
+
+            // Step 4: Read file data using the local header offset (accurate from central dir)
+            guard localHeaderOffset + 30 <= data.count else { return nil }
+            let localNameLen = Int(readUInt16(data, at: localHeaderOffset + 26))
+            let localExtraLen = Int(readUInt16(data, at: localHeaderOffset + 28))
+            let fileDataStart = localHeaderOffset + 30 + localNameLen + localExtraLen
+
+            if compressionMethod == 0 {
+                let fileDataEnd = fileDataStart + uncompressedSize
+                guard fileDataEnd <= data.count else { return nil }
+                return String(data: data[fileDataStart..<fileDataEnd], encoding: .utf8)
+            } else if compressionMethod == 8 {
+                let fileDataEnd = fileDataStart + compressedSize
+                guard fileDataEnd <= data.count else { return nil }
+                let compressed = data[fileDataStart..<fileDataEnd]
+                return decompressRawDeflate(compressed: compressed, expectedSize: uncompressedSize)
+                    .flatMap { String(data: $0, encoding: .utf8) }
             }
-
-            offset = nameEnd + Int(extraLength) + Int(compressedSize)
+            return nil
         }
         return nil
     }

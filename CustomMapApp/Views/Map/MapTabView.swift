@@ -47,27 +47,25 @@ struct MapTabView: View {
         filterVM.filterMode == .intersection && activeLayerCount > 1
     }
 
-    /// Transit stops filtered by active types and current map region (limit count for performance).
-    /// DART and Rail stations are shared infrastructure — show on either toggle.
-    /// When a bus route is selected, only show stops on that route.
+    /// Transit stops filtered by active types and current map region.
+    /// Visible at ALL zoom levels (dots at far zoom, full pins at close zoom),
+    /// matching how custom layer places behave.
+    /// At far zoom, rail/tram stops are prioritized over bus to avoid overwhelming the map.
     var visibleTransitStops: [TransitStop] {
         guard !showTransitStops.isEmpty, let region = mapRegion else { return [] }
         let latDelta = region.span.latitudeDelta
-        guard latDelta < 0.15 else { return [] }
 
         let hasBusRouteSelected = !selectedBusRouteStopIds.isEmpty
         let wantsDart = showTransitStops.contains(.dart)
         let wantsRail = showTransitStops.contains(.rail)
 
-        return transitStops
+        let filtered = transitStops
             .filter { stop in
                 switch stop.type {
                 case .dart:
-                    // DART stations also show when Rail is on (shared infrastructure)
-                    guard wantsDart || wantsRail else { return false }
+                    guard wantsDart else { return false }
                 case .rail, .suburban:
-                    // Rail stations also show when DART is on (shared infrastructure)
-                    guard wantsRail || wantsDart else { return false }
+                    guard wantsRail else { return false }
                 case .bus:
                     guard showTransitStops.contains(.bus) else { return false }
                     if hasBusRouteSelected { return selectedBusRouteStopIds.contains(stop.id) }
@@ -80,8 +78,20 @@ struct MapTabView: View {
                 abs(stop.latitude - region.center.latitude) < latDelta &&
                 abs(stop.longitude - region.center.longitude) < region.span.longitudeDelta
             }
-            .prefix(200)
-            .map { $0 }
+
+        // Scale limits by zoom — dots are cheap but 14K bus stops would overwhelm
+        if latDelta > 1.0 {
+            // Country-wide: only rail/tram network, no bus
+            return filtered.filter { $0.type != .bus }
+        } else if latDelta > 0.3 {
+            // Regional: all rail/tram + sampled bus
+            let rail = filtered.filter { $0.type != .bus }
+            let bus = Array(filtered.filter { $0.type == .bus }.prefix(150))
+            return rail + bus
+        } else {
+            // City/neighborhood: generous limit
+            return Array(filtered.prefix(500))
+        }
     }
 
     /// Live NTA bus vehicles filtered to current map region
@@ -291,7 +301,7 @@ struct MapTabView: View {
             savedLiveTransit = serializeTransitTypes(newValue)
         }
         .task {
-            // Load transit stops from three sources, deduplicating aggressively.
+            // Load transit stops from three sources.
             // Priority: Luas hardcoded > Irish Rail API > GTFS static feed
             var allStops: [TransitStop] = LuasStopCoordinates.stops
 
@@ -306,21 +316,39 @@ struct MapTabView: View {
                 }
             }
 
-            // GTFS stops — dedup ALL types by proximity (not just non-bus)
+            // GTFS stops — only proximity-check against fixed infrastructure (~100 stops),
+            // NOT against all 14K GTFS stops. The old approach was O(n²) and froze the app
+            // for 10-30 seconds doing ~100M CLLocation.distance() calls.
+            let fixedStops = allStops  // Snapshot: ~100 Luas + Irish Rail stops
             let loader = GTFSStopLoader()
             let gtfsStops = await loader.loadStops()
             let existingIDs = Set(allStops.map { $0.id })
             for stop in gtfsStops where !existingIDs.contains(stop.id) {
-                if !isNearExistingStop(stop, in: allStops, thresholdMeters: 150) {
+                if !isNearExistingStop(stop, in: fixedStops, thresholdMeters: 150) {
                     allStops.append(stop)
                 }
             }
 
             transitStops = allStops
 
-            // Load rail route shapes from GTFS SQLite (route_type=2 = rail, includes DART)
+            // Open schedule database (already built by GTFSSetupView on first install,
+            // or cached SQLite on subsequent launches — this is fast)
             await GTFSScheduleService.shared.loadIfNeeded()
-            await GTFSScheduleService.shared.logRouteTypes()
+
+            // Reclassify stops using authoritative GTFS route_type data.
+            let tramRail = await GTFSScheduleService.shared.tramAndRailStopIds()
+            if !tramRail.isEmpty {
+                transitStops = transitStops.map { stop in
+                    guard let routeType = tramRail[stop.id] else { return stop }
+                    let newType: TransitStop.TransitStopType = routeType == 0 ? .luas : .dart
+                    guard stop.type != newType else { return stop }
+                    return TransitStop(id: stop.id, name: stop.name,
+                                       latitude: stop.latitude, longitude: stop.longitude,
+                                       type: newType)
+                }
+            }
+
+            // Load rail route shapes from GTFS SQLite (route_type=2 = rail, includes DART)
             dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForRouteType(2)
         }
         .task(id: showLiveTransit) {
@@ -491,11 +519,17 @@ struct MapTabView: View {
                         .stroke(.green.opacity(0.6), lineWidth: 3)
                 }
 
-                // DART route lines (from GTFS shapes — accurate track geometry)
-                if showTransitStops.contains(.dart) || showTransitStops.contains(.rail) {
+                // Rail route lines (from GTFS shapes — accurate track geometry)
+                // Color matches active toggle: orange for DART, purple for Rail
+                if showTransitStops.contains(.dart) {
                     ForEach(Array(dartShapeLines.enumerated()), id: \.offset) { _, coords in
                         MapPolyline(coordinates: coords)
                             .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    }
+                } else if showTransitStops.contains(.rail) {
+                    ForEach(Array(dartShapeLines.enumerated()), id: \.offset) { _, coords in
+                        MapPolyline(coordinates: coords)
+                            .stroke(Color(red: 0.69, green: 0.32, blue: 0.87).opacity(0.6), lineWidth: 3)
                     }
                 }
 
@@ -784,24 +818,10 @@ struct MapTabView: View {
 
     // MARK: - Transit Toggle Persistence
 
-    /// Determine pin color for a stop, accounting for shared DART/Rail stations
+    /// Determine pin color for a stop. Each type uses its own color —
+    /// DART and Rail are independent toggles, no cross-showing.
     private func pinColorForStop(_ stop: TransitStop) -> Color? {
-        let wantsDart = showTransitStops.contains(.dart)
-        let wantsRail = showTransitStops.contains(.rail)
-
-        // Shared DART/Rail station with both toggles on → combined color
-        if (stop.type == .dart || stop.type == .rail || stop.type == .suburban) && wantsDart && wantsRail {
-            return Color(red: 0.7, green: 0.4, blue: 0.9) // blended orange-purple
-        }
-        // DART station shown via Rail toggle only → purple
-        if stop.type == .dart && !wantsDart && wantsRail {
-            return .purple
-        }
-        // Rail station shown via DART toggle only → orange
-        if (stop.type == .rail || stop.type == .suburban) && wantsDart && !wantsRail {
-            return .orange
-        }
-        return nil // default color from stop type
+        return nil // use default color from stop type (orange=DART, purple=Rail, etc.)
     }
 
     private func serializeTransitTypes(_ types: Set<TransitStop.TransitStopType>) -> String {

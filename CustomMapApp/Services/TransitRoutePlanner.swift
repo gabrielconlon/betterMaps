@@ -457,11 +457,14 @@ actor TransitRoutePlanner {
     }
 
     private func legMode(for stop: TransitStop, trip: GTFSTrip) -> TransitLegMode {
-        switch stop.type {
-        case .luas: return .luas
-        case .dart: return .dart
-        case .rail, .suburban: return .rail
-        case .bus: return .bus
+        // Use GTFS route_type for accurate mode detection — stop classification
+        // can be wrong (e.g. GTFS Luas stop classified as bus), but the route_type
+        // from the routes table is authoritative.
+        switch trip.routeType {
+        case 0: return .luas   // Tram/Light Rail = Luas
+        case 2: return stop.type == .dart ? .dart : .rail  // Rail (DART or mainline)
+        case 3: return .bus
+        default: return TransitLegMode(stopType: stop.type)
         }
     }
 }

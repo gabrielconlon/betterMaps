@@ -43,9 +43,11 @@ struct CustomMapAppApp: App {
                     GTFSStopLoader.loadCachedRouteNames()
                 }
                 .task {
-                    // Pre-load GTFS stops cache (lightweight, ~2 MB)
-                    // SQLite schedule database opens on first query — no startup preload needed
-                    _ = await GTFSStopLoader().loadStops()
+                    // Pre-load GTFS stops cache if setup was already completed.
+                    // First-time setup is handled by GTFSSetupView before the map appears.
+                    if UserDefaults.standard.bool(forKey: "gtfsSetupComplete") {
+                        _ = await GTFSStopLoader().loadStops()
+                    }
                 }
         }
         .modelContainer(sharedModelContainer)

@@ -11,6 +11,7 @@ struct GTFSTrip: Codable {
     let directionId: Int
     var routeShortName: String
     var shapeId: String
+    var routeType: Int = 3  // GTFS route_type: 0=tram/luas, 2=rail/dart, 3=bus
 }
 
 struct GTFSStopTime: Comparable, Codable {
@@ -80,18 +81,50 @@ actor GTFSScheduleService {
     func loadIfNeeded() async {
         guard !isLoaded else { return }
 
-        // Check if SQLite database is fresh
+        // Check if SQLite database is fresh AND has data
         if GTFSDatabase.isFresh {
             if db.open() {
-                isLoaded = true
                 let trips = db.count(table: "trips")
-                let stops = db.count(table: "stop_times") / 50 // approximate unique stops
-                await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .cached, durationMs: 0, detail: "\(trips) trips")
-                return
+                if trips > 0 {
+                    isLoaded = true
+                    await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .cached, durationMs: 0, detail: "\(trips) trips")
+                    return
+                }
+                // Database exists but has 0 trips — likely bad parse, re-download
+                db.close()
+                try? FileManager.default.removeItem(atPath: GTFSDatabase.defaultPath)
+                await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .failure, durationMs: 0, detail: "Cached DB has 0 trips — re-downloading")
             }
         }
 
-        // Download and parse into SQLite
+        // Try cached ZIP first (GTFSStopLoader already downloaded it — avoids a second 65 MB download)
+        if GTFSStopLoader.hasCachedZip,
+           let cachedData = try? Data(contentsOf: GTFSStopLoader.cachedZipURL) {
+            let start = Date()
+            try? FileManager.default.removeItem(atPath: GTFSDatabase.defaultPath)
+            if db.open() {
+                db.createTables()
+                await parseScheduleFromZip(data: cachedData)
+                db.createIndexes()
+                let trips = db.count(table: "trips")
+                let ms = Int(Date().timeIntervalSince(start) * 1000)
+                if trips > 0 {
+                    let stopTimes = db.count(table: "stop_times")
+                    let routes = db.count(table: "routes")
+                    let shapes = db.count(table: "shapes")
+                    await APILogger.shared.log(
+                        service: "TFI", endpoint: "GTFS → SQLite (cached ZIP)",
+                        status: .success, durationMs: ms,
+                        detail: "\(trips) trips, \(stopTimes) stop_times, \(routes) routes, \(shapes) shapes. Parse: \(ms)ms"
+                    )
+                    isLoaded = true
+                    return
+                }
+                db.close()
+            }
+        }
+
+        // No cached ZIP — download fresh
         let urls = [
             "https://www.transportforireland.ie/transitData/Data/GTFS_All.zip",
             "https://www.transportforireland.ie/transitData/Data/GTFS_Realtime.zip"
@@ -102,7 +135,7 @@ actor GTFSScheduleService {
             let start = Date()
             do {
                 var request = URLRequest(url: url)
-                request.timeoutInterval = 120
+                request.timeoutInterval = 300  // TFI server can be very slow
                 let (data, response) = try await URLSession.shared.data(for: request)
                 let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
@@ -125,13 +158,20 @@ actor GTFSScheduleService {
                 let totalMs = Int(Date().timeIntervalSince(start) * 1000)
                 let parseMs = Int(Date().timeIntervalSince(parseStart) * 1000)
                 let trips = db.count(table: "trips")
+                let stopTimes = db.count(table: "stop_times")
+                let routes = db.count(table: "routes")
+                let shapes = db.count(table: "shapes")
                 await APILogger.shared.log(
                     service: "TFI", endpoint: "GTFS → SQLite",
-                    status: .success, durationMs: totalMs,
-                    detail: "\(trips) trips. Download: \(ms)ms, Parse: \(parseMs)ms"
+                    status: trips > 0 ? .success : .failure, durationMs: totalMs,
+                    detail: "\(trips) trips, \(stopTimes) stop_times, \(routes) routes, \(shapes) shapes. Download: \(ms)ms, Parse: \(parseMs)ms"
                 )
-                isLoaded = true
-                return
+                if trips > 0 {
+                    isLoaded = true
+                    return
+                }
+                // Parse failed — try next URL
+                continue
             } catch {
                 continue
             }
@@ -148,10 +188,12 @@ actor GTFSScheduleService {
 
         let sql = """
             SELECT st.trip_id, st.stop_id, st.departure_seconds, st.stop_sequence, st.departure_time,
-                   t.route_id, t.service_id, t.direction_id, t.route_short_name, t.shape_id
+                   t.route_id, t.service_id, t.direction_id, t.route_short_name, t.shape_id,
+                   COALESCE(r.route_type, 3)
             FROM stop_times st
             JOIN trips t ON st.trip_id = t.trip_id
             JOIN calendars c ON t.service_id = c.service_id
+            LEFT JOIN routes r ON t.route_id = r.route_id
             WHERE st.stop_id = ? AND st.departure_seconds >= ? AND st.departure_seconds <= ?
             AND c.\(weekdayCol) = 1
             ORDER BY st.departure_seconds
@@ -181,7 +223,8 @@ actor GTFSScheduleService {
                 serviceId: db.columnText(stmt, index: 6) ?? "",
                 directionId: db.columnInt(stmt, index: 7),
                 routeShortName: db.columnText(stmt, index: 8) ?? "",
-                shapeId: db.columnText(stmt, index: 9) ?? ""
+                shapeId: db.columnText(stmt, index: 9) ?? "",
+                routeType: db.columnInt(stmt, index: 10)
             )
             results.append((st, trip))
         }
@@ -282,7 +325,13 @@ actor GTFSScheduleService {
 
     /// Find any trip for a given route ID (for shape lookup)
     func anyTripForRoute(routeId: String) -> GTFSTrip? {
-        let sql = "SELECT trip_id, route_id, service_id, direction_id, route_short_name, shape_id FROM trips WHERE route_id = ? AND shape_id != '' LIMIT 1"
+        let sql = """
+            SELECT t.trip_id, t.route_id, t.service_id, t.direction_id, t.route_short_name, t.shape_id,
+                   COALESCE(r.route_type, 3)
+            FROM trips t
+            LEFT JOIN routes r ON t.route_id = r.route_id
+            WHERE t.route_id = ? AND t.shape_id != '' LIMIT 1
+        """
         guard let stmt = db.prepare(sql) else { return nil }
         defer { db.finalize(stmt) }
         sqlite3_bind_text(stmt, 1, (routeId as NSString).utf8String, -1, nil)
@@ -293,7 +342,8 @@ actor GTFSScheduleService {
             serviceId: db.columnText(stmt, index: 2) ?? "",
             directionId: db.columnInt(stmt, index: 3),
             routeShortName: db.columnText(stmt, index: 4) ?? "",
-            shapeId: db.columnText(stmt, index: 5) ?? ""
+            shapeId: db.columnText(stmt, index: 5) ?? "",
+            routeType: db.columnInt(stmt, index: 6)
         )
     }
 
@@ -331,14 +381,43 @@ actor GTFSScheduleService {
         return ids
     }
 
-    /// Find all unique shapes for routes of a given GTFS route_type.
+    /// Authoritative stop classification using GTFS route_type data.
+    /// Returns stop_id → route_type for stops served by tram (0) or rail (2).
+    /// Stops NOT in the result should be classified as bus.
+    /// This replaces the unreliable name-based guessing.
+    func tramAndRailStopIds() -> [String: Int] {
+        let sql = """
+            SELECT st.stop_id, MIN(r.route_type)
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE r.route_type IN (0, 2)
+            GROUP BY st.stop_id
+        """
+        guard let stmt = db.prepare(sql) else { return [:] }
+        defer { db.finalize(stmt) }
+
+        var result: [String: Int] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let stopId = db.columnText(stmt, index: 0) {
+                result[stopId] = db.columnInt(stmt, index: 1)
+            }
+        }
+        return result
+    }
+
+    /// Find one representative shape per route+direction for a given GTFS route_type.
+    /// The old LIMIT 50 on DISTINCT shape_id grabbed arbitrary shapes that could all
+    /// come from the same 2-3 routes, leaving entire lines (e.g. southern DART) undrawn.
+    /// GROUP BY route_id, direction_id ensures every route/direction gets one shape.
     /// route_type: 0=tram, 1=subway, 2=rail, 3=bus
     func shapeCoordinatesForRouteType(_ routeType: Int) -> [[CLLocationCoordinate2D]] {
         let sql = """
-            SELECT DISTINCT t.shape_id FROM trips t
+            SELECT MIN(t.shape_id)
+            FROM trips t
             JOIN routes r ON t.route_id = r.route_id
             WHERE r.route_type = ? AND t.shape_id != ''
-            LIMIT 50
+            GROUP BY r.route_id, t.direction_id
         """
         guard let stmt = db.prepare(sql) else { return [] }
         defer { db.finalize(stmt) }
@@ -613,10 +692,12 @@ actor GTFSScheduleService {
     }
 
     private func parseCSVRow(_ row: String) -> [String] {
+        // Strip BOM if present (common in CSV files, breaks header matching)
+        let cleanRow = row.hasPrefix("\u{FEFF}") ? String(row.dropFirst()) : row
         var fields: [String] = []
         var current = ""
         var inQuotes = false
-        for char in row {
+        for char in cleanRow {
             if char == "\"" { inQuotes.toggle() }
             else if char == "," && !inQuotes {
                 fields.append(current.trimmingCharacters(in: .whitespaces))
