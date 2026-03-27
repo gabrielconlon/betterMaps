@@ -303,22 +303,22 @@ struct MapTabView: View {
         }
         .task {
             // Load transit stops from three sources.
-            // Priority: GTFS static feed (has correct stop IDs for schedule lookups)
-            //   then Luas hardcoded, then Irish Rail API (only for stops GTFS misses).
+            // Hardcoded Luas stops first (curated coordinates, always included),
+            // then GTFS (correct stop IDs for timetables), then Irish Rail API (gap-fill).
+            var allStops: [TransitStop] = LuasStopCoordinates.stops
+
+            // GTFS stops — add if not near a hardcoded Luas stop.
+            // These have IDs that match stop_times for timetable lookups.
             let loader = GTFSStopLoader()
             let gtfsStops = await loader.loadStops()
-
-            // Start with GTFS stops — these have IDs that match stop_times for timetables
-            var allStops: [TransitStop] = gtfsStops
-
-            // Add hardcoded Luas stops only if not near an existing GTFS stop
-            for luasStop in LuasStopCoordinates.stops {
-                if !isNearExistingStop(luasStop, in: allStops, thresholdMeters: 250) {
-                    allStops.append(luasStop)
+            let fixedStops = allStops  // Snapshot of Luas stops for proximity check
+            for stop in gtfsStops {
+                if !isNearExistingStop(stop, in: fixedStops, thresholdMeters: 150) {
+                    allStops.append(stop)
                 }
             }
 
-            // Irish Rail API stations — add only if GTFS doesn't already cover them.
+            // Irish Rail API stations — add only if not already covered.
             // Irish Rail API IDs (e.g. "BRAY") don't match GTFS stop_times, so we
             // only add stations that GTFS missed to avoid orphan stops with no timetable.
             let railService = IrishRailService()
