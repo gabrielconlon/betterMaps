@@ -331,6 +331,32 @@ actor GTFSScheduleService {
         return ids
     }
 
+    /// Find all unique shapes for routes whose name matches a keyword (e.g., "DART", "Luas")
+    /// Returns distinct shape coordinates arrays for drawing route lines.
+    func shapeCoordinatesForRoutes(nameContaining keyword: String) -> [[CLLocationCoordinate2D]] {
+        // Find distinct shape_ids for matching routes
+        let sql = """
+            SELECT DISTINCT t.shape_id FROM trips t
+            WHERE t.route_short_name LIKE ? AND t.shape_id != ''
+            LIMIT 20
+        """
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
+        let pattern = "%\(keyword)%"
+        sqlite3_bind_text(stmt, 1, (pattern as NSString).utf8String, -1, nil)
+
+        var shapeIds: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let id = db.columnText(stmt, index: 0) { shapeIds.append(id) }
+        }
+
+        // Load coordinates for each shape
+        return shapeIds.compactMap { id in
+            let coords = shapeCoordinates(for: id)
+            return coords.count >= 2 ? coords : nil
+        }
+    }
+
     /// Database age description for staleness display
     var dataAge: String? { GTFSDatabase.ageDescription }
 

@@ -30,6 +30,7 @@ struct MapTabView: View {
     @State private var selectedBusRouteName: String = ""
     @State private var selectedBusRouteStopIds: Set<String> = [] // stops on selected bus route
     @State private var showFavoritesPanel = false
+    @State private var dartShapeLines: [[CLLocationCoordinate2D]] = [] // GTFS shapes for DART
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
     @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
@@ -315,6 +316,10 @@ struct MapTabView: View {
                     transitStops.append(stop)
                 }
             }
+
+            // Load DART route shapes from GTFS SQLite (accurate track geometry)
+            await GTFSScheduleService.shared.loadIfNeeded()
+            dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForRoutes(nameContaining: "DART")
         }
         .task(id: showLiveTransit) {
             // Debounce: wait 1 second after last toggle change before making API calls
@@ -484,22 +489,11 @@ struct MapTabView: View {
                         .stroke(.green.opacity(0.6), lineWidth: 3)
                 }
 
-                // DART route lines (built from actual station pin coordinates)
+                // DART route lines (from GTFS shapes — accurate track geometry)
                 if showTransitStops.contains(.dart) || showTransitStops.contains(.rail) {
-                    let dartLines: [(names: [String], color: Color)] = [
-                        (DARTLineBuilder.mainLineNames, .orange),
-                        (DARTLineBuilder.howthBranchNames, .orange),
-                        (DARTLineBuilder.malahideBranchNames, .orange),
-                        (DARTLineBuilder.malahideToJunctionNames, .orange),
-                        (DARTLineBuilder.westernLineNames, .orange),
-                        (DARTLineBuilder.southWesternLineNames, .orange),
-                    ]
-                    ForEach(Array(dartLines.enumerated()), id: \.offset) { _, line in
-                        let coords = DARTLineBuilder.buildLine(names: line.names, from: transitStops)
-                        if coords.count >= 2 {
-                            MapPolyline(coordinates: coords)
-                                .stroke(line.color.opacity(0.6), lineWidth: 3)
-                        }
+                    ForEach(Array(dartShapeLines.enumerated()), id: \.offset) { _, coords in
+                        MapPolyline(coordinates: coords)
+                            .stroke(.orange.opacity(0.6), lineWidth: 3)
                     }
                 }
 
