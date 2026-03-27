@@ -246,8 +246,8 @@ struct MapTabView: View {
                     .padding(.bottom, 4)
                 }
 
-                // Bus route label + dismiss
-                if !selectedBusRouteCoords.isEmpty {
+                // Bus route label + dismiss (show when route shape OR stop filter is active)
+                if !selectedBusRouteCoords.isEmpty || !selectedBusRouteStopIds.isEmpty {
                     HStack(spacing: 8) {
                         Label("Route \(selectedBusRouteName)", systemImage: "bus.fill")
                             .font(.caption.bold())
@@ -681,6 +681,7 @@ struct MapTabView: View {
             Button(action: { viewModel.showLayerSidebar() }) {
                 Image(systemName: "gearshape.fill")
                     .font(.body)
+                    .foregroundStyle(.primary)
                     .padding(10)
                     .background(.ultraThinMaterial)
                     .clipShape(Circle())
