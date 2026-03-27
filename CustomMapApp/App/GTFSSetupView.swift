@@ -8,12 +8,14 @@ struct GTFSSetupView: View {
     @State private var progress: Double = 0
     @State private var statusText = ""
     @State private var detailText = ""
+    @State private var quipText = ""
     @State private var isWorking = false
     @State private var isDone = false
     @State private var hasFailed = false
     @State private var errorMessage: String?
     @State private var elapsedSeconds = 0
     @State private var timerTask: Task<Void, Never>?
+    @State private var quipTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -92,6 +94,17 @@ struct GTFSSetupView: View {
                             .foregroundStyle(.tertiary)
                     }
 
+                    // Rotating quips to keep the user entertained
+                    if !quipText.isEmpty && isWorking && !isDone && !hasFailed {
+                        Text(quipText)
+                            .font(.caption.italic())
+                            .foregroundStyle(.secondary.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .transition(.opacity)
+                            .id(quipText)
+                            .padding(.top, 4)
+                    }
+
                     if isWorking && !isDone && !hasFailed && elapsedSeconds > 0 {
                         Text("Elapsed: \(formattedTime(elapsedSeconds))")
                             .font(.caption2)
@@ -156,6 +169,7 @@ struct GTFSSetupView: View {
             if !isWorking || hasFailed {
                 Button("Skip for now") {
                     timerTask?.cancel()
+                    quipTask?.cancel()
                     isComplete = true
                 }
                 .font(.subheadline)
@@ -171,6 +185,79 @@ struct GTFSSetupView: View {
             .foregroundStyle(.tertiary)
             .padding(.top, 16)
             .padding(.bottom, 30)
+        }
+    }
+
+    // MARK: - Quips
+
+    private static let downloadQuips = [
+        "Convincing the TFI server we're worthy...",
+        "The server is thinking about it...",
+        "Downloading every bus stop in Ireland. Yes, all of them.",
+        "This file is 65 MB. That's a lot of bus stops.",
+        "Somewhere in Dublin, a server is working very hard right now.",
+        "Fun fact: Ireland has more bus stops than roundabouts. Barely.",
+        "Waiting for bytes like waiting for the 46A...",
+        "The TFI server runs on vibes and good intentions.",
+        "65 MB never felt so heavy.",
+        "If this were a bus, it'd be 'due' any minute now.",
+        "Establishing a meaningful connection with transportforireland.ie...",
+        "Still faster than Bus Eireann WiFi.",
+        "Loading... like a Dublin Bus on a rainy Monday.",
+        "The server is on Irish time. We respect that.",
+        "Counting every stop between Donabate and Greystones...",
+    ]
+
+    private static let buildQuips = [
+        "Teaching the database about the 7am Maynooth commuter...",
+        "Sorting 1.3 million timetable entries. No big deal.",
+        "Building a tiny train set inside your phone.",
+        "Every trip. Every stop. Every 4:37am service nobody takes.",
+        "Indexing all the ways to get from A to B (and C, and D...)",
+        "Making SQLite earn its keep.",
+        "Crunching numbers like a Luas crunches leaves in autumn.",
+        "The database is doing its stretches before the big run.",
+        "Organising chaos into timetables since 2026.",
+        "Filing 35,000 trips under 'sure it'll be grand'.",
+        "Cross-referencing every DART with every Dublin Bus. Send help.",
+        "Your phone is now an honorary transport planner.",
+        "Wiring up connections even Irish Rail hasn't thought of.",
+        "Turning CSV soup into queryable gold.",
+        "Almost there... just 700,000 more shape points to go.",
+    ]
+
+    private static let classifyQuips = [
+        "Figuring out which Connolly is which...",
+        "DART or bus? The eternal question, answered 14,000 times.",
+        "Telling Luas stops apart from suspiciously similar bus stops.",
+        "Mapping the unmappable.",
+        "Final touches. Like garnish, but for databases.",
+    ]
+
+    private func startQuipRotation(quips: [String]) {
+        quipTask?.cancel()
+        // Show first quip immediately
+        withAnimation(.easeInOut(duration: 0.3)) {
+            quipText = quips.randomElement() ?? ""
+        }
+        quipTask = Task { @MainActor in
+            var used = Set<String>()
+            used.insert(quipText)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Double.random(in: 5...8)))
+                guard !Task.isCancelled else { break }
+                // Pick an unused quip, or reset if we've shown them all
+                var remaining = quips.filter { !used.contains($0) }
+                if remaining.isEmpty {
+                    used.removeAll()
+                    remaining = quips
+                }
+                let next = remaining.randomElement() ?? ""
+                used.insert(next)
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    quipText = next
+                }
+            }
         }
     }
 
@@ -195,27 +282,31 @@ struct GTFSSetupView: View {
 
         // Step 1: Download GTFS ZIP and extract stops (~65 MB, slowest part)
         update(status: "Downloading transit data...",
-               detail: "~65 MB from transportforireland.ie — this is the slowest step",
+               detail: "~65 MB from transportforireland.ie",
                progress: 0.05)
+        startQuipRotation(quips: Self.downloadQuips)
 
         let stops = await GTFSStopLoader().loadStops()
         if stops.isEmpty {
+            quipTask?.cancel()
             fail("Could not download transit data.\nCheck your internet connection and try again.")
             return
         }
         update(status: "Downloaded \(stops.count.formatted()) stops",
-               detail: "ZIP cached locally — building schedule database next",
+               detail: "ZIP cached locally",
                progress: 0.35)
 
         // Step 2: Build SQLite database from cached ZIP (no second download!)
         update(status: "Building schedule database...",
-               detail: "Parsing ~1,400 routes and timetables from cached data",
+               detail: "Parsing ~1,400 routes and millions of timetable entries",
                progress: 0.40)
+        startQuipRotation(quips: Self.buildQuips)
 
         await GTFSScheduleService.shared.loadIfNeeded()
 
         let tripCount = await GTFSScheduleService.shared.tripCount
         if tripCount == 0 {
+            quipTask?.cancel()
             fail("Schedule database could not be built.\nThe transit data may have changed format.\nTap Retry or Skip to use the app without transit.")
             return
         }
@@ -225,8 +316,9 @@ struct GTFSSetupView: View {
 
         // Step 3: Pre-compute stop classifications
         update(status: "Classifying stops by transit type...",
-               detail: "Identifying Luas, DART, and bus stops from route data",
+               detail: "Identifying Luas, DART, and rail stops from route data",
                progress: 0.85)
+        startQuipRotation(quips: Self.classifyQuips)
 
         let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
 
@@ -239,6 +331,8 @@ struct GTFSSetupView: View {
 
         // Done
         timerTask?.cancel()
+        quipTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.3)) { quipText = "" }
         update(status: "All set!",
                detail: "\(stops.count.formatted()) stops \u{00B7} \(tripCount.formatted()) trips \u{00B7} \(dartShapes.count) DART + \(railShapes.count) Rail shapes",
                progress: 1.0)
@@ -254,6 +348,8 @@ struct GTFSSetupView: View {
 
     private func fail(_ message: String) {
         timerTask?.cancel()
+        quipTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.3)) { quipText = "" }
         errorMessage = message
         hasFailed = true
         isWorking = false

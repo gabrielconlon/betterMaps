@@ -53,7 +53,7 @@ final class GTFSDatabase {
         // Performance pragmas
         execute("PRAGMA journal_mode = WAL")
         execute("PRAGMA synchronous = NORMAL")
-        execute("PRAGMA cache_size = -2000") // 2 MB cache
+        execute("PRAGMA cache_size = -8000") // 8 MB cache — keeps hot index pages in memory
         return true
     }
 
@@ -132,6 +132,12 @@ final class GTFSDatabase {
         execute("CREATE INDEX IF NOT EXISTS idx_st_trip_seq ON stop_times(trip_id, stop_sequence)")
         execute("CREATE INDEX IF NOT EXISTS idx_trips_route ON trips(route_id)")
         execute("CREATE INDEX IF NOT EXISTS idx_shapes_id ON shapes(shape_id, sequence)")
+        // Covering index: departuresFromStop() can be satisfied entirely from index
+        execute("CREATE INDEX IF NOT EXISTS idx_st_stop_dep_trip ON stop_times(stop_id, departure_seconds, trip_id)")
+        // Fully covers tripReachesStop() 3-column WHERE clause
+        execute("CREATE INDEX IF NOT EXISTS idx_st_trip_stop_seq ON stop_times(trip_id, stop_id, stop_sequence)")
+        // Accelerates classifyTramAndRailStops(), shapeCoordinatesForDART/NonDartRail()
+        execute("CREATE INDEX IF NOT EXISTS idx_routes_type_name ON routes(route_type, route_short_name)")
     }
 
     func prepareInsertShape() -> OpaquePointer? {

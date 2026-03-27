@@ -167,11 +167,14 @@ actor TransitRoutePlanner {
                 // Early exit: found enough direct routes
                 if options.count >= maxResults { break }
 
+                // Bulk-load all stops for this trip ONCE, then check destinations in-memory.
+                // This replaces per-dest tripReachesStop() calls (N×M queries → N queries).
+                let tripStops = await GTFSScheduleService.shared.stopsForTrip(tripId: trip.tripId)
+
                 for destStopId in destStopIds {
-                    guard let alightStopTime = await GTFSScheduleService.shared.tripReachesStop(
-                        tripId: trip.tripId, stopId: destStopId,
-                        afterSequence: boardStopTime.stopSequence
-                    ) else { continue }
+                    guard let alightStopTime = tripStops.first(where: {
+                        $0.stopId == destStopId && $0.stopSequence > boardStopTime.stopSequence
+                    }) else { continue }
 
                     guard let destStop = stopById[destStopId] else { continue }
 
@@ -182,13 +185,12 @@ actor TransitRoutePlanner {
                     let numStops = alightStopTime.stopSequence - boardStopTime.stopSequence
                     let mode = legMode(for: originStop, trip: trip)
 
-                    // Build path coordinates through intermediate stops
-                    let pathCoords = await buildPathCoords(
-                        tripId: trip.tripId,
-                        fromSequence: boardStopTime.stopSequence,
-                        toSequence: alightStopTime.stopSequence,
-                        stopById: stopById
-                    )
+                    // Build path coordinates from the already-loaded trip stops
+                    let pathCoords = tripStops
+                        .filter { $0.stopSequence >= boardStopTime.stopSequence && $0.stopSequence <= alightStopTime.stopSequence }
+                        .sorted { $0.stopSequence < $1.stopSequence }
+                        .compactMap { stopById[$0.stopId]?.coordinate }
+                        .map { LegCoordinate($0) }
 
                     var legs: [TransitLeg] = []
                     if walkToOrigin > 0 {
@@ -290,11 +292,13 @@ actor TransitRoutePlanner {
                             for (connBoardTime, connTrip) in connectingDepartures {
                                 if connTrip.tripId == trip.tripId { continue }
 
+                                // Bulk-load connecting trip stops once (same N+1 fix as Phase 1)
+                                let connTripStops = await GTFSScheduleService.shared.stopsForTrip(tripId: connTrip.tripId)
+
                                 for destStopId in destStopIds {
-                                    guard let connAlightTime = await GTFSScheduleService.shared.tripReachesStop(
-                                        tripId: connTrip.tripId, stopId: destStopId,
-                                        afterSequence: connBoardTime.stopSequence
-                                    ) else { continue }
+                                    guard let connAlightTime = connTripStops.first(where: {
+                                        $0.stopId == destStopId && $0.stopSequence > connBoardTime.stopSequence
+                                    }) else { continue }
 
                                     guard let destStop = stopById[destStopId],
                                           let transferStop = stopById[transferStopId] else { continue }
@@ -311,18 +315,17 @@ actor TransitRoutePlanner {
                                     let mode1 = legMode(for: originStop, trip: trip)
                                     let mode2 = legMode(for: transferStop, trip: connTrip)
 
-                                    let pathCoords1 = await buildPathCoords(
-                                        tripId: trip.tripId,
-                                        fromSequence: boardStopTime.stopSequence,
-                                        toSequence: midStopTime.stopSequence,
-                                        stopById: stopById
-                                    )
-                                    let pathCoords2 = await buildPathCoords(
-                                        tripId: connTrip.tripId,
-                                        fromSequence: connBoardTime.stopSequence,
-                                        toSequence: connAlightTime.stopSequence,
-                                        stopById: stopById
-                                    )
+                                    // Build path coords from already-loaded trip stops
+                                    let pathCoords1 = tripStops
+                                        .filter { $0.stopSequence >= boardStopTime.stopSequence && $0.stopSequence <= midStopTime.stopSequence }
+                                        .sorted { $0.stopSequence < $1.stopSequence }
+                                        .compactMap { stopById[$0.stopId]?.coordinate }
+                                        .map { LegCoordinate($0) }
+                                    let pathCoords2 = connTripStops
+                                        .filter { $0.stopSequence >= connBoardTime.stopSequence && $0.stopSequence <= connAlightTime.stopSequence }
+                                        .sorted { $0.stopSequence < $1.stopSequence }
+                                        .compactMap { stopById[$0.stopId]?.coordinate }
+                                        .map { LegCoordinate($0) }
 
                                     var legs: [TransitLeg] = []
                                     if walkToOrigin > 0 {

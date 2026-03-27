@@ -104,8 +104,11 @@ actor GTFSScheduleService {
             try? FileManager.default.removeItem(atPath: GTFSDatabase.defaultPath)
             if db.open() {
                 db.createTables()
+                db.execute("PRAGMA synchronous = OFF")  // Safe: fresh DB, crash = retry
                 await parseScheduleFromZip(data: cachedData)
                 db.createIndexes()
+                db.execute("PRAGMA optimize")
+                db.execute("PRAGMA synchronous = NORMAL")
                 let trips = db.count(table: "trips")
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
                 if trips > 0 {
@@ -149,11 +152,14 @@ actor GTFSScheduleService {
                 try? FileManager.default.removeItem(atPath: GTFSDatabase.defaultPath)
                 guard db.open() else { continue }
                 db.createTables()
+                db.execute("PRAGMA synchronous = OFF")  // Safe: fresh DB, crash = retry
 
                 // Parse CSV directly into SQLite
                 let parseStart = Date()
                 await parseScheduleFromZip(data: data)
                 db.createIndexes()
+                db.execute("PRAGMA optimize")
+                db.execute("PRAGMA synchronous = NORMAL")
 
                 let totalMs = Int(Date().timeIntervalSince(start) * 1000)
                 let parseMs = Int(Date().timeIntervalSince(parseStart) * 1000)
