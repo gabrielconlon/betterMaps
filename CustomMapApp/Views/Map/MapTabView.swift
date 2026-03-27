@@ -478,20 +478,29 @@ struct MapTabView: View {
                         .stroke(.green.opacity(0.6), lineWidth: 3)
                 }
 
-                // DART route lines (hardcoded station order — single coastal line with branches)
+                // DART route lines (built from actual station pin coordinates)
                 if showTransitStops.contains(.dart) || showTransitStops.contains(.rail) {
-                    // Main line: Howth Junction → Greystones
-                    MapPolyline(coordinates: DARTStationCoordinates.mainLine)
-                        .stroke(.orange.opacity(0.6), lineWidth: 3)
-                    // Howth branch
-                    MapPolyline(coordinates: DARTStationCoordinates.howthBranch)
-                        .stroke(.orange.opacity(0.6), lineWidth: 3)
-                    // Malahide branch
-                    MapPolyline(coordinates: DARTStationCoordinates.malahideBranch)
-                        .stroke(.orange.opacity(0.6), lineWidth: 3)
-                    // Connection: Malahide branch → Howth Junction
-                    MapPolyline(coordinates: DARTStationCoordinates.malahideToJunction)
-                        .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    let mainCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.mainLineNames, from: transitStops)
+                    let howthCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.howthBranchNames, from: transitStops)
+                    let malahideCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.malahideBranchNames, from: transitStops)
+                    let junctionCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.malahideToJunctionNames, from: transitStops)
+
+                    if mainCoords.count >= 2 {
+                        MapPolyline(coordinates: mainCoords)
+                            .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    }
+                    if howthCoords.count >= 2 {
+                        MapPolyline(coordinates: howthCoords)
+                            .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    }
+                    if malahideCoords.count >= 2 {
+                        MapPolyline(coordinates: malahideCoords)
+                            .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    }
+                    if junctionCoords.count >= 2 {
+                        MapPolyline(coordinates: junctionCoords)
+                            .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    }
                 }
 
                 // Transit stop annotations (toggled layer)

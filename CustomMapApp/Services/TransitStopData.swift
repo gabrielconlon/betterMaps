@@ -95,64 +95,57 @@ struct LuasStopCoordinates {
     }
 }
 
-// MARK: - DART Station Coordinates (single coastal line, ordered north → south)
+// MARK: - DART Line Builder
 
-struct DARTStationCoordinates {
-    /// Malahide branch (north)
-    static let malahideBranch: [CLLocationCoordinate2D] = [
-        CLLocationCoordinate2D(latitude: 53.4509, longitude: -6.1545),  // Malahide
-        CLLocationCoordinate2D(latitude: 53.4275, longitude: -6.1467),  // Portmarnock
-        CLLocationCoordinate2D(latitude: 53.4031, longitude: -6.1520),  // Clongriffin
+/// Builds DART route lines from actual station coordinates in the transit stop data.
+/// Uses station name matching (ordered) so lines pass through the real pin locations.
+struct DARTLineBuilder {
+
+    /// Ordered station names for each DART branch.
+    /// The line is drawn by finding each station in the loaded transit stops
+    /// and connecting their real coordinates in order.
+
+    static let howthBranchNames = [
+        "Howth", "Sutton", "Bayside", "Howth Junction"
     ]
 
-    /// Howth branch (north)
-    static let howthBranch: [CLLocationCoordinate2D] = [
-        CLLocationCoordinate2D(latitude: 53.3870, longitude: -6.0652),  // Howth
-        CLLocationCoordinate2D(latitude: 53.3895, longitude: -6.0996),  // Sutton
-        CLLocationCoordinate2D(latitude: 53.3912, longitude: -6.1148),  // Bayside
-        CLLocationCoordinate2D(latitude: 53.3838, longitude: -6.1150),  // Howth Junction
+    static let malahideBranchNames = [
+        "Malahide", "Portmarnock", "Clongriffin"
     ]
 
-    /// Main line (Howth Junction → Greystones, ordered north to south)
-    static let mainLine: [CLLocationCoordinate2D] = [
-        CLLocationCoordinate2D(latitude: 53.3838, longitude: -6.1150),  // Howth Junction
-        CLLocationCoordinate2D(latitude: 53.3767, longitude: -6.1266),  // Kilbarrack
-        CLLocationCoordinate2D(latitude: 53.3710, longitude: -6.1458),  // Raheny
-        CLLocationCoordinate2D(latitude: 53.3651, longitude: -6.1574),  // Harmonstown
-        CLLocationCoordinate2D(latitude: 53.3588, longitude: -6.1705),  // Killester
-        CLLocationCoordinate2D(latitude: 53.3586, longitude: -6.1884),  // Clontarf Road
-        // Waypoints: track curves south along coast through docks area
-        CLLocationCoordinate2D(latitude: 53.3555, longitude: -6.1960),  // curve past Fairview
-        CLLocationCoordinate2D(latitude: 53.3520, longitude: -6.2100),  // East Wall
-        CLLocationCoordinate2D(latitude: 53.3505, longitude: -6.2250),  // Docklands area
-        CLLocationCoordinate2D(latitude: 53.3510, longitude: -6.2380),  // approaching Connolly
-        CLLocationCoordinate2D(latitude: 53.3531, longitude: -6.2497),  // Connolly
-        CLLocationCoordinate2D(latitude: 53.3472, longitude: -6.2541),  // Tara Street
-        CLLocationCoordinate2D(latitude: 53.3436, longitude: -6.2493),  // Pearse
-        // Waypoint: track curves east toward Grand Canal Dock
-        CLLocationCoordinate2D(latitude: 53.3420, longitude: -6.2400),  // between Pearse & GCD
-        CLLocationCoordinate2D(latitude: 53.3396, longitude: -6.2295),  // Grand Canal Dock
-        CLLocationCoordinate2D(latitude: 53.3328, longitude: -6.2274),  // Lansdowne Road
-        CLLocationCoordinate2D(latitude: 53.3279, longitude: -6.2186),  // Sandymount
-        CLLocationCoordinate2D(latitude: 53.3213, longitude: -6.2107),  // Sydney Parade
-        CLLocationCoordinate2D(latitude: 53.3145, longitude: -6.2005),  // Booterstown
-        CLLocationCoordinate2D(latitude: 53.3019, longitude: -6.1784),  // Blackrock
-        CLLocationCoordinate2D(latitude: 53.2934, longitude: -6.1695),  // Seapoint
-        CLLocationCoordinate2D(latitude: 53.2866, longitude: -6.1614),  // Salthill & Monkstown
-        CLLocationCoordinate2D(latitude: 53.2795, longitude: -6.1348),  // Dún Laoghaire
-        CLLocationCoordinate2D(latitude: 53.2789, longitude: -6.1183),  // Sandycove
-        CLLocationCoordinate2D(latitude: 53.2748, longitude: -6.1130),  // Glenageary
-        CLLocationCoordinate2D(latitude: 53.2717, longitude: -6.1036),  // Dalkey
-        CLLocationCoordinate2D(latitude: 53.2604, longitude: -6.0935),  // Killiney
-        CLLocationCoordinate2D(latitude: 53.2424, longitude: -6.0869),  // Shankill
-        CLLocationCoordinate2D(latitude: 53.2049, longitude: -6.0985),  // Bray
-        CLLocationCoordinate2D(latitude: 53.1454, longitude: -6.0713),  // Greystones
+    /// Clongriffin → Howth Junction (where branches merge)
+    static let malahideToJunctionNames = ["Clongriffin", "Howth Junction"]
+
+    /// Main line: Howth Junction → Greystones
+    static let mainLineNames = [
+        "Howth Junction", "Kilbarrack", "Raheny", "Harmonstown",
+        "Killester", "Clontarf Road", "Connolly", "Tara Street",
+        "Pearse", "Grand Canal Dock", "Lansdowne Road", "Sandymount",
+        "Sydney Parade", "Booterstown", "Blackrock", "Seapoint",
+        "Salthill", "Monkstown", "Dún Laoghaire", "Dun Laoghaire",
+        "Sandycove", "Glenageary", "Dalkey", "Killiney", "Shankill",
+        "Bray", "Greystones"
     ]
 
-    /// Junction: Malahide branch meets main line at Howth Junction
-    static let malahideToJunction: [CLLocationCoordinate2D] = [
-        CLLocationCoordinate2D(latitude: 53.4031, longitude: -6.1520),  // Clongriffin
-        CLLocationCoordinate2D(latitude: 53.3838, longitude: -6.1150),  // Howth Junction
-    ]
+    /// Build coordinates for a branch by matching station names against loaded transit stops.
+    /// Falls back to partial matches (contains) for names like "Salthill & Monkstown".
+    static func buildLine(names: [String], from stops: [TransitStop]) -> [CLLocationCoordinate2D] {
+        var coords: [CLLocationCoordinate2D] = []
+        for name in names {
+            let lowerName = name.lowercased()
+            if let stop = stops.first(where: {
+                ($0.type == .dart || $0.type == .rail) &&
+                ($0.name.lowercased() == lowerName || $0.name.lowercased().contains(lowerName))
+            }) {
+                // Avoid duplicates (e.g., "Dún Laoghaire" and "Dun Laoghaire" both match)
+                if let last = coords.last,
+                   abs(last.latitude - stop.latitude) < 0.001 && abs(last.longitude - stop.longitude) < 0.001 {
+                    continue
+                }
+                coords.append(stop.coordinate)
+            }
+        }
+        return coords
+    }
 }
 
