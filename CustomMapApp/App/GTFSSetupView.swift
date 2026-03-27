@@ -41,9 +41,18 @@ struct GTFSSetupView: View {
                 }
             }
 
-            Text("Welcome to BetterMaps")
-                .font(.title.bold())
-                .padding(.top, 16)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Welcome to BetterMaps")
+                    .font(.title.bold())
+                Text("beta")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.blue)
+                    .clipShape(Capsule())
+            }
+            .padding(.top, 16)
 
             if !isWorking && !isDone {
                 VStack(spacing: 8) {
