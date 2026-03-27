@@ -96,21 +96,21 @@ struct MapTabView: View {
             // Visual radar is blocked until the map layer is refactored.
             // Weather-based routing rules still work via WeatherKit.
 
-            // Favorites panel overlay (top-left)
+            // Favorites panel overlay (bottom-left, above bottom bar)
             if showFavoritesPanel {
                 VStack {
+                    Spacer()
                     HStack {
                         FavoritesPanel(
                             showTransitStops: $showTransitStops,
                             showLiveTransit: $showLiveTransit,
                             isPresented: $showFavoritesPanel
                         )
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                         Spacer()
                     }
-                    .padding(.top, 60)
                     .padding(.leading, 12)
-                    Spacer()
+                    .padding(.bottom, 65) // above the bottom bar
                 }
                 .zIndex(10)
             }

@@ -371,11 +371,6 @@ actor GTFSScheduleService {
         do {
             let data = try JSONEncoder().encode(cache)
             try data.write(to: dir.appendingPathComponent("gtfs_schedule_cache.json"))
-            await APILogger.shared.log(
-                service: "TFI", endpoint: "GTFS schedule cache saved",
-                status: .success, durationMs: 0,
-                detail: "\(data.count / 1024)KB — \(trips.count) trips, \(stopTimes.count) stops"
-            )
         } catch {
             // Cache save failure is non-fatal — next launch will re-parse
         }
