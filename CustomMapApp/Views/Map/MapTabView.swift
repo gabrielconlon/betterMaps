@@ -476,26 +476,20 @@ struct MapTabView: View {
                         .stroke(.green.opacity(0.6), lineWidth: 3)
                 }
 
-                // DART route line (always visible when DART stops are on)
-                if showTransitStops.contains(.dart) {
-                    let dartStops = transitStops
-                        .filter { $0.type == .dart }
-                        .sorted { $0.latitude > $1.latitude } // North to south
-                    if dartStops.count >= 2 {
-                        MapPolyline(coordinates: dartStops.map { $0.coordinate })
-                            .stroke(.orange.opacity(0.6), lineWidth: 3)
-                    }
-                }
-
-                // Rail route lines (connect rail stations when visible)
-                if showTransitStops.contains(.rail) {
-                    let railStops = transitStops
-                        .filter { $0.type == .rail }
-                        .sorted { $0.latitude > $1.latitude }
-                    if railStops.count >= 2 {
-                        MapPolyline(coordinates: railStops.map { $0.coordinate })
-                            .stroke(.purple.opacity(0.4), lineWidth: 2)
-                    }
+                // DART route lines (hardcoded station order — single coastal line with branches)
+                if showTransitStops.contains(.dart) || showTransitStops.contains(.rail) {
+                    // Main line: Howth Junction → Greystones
+                    MapPolyline(coordinates: DARTStationCoordinates.mainLine)
+                        .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    // Howth branch
+                    MapPolyline(coordinates: DARTStationCoordinates.howthBranch)
+                        .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    // Malahide branch
+                    MapPolyline(coordinates: DARTStationCoordinates.malahideBranch)
+                        .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    // Connection: Malahide branch → Howth Junction
+                    MapPolyline(coordinates: DARTStationCoordinates.malahideToJunction)
+                        .stroke(.orange.opacity(0.6), lineWidth: 3)
                 }
 
                 // Transit stop annotations (toggled layer)
