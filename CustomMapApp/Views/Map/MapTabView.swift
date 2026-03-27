@@ -387,7 +387,9 @@ struct MapTabView: View {
             HamburgerMenuView(
                 filterMode: $filterVM.filterMode,
                 activeWeatherOverlays: $activeWeatherOverlays,
-                bicyclePreference: $routingVM.bicyclePreference
+                bicyclePreference: $routingVM.bicyclePreference,
+                showTransitStops: $showTransitStops,
+                showLiveTransit: $showLiveTransit
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)

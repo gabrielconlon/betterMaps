@@ -7,8 +7,14 @@ struct HamburgerMenuView: View {
     @Binding var filterMode: FilterMode
     @Binding var activeWeatherOverlays: Set<WeatherOverlay>
     @Binding var bicyclePreference: BicycleRoutePreference
+    @Binding var showTransitStops: Set<TransitStop.TransitStopType>
+    @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
+    @AppStorage("favTransitBus") private var favBus = true
+    @AppStorage("favTransitLuas") private var favLuas = true
+    @AppStorage("favTransitDart") private var favDart = true
+    @AppStorage("favTransitRail") private var favRail = true
 
     @Environment(\.modelContext) private var modelContext
     @State private var showLayerForm = false
@@ -104,7 +110,25 @@ struct HamburgerMenuView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // Transit toggles have moved to the Layers quick-panel (top-left map button)
+                // MARK: - Transit Layers
+                Section("Transit") {
+                    transitPinnableRow(.bus, liveDisabled: !NTATransitService.isConfigured)
+                    transitPinnableRow(.luas)
+                    transitPinnableRow(.dart)
+                    transitPinnableRow(.rail)
+
+                    Button("Hide All Transit") {
+                        showTransitStops = []
+                        showLiveTransit = []
+                    }
+                    .font(.caption)
+
+                    if !NTATransitService.isConfigured {
+                        Text("Add NTA API key for live bus positions.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 // MARK: - Cycling
                 Section("Cycling Routes") {
@@ -242,6 +266,43 @@ struct HamburgerMenuView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Transit Pinnable Row
+
+    private func transitFavBinding(for type: TransitStop.TransitStopType) -> Binding<Bool> {
+        switch type {
+        case .bus: return $favBus
+        case .luas: return $favLuas
+        case .dart: return $favDart
+        case .rail: return $favRail
+        default: return .constant(true)
+        }
+    }
+
+    @ViewBuilder
+    private func transitPinnableRow(_ type: TransitStop.TransitStopType, liveDisabled: Bool = false) -> some View {
+        let isFav = transitFavBinding(for: type)
+        TransitTypeRow(type: type, showStops: $showTransitStops, showLive: $showLiveTransit, liveDisabled: liveDisabled)
+            .swipeActions(edge: .leading) {
+                Button {
+                    isFav.wrappedValue.toggle()
+                } label: {
+                    Label(
+                        isFav.wrappedValue ? "Unpin" : "Pin to Layers",
+                        systemImage: isFav.wrappedValue ? "star.slash" : "star.fill"
+                    )
+                }
+                .tint(.yellow)
+            }
+            .overlay(alignment: .topTrailing) {
+                if isFav.wrappedValue {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.yellow)
+                        .offset(x: -4, y: 4)
+                }
+            }
     }
 }
 

@@ -9,9 +9,23 @@ struct FavoritesPanel: View {
     @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
     @Binding var isPresented: Bool
 
-    /// Only show layers marked as favorites in the quick panel
+    // Pinned transit types (persisted)
+    @AppStorage("favTransitBus") private var favBus = true
+    @AppStorage("favTransitLuas") private var favLuas = true
+    @AppStorage("favTransitDart") private var favDart = true
+    @AppStorage("favTransitRail") private var favRail = true
+
     private var favoriteLayers: [Layer] {
         layers.filter { $0.isFavorite }
+    }
+
+    private var favoriteTransitTypes: [(type: TransitStop.TransitStopType, icon: String, color: Color, label: String)] {
+        var result: [(TransitStop.TransitStopType, String, Color, String)] = []
+        if favBus { result.append((.bus, "bus.fill", .blue, "Bus")) }
+        if favLuas { result.append((.luas, "tram.fill", .green, "Luas")) }
+        if favDart { result.append((.dart, "tram.fill", .orange, "DART")) }
+        if favRail { result.append((.rail, "tram.fill", .purple, "Rail")) }
+        return result
     }
 
     var body: some View {
@@ -27,34 +41,31 @@ struct FavoritesPanel: View {
                 }
             }
 
-            // Pinned/favorite place layers only
+            // Pinned place layers
             if !favoriteLayers.isEmpty {
                 VStack(spacing: 6) {
                     ForEach(favoriteLayers) { layer in
                         layerRow(layer: layer)
                     }
                 }
+            }
 
-                Divider()
-            } else if !layers.isEmpty {
-                Text("Swipe right on a layer in Settings to pin it here")
+            // Pinned transit types
+            if !favoriteTransitTypes.isEmpty {
+                if !favoriteLayers.isEmpty { Divider() }
+
+                VStack(spacing: 6) {
+                    ForEach(favoriteTransitTypes, id: \.type) { item in
+                        transitRow(type: item.type, icon: item.icon, color: item.color, label: item.label)
+                    }
+                }
+            }
+
+            if favoriteLayers.isEmpty && favoriteTransitTypes.isEmpty {
+                Text("Pin layers in Settings to show them here")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .padding(.vertical, 2)
-
-                Divider()
-            }
-
-            // Transit toggles
-            VStack(spacing: 6) {
-                Text("Transit")
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-
-                transitRow(type: .bus, icon: "bus.fill", color: .blue, label: "Bus")
-                transitRow(type: .luas, icon: "tram.fill", color: .green, label: "Luas")
-                transitRow(type: .dart, icon: "tram.fill", color: .orange, label: "DART")
-                transitRow(type: .rail, icon: "tram.fill", color: .purple, label: "Rail")
             }
 
             if !showTransitStops.isEmpty || !showLiveTransit.isEmpty {
@@ -62,7 +73,7 @@ struct FavoritesPanel: View {
                     showTransitStops.removeAll()
                     showLiveTransit.removeAll()
                 }) {
-                    Label("Hide All Transit", systemImage: "eye.slash")
+                    Label("Hide All", systemImage: "eye.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
