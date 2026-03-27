@@ -9,6 +9,11 @@ struct FavoritesPanel: View {
     @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
     @Binding var isPresented: Bool
 
+    /// Only show layers marked as favorites in the quick panel
+    private var favoriteLayers: [Layer] {
+        layers.filter { $0.isFavorite }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Header
@@ -22,13 +27,20 @@ struct FavoritesPanel: View {
                 }
             }
 
-            // User-created place layers
-            if !layers.isEmpty {
+            // Pinned/favorite place layers only
+            if !favoriteLayers.isEmpty {
                 VStack(spacing: 6) {
-                    ForEach(layers) { layer in
+                    ForEach(favoriteLayers) { layer in
                         layerRow(layer: layer)
                     }
                 }
+
+                Divider()
+            } else if !layers.isEmpty {
+                Text("Swipe right on a layer in Settings to pin it here")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 2)
 
                 Divider()
             }

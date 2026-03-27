@@ -8,6 +8,7 @@ final class Layer {
     var colorHex: String = "#FF3B30"
     var symbolName: String = "mappin"
     var isVisible: Bool = true
+    var isFavorite: Bool = false
     var sortOrder: Int = 0
     var places: [Place]? = []
     var createdAt: Date = Date()

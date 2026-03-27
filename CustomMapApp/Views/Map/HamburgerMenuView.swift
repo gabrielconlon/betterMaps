@@ -55,6 +55,15 @@ struct HamburgerMenuView: View {
                                     Label("Edit", systemImage: "pencil")
                                 }
                                 .tint(.blue)
+                                Button {
+                                    layer.isFavorite.toggle()
+                                } label: {
+                                    Label(
+                                        layer.isFavorite ? "Unpin" : "Pin to Layers",
+                                        systemImage: layer.isFavorite ? "star.slash" : "star.fill"
+                                    )
+                                }
+                                .tint(.yellow)
                             }
                         }
                     }

@@ -60,8 +60,15 @@ struct LayerToggleRow: View {
                     .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
                     .frame(width: 24)
                 VStack(alignment: .leading) {
-                    Text(layer.name)
-                        .font(.body)
+                    HStack(spacing: 4) {
+                        Text(layer.name)
+                            .font(.body)
+                        if layer.isFavorite {
+                            Image(systemName: "star.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.yellow)
+                        }
+                    }
                     Text("\(layer.places?.count ?? 0) places")
                         .font(.caption)
                         .foregroundStyle(.secondary)

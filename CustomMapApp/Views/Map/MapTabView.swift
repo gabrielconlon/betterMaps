@@ -676,7 +676,6 @@ struct MapTabView: View {
             Button(action: { viewModel.showLayerSidebar() }) {
                 Image(systemName: "gearshape.fill")
                     .font(.body)
-                    .foregroundStyle(.secondary)
                     .padding(10)
                     .background(.ultraThinMaterial)
                     .clipShape(Circle())
