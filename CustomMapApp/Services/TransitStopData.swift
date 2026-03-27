@@ -116,7 +116,7 @@ struct DARTLineBuilder {
     /// Clongriffin → Howth Junction (where branches merge)
     static let malahideToJunctionNames = ["Clongriffin", "Howth Junction"]
 
-    /// Main line: Howth Junction → Greystones
+    /// Main coastal line: Howth Junction → Greystones
     static let mainLineNames = [
         "Howth Junction", "Kilbarrack", "Raheny", "Harmonstown",
         "Killester", "Clontarf Road", "Connolly", "Tara Street",
@@ -125,6 +125,19 @@ struct DARTLineBuilder {
         "Salthill", "Monkstown", "Dún Laoghaire", "Dun Laoghaire",
         "Sandycove", "Glenageary", "Dalkey", "Killiney", "Shankill",
         "Bray", "Greystones"
+    ]
+
+    /// DART+ Western line: Maynooth direction → Connolly
+    static let westernLineNames = [
+        "Maynooth", "Leixlip", "Coolmine", "Clonsilla",
+        "Castleknock", "Navan Road", "Ashtown", "Broombridge",
+        "Drumcondra", "Connolly"
+    ]
+
+    /// DART+ South-western: Kildare direction → Connolly (via Park West)
+    static let southWesternLineNames = [
+        "Hazelhatch", "Adamstown", "Clondalkin", "Kishoge",
+        "Park West", "Cherry Orchard", "Drumcondra", "Connolly"
     ]
 
     /// Build coordinates for a branch by matching station names against loaded transit stops.

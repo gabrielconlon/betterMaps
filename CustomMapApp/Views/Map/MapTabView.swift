@@ -480,26 +480,20 @@ struct MapTabView: View {
 
                 // DART route lines (built from actual station pin coordinates)
                 if showTransitStops.contains(.dart) || showTransitStops.contains(.rail) {
-                    let mainCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.mainLineNames, from: transitStops)
-                    let howthCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.howthBranchNames, from: transitStops)
-                    let malahideCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.malahideBranchNames, from: transitStops)
-                    let junctionCoords = DARTLineBuilder.buildLine(names: DARTLineBuilder.malahideToJunctionNames, from: transitStops)
-
-                    if mainCoords.count >= 2 {
-                        MapPolyline(coordinates: mainCoords)
-                            .stroke(.orange.opacity(0.6), lineWidth: 3)
-                    }
-                    if howthCoords.count >= 2 {
-                        MapPolyline(coordinates: howthCoords)
-                            .stroke(.orange.opacity(0.6), lineWidth: 3)
-                    }
-                    if malahideCoords.count >= 2 {
-                        MapPolyline(coordinates: malahideCoords)
-                            .stroke(.orange.opacity(0.6), lineWidth: 3)
-                    }
-                    if junctionCoords.count >= 2 {
-                        MapPolyline(coordinates: junctionCoords)
-                            .stroke(.orange.opacity(0.6), lineWidth: 3)
+                    let dartLines: [(names: [String], color: Color)] = [
+                        (DARTLineBuilder.mainLineNames, .orange),
+                        (DARTLineBuilder.howthBranchNames, .orange),
+                        (DARTLineBuilder.malahideBranchNames, .orange),
+                        (DARTLineBuilder.malahideToJunctionNames, .orange),
+                        (DARTLineBuilder.westernLineNames, .orange),
+                        (DARTLineBuilder.southWesternLineNames, .orange),
+                    ]
+                    ForEach(Array(dartLines.enumerated()), id: \.offset) { _, line in
+                        let coords = DARTLineBuilder.buildLine(names: line.names, from: transitStops)
+                        if coords.count >= 2 {
+                            MapPolyline(coordinates: coords)
+                                .stroke(line.color.opacity(0.6), lineWidth: 3)
+                        }
                     }
                 }
 

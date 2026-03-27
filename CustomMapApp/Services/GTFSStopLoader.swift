@@ -287,15 +287,23 @@ actor GTFSStopLoader {
         return fields
     }
 
-    /// Known DART station name keywords (Malahide–Greystones coastal line)
+    /// Known DART station name keywords (coastal + DART+ western line)
     private static let dartStationNames: Set<String> = [
+        // Coastal line
         "malahide", "portmarnock", "clongriffin", "howth", "howth junction",
         "sutton", "bayside", "kilbarrack", "raheny", "harmonstown",
         "killester", "clontarf road", "connolly", "tara street", "pearse",
         "grand canal dock", "lansdowne road", "sandymount", "sydney parade",
         "booterstown", "blackrock", "seapoint", "salthill", "monkstown",
         "dún laoghaire", "dun laoghaire", "sandycove", "glenageary",
-        "dalkey", "killiney", "shankill", "bray", "greystones"
+        "dalkey", "killiney", "shankill", "bray", "greystones",
+        // DART+ western line (Maynooth direction)
+        "broombridge", "drumcondra", "ashtown", "navan road",
+        "castleknock", "coolmine", "clonsilla", "leixlip",
+        "maynooth", "m3 parkway", "dunboyne",
+        // DART+ south-western (Kildare direction)
+        "park west", "cherry orchard", "clondalkin", "hazelhatch",
+        "adamstown", "kishoge"
     ]
 
     /// Classify a stop as bus/luas/dart/rail based on ID patterns and name
@@ -306,10 +314,7 @@ actor GTFSStopLoader {
         if lowerId.hasPrefix("luas") || lowerName.contains("luas") {
             return .luas
         }
-        if lowerName.contains("dart") || lowerId.contains("dart") {
-            return .dart
-        }
-        // Check known DART station names (GTFS feeds don't always tag these as DART)
+        // Check known DART station names (don't use generic "dart" substring — catches Dartmouth, Dartry, etc.)
         if Self.dartStationNames.contains(where: { lowerName.contains($0) }) {
             return .dart
         }
