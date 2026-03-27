@@ -287,26 +287,29 @@ actor GTFSStopLoader {
         return fields
     }
 
-    /// Known DART station name keywords (coastal + DART+ western line)
+    /// Known DART station names — must match the stop name closely (not just substring)
     private static let dartStationNames: Set<String> = [
         // Coastal line
         "malahide", "portmarnock", "clongriffin", "howth", "howth junction",
         "sutton", "bayside", "kilbarrack", "raheny", "harmonstown",
         "killester", "clontarf road", "connolly", "tara street", "pearse",
         "grand canal dock", "lansdowne road", "sandymount", "sydney parade",
-        "booterstown", "blackrock", "seapoint", "salthill", "monkstown",
+        "booterstown", "blackrock", "seapoint", "salthill & monkstown",
         "dún laoghaire", "dun laoghaire", "sandycove", "glenageary",
         "dalkey", "killiney", "shankill", "bray", "greystones",
         // DART+ western line (Maynooth direction)
-        "broombridge", "drumcondra", "ashtown", "navan road",
-        "castleknock", "coolmine", "clonsilla", "leixlip",
-        "maynooth", "m3 parkway", "dunboyne",
+        "broombridge", "drumcondra", "pelletstown", "ashtown",
+        "navan road parkway", "castleknock", "coolmine", "clonsilla",
+        "leixlip confey", "leixlip louisa bridge", "maynooth",
+        "m3 parkway", "dunboyne",
         // DART+ south-western (Kildare direction)
         "park west", "cherry orchard", "clondalkin", "hazelhatch",
         "adamstown", "kishoge"
     ]
 
-    /// Classify a stop as bus/luas/dart/rail based on ID patterns and name
+    /// Classify a stop as bus/luas/dart/rail based on ID patterns and name.
+    /// DART matching requires the stop name to START WITH or EQUAL a known station name
+    /// to avoid false positives like "Ashtown Grove" or "Castleknock Gate" (bus stops).
     private func classifyStop(id: String, name: String) -> TransitStop.TransitStopType {
         let lowerId = id.lowercased()
         let lowerName = name.lowercased()
@@ -314,12 +317,18 @@ actor GTFSStopLoader {
         if lowerId.hasPrefix("luas") || lowerName.contains("luas") {
             return .luas
         }
-        // Check known DART station names (don't use generic "dart" substring — catches Dartmouth, Dartry, etc.)
-        if Self.dartStationNames.contains(where: { lowerName.contains($0) }) {
+        // DART: name must start with or equal a known station name
+        // This prevents "Ashtown Grove" matching "ashtown" or "Castleknock Gate" matching "castleknock"
+        if Self.dartStationNames.contains(where: { station in
+            lowerName == station ||
+            lowerName.hasPrefix(station + " ") ||
+            lowerName.hasPrefix(station + " station") ||
+            lowerName == station + " station"
+        }) {
             return .dart
         }
         if lowerId.hasPrefix("ir_") || lowerId.hasPrefix("rail") ||
-           lowerName.contains("station") && (lowerName.contains("train") || lowerName.contains("rail")) {
+           (lowerName.contains("station") && (lowerName.contains("train") || lowerName.contains("rail"))) {
             return .rail
         }
         return .bus

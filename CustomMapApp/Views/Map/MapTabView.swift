@@ -300,7 +300,7 @@ struct MapTabView: View {
                 let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
                 let newStop = TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type)
                 // Skip if a stop already exists within 100m (prevents duplicates across sources)
-                if !isNearExistingStop(newStop, in: transitStops, thresholdMeters: 100) {
+                if !isNearExistingStop(newStop, in: transitStops, thresholdMeters: 200) {
                     transitStops.append(newStop)
                 }
             }
@@ -311,7 +311,7 @@ struct MapTabView: View {
             let existingIDs = Set(transitStops.map { $0.id })
             for stop in gtfsStops where !existingIDs.contains(stop.id) {
                 // For non-bus stops, also check proximity to avoid duplicates
-                if stop.type == .bus || !isNearExistingStop(stop, in: transitStops, thresholdMeters: 100) {
+                if stop.type == .bus || !isNearExistingStop(stop, in: transitStops, thresholdMeters: 200) {
                     transitStops.append(stop)
                 }
             }

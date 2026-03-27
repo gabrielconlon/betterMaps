@@ -128,15 +128,14 @@ struct DARTLineBuilder {
     ]
 
     /// DART+ Western line: Maynooth direction → Connolly
-    /// Route: Maynooth → Clonsilla → Broombridge → Drumcondra → Connolly
     static let westernLineNames = [
-        "Maynooth", "Leixlip", "Coolmine", "Clonsilla",
-        "Castleknock", "Navan Road", "Ashtown", "Broombridge",
-        "Drumcondra", "Connolly"
+        "Maynooth", "Leixlip Louisa Bridge", "Leixlip Confey",
+        "Coolmine", "Clonsilla", "Castleknock",
+        "Navan Road Parkway", "Navan Road", "Pelletstown",
+        "Ashtown", "Broombridge", "Drumcondra", "Connolly"
     ]
 
-    /// DART+ South-western: Kildare direction, branches from western line at Clonsilla
-    /// Then goes south through Heuston to join the main line
+    /// DART+ South-western: Kildare direction → Heuston
     static let southWesternLineNames = [
         "Hazelhatch", "Adamstown", "Clondalkin", "Kishoge",
         "Park West", "Cherry Orchard", "Heuston"
