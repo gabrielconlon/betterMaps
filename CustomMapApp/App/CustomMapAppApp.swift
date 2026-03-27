@@ -43,11 +43,9 @@ struct CustomMapAppApp: App {
                     GTFSStopLoader.loadCachedRouteNames()
                 }
                 .task {
-                    // Pre-load GTFS schedule + stops in background at startup
-                    // so tapping bus stops and requesting routes are instant
-                    async let scheduleLoad: Void = GTFSScheduleService.shared.loadIfNeeded()
-                    async let stopsLoad: [TransitStop] = GTFSStopLoader().loadStops()
-                    _ = await (scheduleLoad, stopsLoad)
+                    // Pre-load GTFS stops cache (lightweight, ~2 MB)
+                    // SQLite schedule database opens on first query — no startup preload needed
+                    _ = await GTFSStopLoader().loadStops()
                 }
         }
         .modelContainer(sharedModelContainer)

@@ -1,32 +1,27 @@
 import Foundation
 import CoreLocation
+import SQLite3
 
-// MARK: - GTFS Schedule Models
+// MARK: - GTFS Schedule Models (lightweight — used for query results only)
 
 struct GTFSTrip: Codable {
     let tripId: String
     let routeId: String
     let serviceId: String
-    let directionId: Int       // 0 or 1
-    var routeShortName: String // from routes.txt lookup
-    var shapeId: String        // maps to shapes.txt for route geometry
+    let directionId: Int
+    var routeShortName: String
+    var shapeId: String
 }
 
 struct GTFSStopTime: Comparable, Codable {
     let tripId: String
     let stopId: String
-    let arrivalTime: String    // HH:MM:SS (can be > 24:00 for next-day)
+    let arrivalTime: String
     let departureTime: String
     let stopSequence: Int
 
-    /// Convert HH:MM:SS to seconds since midnight
-    var arrivalSeconds: Int {
-        timeToSeconds(arrivalTime)
-    }
-
-    var departureSeconds: Int {
-        timeToSeconds(departureTime)
-    }
+    var arrivalSeconds: Int { timeToSeconds(arrivalTime) }
+    var departureSeconds: Int { timeToSeconds(departureTime) }
 
     static func < (lhs: GTFSStopTime, rhs: GTFSStopTime) -> Bool {
         lhs.stopSequence < rhs.stopSequence
@@ -48,11 +43,10 @@ struct GTFSServiceCalendar: Codable {
     let friday: Bool
     let saturday: Bool
     let sunday: Bool
-    let startDate: String  // YYYYMMDD
+    let startDate: String
     let endDate: String
 
     func runsOn(weekday: Int) -> Bool {
-        // Calendar weekday: 1=Sunday, 2=Monday, ..., 7=Saturday
         switch weekday {
         case 1: return sunday
         case 2: return monday
@@ -66,40 +60,38 @@ struct GTFSServiceCalendar: Codable {
     }
 }
 
-// MARK: - GTFS Schedule Service
+// MARK: - GTFS Schedule Service (SQLite-backed)
 
-/// Parses and caches GTFS schedule data from the downloaded ZIP.
-/// Used by TransitRoutePlanner to find connections.
+/// Queries GTFS schedule data from a SQLite database (~50 MB on disk)
+/// instead of loading ~875 MB into RAM. Queries only load needed rows.
 actor GTFSScheduleService {
     static let shared = GTFSScheduleService()
 
-    private var trips: [String: GTFSTrip] = [:]           // tripId → trip
-    private var stopTimes: [String: [GTFSStopTime]] = [:] // stopId → sorted by departureSeconds
-    private var tripStopTimes: [String: [GTFSStopTime]] = [:] // tripId → sorted by stopSequence
-    private var calendars: [String: GTFSServiceCalendar] = [:] // serviceId → calendar
+    private let db = GTFSDatabase()
     private var isLoaded = false
 
-    // Cached active service IDs for today (avoids repeated calendar lookups)
-    private var cachedActiveServiceIds: Set<String> = []
-    private var cachedWeekday: Int = -1
+    /// Weekday column names for SQL calendar queries
+    private static let weekdayColumns = [
+        "", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"
+    ]
 
-    /// Load schedule data from the cached GTFS ZIP
+    // MARK: - Loading
+
     func loadIfNeeded() async {
         guard !isLoaded else { return }
 
-        let cacheURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-
-        // Try to load from pre-parsed cache first
-        if loadParsedCache(from: cacheURL) {
-            isLoaded = true
-            await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (cached)", status: .cached, durationMs: 0, detail: "\(trips.count) trips, \(stopTimes.count) stops")
-            return
+        // Check if SQLite database is fresh
+        if GTFSDatabase.isFresh {
+            if db.open() {
+                isLoaded = true
+                let trips = db.count(table: "trips")
+                let stops = db.count(table: "stop_times") / 50 // approximate unique stops
+                await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .cached, durationMs: 0, detail: "\(trips) trips")
+                return
+            }
         }
 
-        // Download and parse fresh
-        let loader = GTFSStopLoader()
-        // The loader already downloads GTFS_All.zip — we need the raw ZIP data
-        // For now, download it ourselves
+        // Download and parse into SQLite
         let urls = [
             "https://www.transportforireland.ie/transitData/Data/GTFS_All.zip",
             "https://www.transportforireland.ie/transitData/Data/GTFS_Realtime.zip"
@@ -118,13 +110,27 @@ actor GTFSScheduleService {
                 guard httpStatus == 200 else { continue }
 
                 await APILogger.shared.trackBytes(data.count)
-                GTFSStopLoader.cacheRawZip(data)  // Cache for lazy shapes.txt extraction
-                await parseScheduleFromZip(data: data)
-                await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule parsed", status: .success, durationMs: ms, detail: "\(trips.count) trips, \(stopTimes.count) stops")
-                isLoaded = true
+                GTFSStopLoader.cacheRawZip(data)
 
-                // Cache parsed data
-                saveParsedCache(to: cacheURL)
+                // Delete old database and create fresh
+                try? FileManager.default.removeItem(atPath: GTFSDatabase.defaultPath)
+                guard db.open() else { continue }
+                db.createTables()
+
+                // Parse CSV directly into SQLite
+                let parseStart = Date()
+                await parseScheduleFromZip(data: data)
+                db.createIndexes()
+
+                let totalMs = Int(Date().timeIntervalSince(start) * 1000)
+                let parseMs = Int(Date().timeIntervalSince(parseStart) * 1000)
+                let trips = db.count(table: "trips")
+                await APILogger.shared.log(
+                    service: "TFI", endpoint: "GTFS → SQLite",
+                    status: .success, durationMs: totalMs,
+                    detail: "\(trips) trips. Download: \(ms)ms, Parse: \(parseMs)ms"
+                )
+                isLoaded = true
                 return
             } catch {
                 continue
@@ -135,25 +141,48 @@ actor GTFSScheduleService {
     // MARK: - Query Methods
 
     /// Find trips departing from a stop within a time window.
-    /// Uses binary search on pre-sorted stop times for O(log n + results) instead of O(n).
     func departuresFromStop(stopId: String, afterSeconds: Int, withinSeconds: Int = 1200) -> [(GTFSStopTime, GTFSTrip)] {
-        guard let times = stopTimes[stopId], !times.isEmpty else { return [] }
-        let activeServices = activeServiceIds()
+        let weekday = Calendar.current.component(.weekday, from: Date())
+        let weekdayCol = Self.weekdayColumns[weekday]
         let upperBound = afterSeconds + withinSeconds
 
-        // Binary search for the first departure >= afterSeconds
-        var lo = 0, hi = times.count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if times[mid].departureSeconds < afterSeconds { lo = mid + 1 } else { hi = mid }
-        }
+        let sql = """
+            SELECT st.trip_id, st.stop_id, st.departure_seconds, st.stop_sequence, st.departure_time,
+                   t.route_id, t.service_id, t.direction_id, t.route_short_name, t.shape_id
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN calendars c ON t.service_id = c.service_id
+            WHERE st.stop_id = ? AND st.departure_seconds >= ? AND st.departure_seconds <= ?
+            AND c.\(weekdayCol) = 1
+            ORDER BY st.departure_seconds
+            LIMIT 50
+        """
+
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
+
+        sqlite3_bind_text(stmt, 1, (stopId as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(stmt, 2, Int32(afterSeconds))
+        sqlite3_bind_int(stmt, 3, Int32(upperBound))
 
         var results: [(GTFSStopTime, GTFSTrip)] = []
-        for i in lo..<times.count {
-            let st = times[i]
-            guard st.departureSeconds <= upperBound else { break }
-            guard let trip = trips[st.tripId],
-                  activeServices.contains(trip.serviceId) else { continue }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let tripId = db.columnText(stmt, index: 0) ?? ""
+            let st = GTFSStopTime(
+                tripId: tripId,
+                stopId: db.columnText(stmt, index: 1) ?? "",
+                arrivalTime: db.columnText(stmt, index: 4) ?? "",
+                departureTime: db.columnText(stmt, index: 4) ?? "",
+                stopSequence: db.columnInt(stmt, index: 3)
+            )
+            let trip = GTFSTrip(
+                tripId: tripId,
+                routeId: db.columnText(stmt, index: 5) ?? "",
+                serviceId: db.columnText(stmt, index: 6) ?? "",
+                directionId: db.columnInt(stmt, index: 7),
+                routeShortName: db.columnText(stmt, index: 8) ?? "",
+                shapeId: db.columnText(stmt, index: 9) ?? ""
+            )
             results.append((st, trip))
         }
         return results
@@ -161,16 +190,46 @@ actor GTFSScheduleService {
 
     /// Get all stops for a trip (in order)
     func stopsForTrip(tripId: String) -> [GTFSStopTime] {
-        tripStopTimes[tripId] ?? []
+        let sql = "SELECT trip_id, stop_id, departure_seconds, departure_time, stop_sequence FROM stop_times WHERE trip_id = ? ORDER BY stop_sequence"
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
+
+        sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
+
+        var results: [GTFSStopTime] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(GTFSStopTime(
+                tripId: db.columnText(stmt, index: 0) ?? "",
+                stopId: db.columnText(stmt, index: 1) ?? "",
+                arrivalTime: db.columnText(stmt, index: 3) ?? "",
+                departureTime: db.columnText(stmt, index: 3) ?? "",
+                stopSequence: db.columnInt(stmt, index: 4)
+            ))
+        }
+        return results
     }
 
     /// Check if a trip passes through a specific stop (after a given sequence)
     func tripReachesStop(tripId: String, stopId: String, afterSequence: Int) -> GTFSStopTime? {
-        guard let times = tripStopTimes[tripId] else { return nil }
-        return times.first { $0.stopId == stopId && $0.stopSequence > afterSequence }
+        let sql = "SELECT trip_id, stop_id, departure_seconds, departure_time, stop_sequence FROM stop_times WHERE trip_id = ? AND stop_id = ? AND stop_sequence > ? ORDER BY stop_sequence LIMIT 1"
+        guard let stmt = db.prepare(sql) else { return nil }
+        defer { db.finalize(stmt) }
+
+        sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 2, (stopId as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(stmt, 3, Int32(afterSequence))
+
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return GTFSStopTime(
+            tripId: db.columnText(stmt, index: 0) ?? "",
+            stopId: db.columnText(stmt, index: 1) ?? "",
+            arrivalTime: db.columnText(stmt, index: 3) ?? "",
+            departureTime: db.columnText(stmt, index: 3) ?? "",
+            stopSequence: db.columnInt(stmt, index: 4)
+        )
     }
 
-    /// Find nearby stop IDs from our transit stop data
+    /// Find nearby stop IDs from transit stop data (unchanged — uses in-memory stop list)
     func findNearbyStopIds(coordinate: CLLocationCoordinate2D, radiusMeters: Double, allStops: [TransitStop]) -> [String] {
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         return allStops
@@ -181,46 +240,77 @@ actor GTFSScheduleService {
             .map { $0.id }
     }
 
-    var tripCount: Int { trips.count }
-    var stopCount: Int { stopTimes.count }
+    /// Routes that serve a given stop (for bus timetable view)
+    func routesForStop(stopId: String) -> [(routeId: String, routeName: String)] {
+        let sql = """
+            SELECT DISTINCT t.route_id, t.route_short_name
+            FROM stop_times st JOIN trips t ON st.trip_id = t.trip_id
+            WHERE st.stop_id = ?
+            ORDER BY t.route_short_name
+        """
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
 
-    /// Get shape ID for a trip (used for lazy shapes.txt loading)
+        sqlite3_bind_text(stmt, 1, (stopId as NSString).utf8String, -1, nil)
+
+        var results: [(String, String)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let routeId = db.columnText(stmt, index: 0) ?? ""
+            let routeName = db.columnText(stmt, index: 1) ?? routeId
+            results.append((routeId, routeName))
+        }
+        return results
+    }
+
+    var tripCount: Int { db.count(table: "trips") }
+    var stopCount: Int {
+        guard let stmt = db.prepare("SELECT COUNT(DISTINCT stop_id) FROM stop_times") else { return 0 }
+        defer { db.finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return db.columnInt(stmt, index: 0)
+    }
+
+    /// Get shape ID for a trip
     func shapeId(forTripId tripId: String) -> String? {
-        guard let trip = trips[tripId], !trip.shapeId.isEmpty else { return nil }
-        return trip.shapeId
+        let sql = "SELECT shape_id FROM trips WHERE trip_id = ? AND shape_id != '' LIMIT 1"
+        guard let stmt = db.prepare(sql) else { return nil }
+        defer { db.finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return db.columnText(stmt, index: 0)
     }
 
-    /// Find any trip for a given route ID (for looking up shape when we only have route info)
+    /// Find any trip for a given route ID (for shape lookup)
     func anyTripForRoute(routeId: String) -> GTFSTrip? {
-        trips.values.first { $0.routeId == routeId && !$0.shapeId.isEmpty }
+        let sql = "SELECT trip_id, route_id, service_id, direction_id, route_short_name, shape_id FROM trips WHERE route_id = ? AND shape_id != '' LIMIT 1"
+        guard let stmt = db.prepare(sql) else { return nil }
+        defer { db.finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (routeId as NSString).utf8String, -1, nil)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return GTFSTrip(
+            tripId: db.columnText(stmt, index: 0) ?? "",
+            routeId: db.columnText(stmt, index: 1) ?? "",
+            serviceId: db.columnText(stmt, index: 2) ?? "",
+            directionId: db.columnInt(stmt, index: 3),
+            routeShortName: db.columnText(stmt, index: 4) ?? "",
+            shapeId: db.columnText(stmt, index: 5) ?? ""
+        )
     }
 
-    /// Compute and cache active service IDs for today's weekday.
-    /// Invalidates automatically when the weekday changes.
-    private func activeServiceIds() -> Set<String> {
-        let today = Calendar.current.component(.weekday, from: Date())
-        if today == cachedWeekday { return cachedActiveServiceIds }
-        cachedActiveServiceIds = Set(calendars.filter { $0.value.runsOn(weekday: today) }.map { $0.key })
-        cachedWeekday = today
-        return cachedActiveServiceIds
-    }
+    /// Database age description for staleness display
+    var dataAge: String? { GTFSDatabase.ageDescription }
 
-    // MARK: - Parsing
+    // MARK: - Parsing (CSV → SQLite)
 
     private func parseScheduleFromZip(data: Data) async {
         let loader = GTFSStopLoader()
 
-        // Parse trips.txt
         if let tripsCSV = await loader.extractFile(from: data, named: "trips.txt") {
             parseTrips(csv: tripsCSV)
         }
-
-        // Parse stop_times.txt
         if let stopTimesCSV = await loader.extractFile(from: data, named: "stop_times.txt") {
             parseStopTimes(csv: stopTimesCSV)
         }
-
-        // Parse calendar.txt
         if let calendarCSV = await loader.extractFile(from: data, named: "calendar.txt") {
             parseCalendar(csv: calendarCSV)
         }
@@ -236,25 +326,34 @@ actor GTFSScheduleService {
               let serviceIdx = headers.firstIndex(of: "service_id") else { return }
         let dirIdx = headers.firstIndex(of: "direction_id")
         let shapeIdx = headers.firstIndex(of: "shape_id")
-
         let routeLookup = GTFSStopLoader.routeNameLookup
+
+        guard let stmt = db.prepareInsertTrip() else { return }
+        db.beginTransaction()
 
         for line in lines.dropFirst() {
             let fields = parseCSVRow(line)
             guard fields.count > max(tripIdx, routeIdx, serviceIdx) else { continue }
             let tripId = fields[tripIdx]
-            let routeId = fields[routeIdx]
             guard !tripId.isEmpty else { continue }
+            let routeId = fields[routeIdx]
+            let dir = dirIdx.flatMap { fields.count > $0 ? Int(fields[$0]) : nil } ?? 0
+            let shape = shapeIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
 
-            trips[tripId] = GTFSTrip(
-                tripId: tripId,
-                routeId: routeId,
-                serviceId: fields[serviceIdx],
-                directionId: dirIdx.flatMap { fields.count > $0 ? Int(fields[$0]) : nil } ?? 0,
-                routeShortName: routeLookup[routeId] ?? routeId,
-                shapeId: shapeIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
-            )
+            // Bind: trip_id, route_id, service_id, direction_id, route_short_name, shape_id
+            sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (routeId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 3, (fields[serviceIdx] as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(stmt, 4, Int32(dir))
+            let routeName = routeLookup[routeId] ?? routeId
+            sqlite3_bind_text(stmt, 5, (routeName as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 6, (shape as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+            sqlite3_reset(stmt)
         }
+
+        db.commitTransaction()
+        db.finalize(stmt)
     }
 
     private func parseStopTimes(csv: String) {
@@ -268,6 +367,11 @@ actor GTFSScheduleService {
               let depIdx = headers.firstIndex(of: "departure_time"),
               let seqIdx = headers.firstIndex(of: "stop_sequence") else { return }
 
+        // INSERT INTO stop_times (trip_id, stop_id, arrival_seconds, departure_seconds, stop_sequence, departure_time)
+        guard let stmt = db.prepareInsertStopTime() else { return }
+        db.beginTransaction()
+
+        var count = 0
         for line in lines.dropFirst() {
             let fields = parseCSVRow(line)
             guard fields.count > max(tripIdx, stopIdx, arrIdx, depIdx, seqIdx) else { continue }
@@ -275,25 +379,31 @@ actor GTFSScheduleService {
             let stopId = fields[stopIdx]
             guard !tripId.isEmpty, !stopId.isEmpty else { continue }
 
-            let st = GTFSStopTime(
-                tripId: tripId,
-                stopId: stopId,
-                arrivalTime: fields[arrIdx],
-                departureTime: fields[depIdx],
-                stopSequence: Int(fields[seqIdx]) ?? 0
-            )
-            stopTimes[stopId, default: []].append(st)
-            tripStopTimes[tripId, default: []].append(st)
+            let depTime = fields[depIdx]
+            let arrTime = fields[arrIdx]
+            let arrSec = timeToSeconds(arrTime)
+            let depSec = timeToSeconds(depTime)
+            let seq = Int(fields[seqIdx]) ?? 0
+
+            // Bind all 6 columns: trip_id, stop_id, arrival_seconds, departure_seconds, stop_sequence, departure_time
+            sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (stopId as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(stmt, 3, Int32(arrSec))
+            sqlite3_bind_int(stmt, 4, Int32(depSec))
+            sqlite3_bind_int(stmt, 5, Int32(seq))
+            sqlite3_bind_text(stmt, 6, (depTime as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+            sqlite3_reset(stmt)
+
+            count += 1
+            if count % 100_000 == 0 {
+                db.commitTransaction()
+                db.beginTransaction()
+            }
         }
 
-        // Sort stopTimes by departureSeconds for binary search in departuresFromStop
-        for key in stopTimes.keys {
-            stopTimes[key]?.sort { $0.departureSeconds < $1.departureSeconds }
-        }
-        // Sort tripStopTimes by stopSequence for ordered traversal
-        for key in tripStopTimes.keys {
-            tripStopTimes[key]?.sort { $0.stopSequence < $1.stopSequence }
-        }
+        db.commitTransaction()
+        db.finalize(stmt)
     }
 
     private func parseCalendar(csv: String) {
@@ -310,8 +420,8 @@ actor GTFSScheduleService {
               let satIdx = headers.firstIndex(of: "saturday"),
               let sunIdx = headers.firstIndex(of: "sunday") else { return }
 
-        let startIdx = headers.firstIndex(of: "start_date")
-        let endIdx = headers.firstIndex(of: "end_date")
+        guard let stmt = db.prepareInsertCalendar() else { return }
+        db.beginTransaction()
 
         for line in lines.dropFirst() {
             let fields = parseCSVRow(line)
@@ -319,19 +429,27 @@ actor GTFSScheduleService {
             let serviceId = fields[sidIdx]
             guard !serviceId.isEmpty else { continue }
 
-            calendars[serviceId] = GTFSServiceCalendar(
-                serviceId: serviceId,
-                monday: fields[monIdx] == "1",
-                tuesday: fields[tueIdx] == "1",
-                wednesday: fields[wedIdx] == "1",
-                thursday: fields[thuIdx] == "1",
-                friday: fields[friIdx] == "1",
-                saturday: fields[satIdx] == "1",
-                sunday: fields[sunIdx] == "1",
-                startDate: startIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? "",
-                endDate: endIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
-            )
+            // Bind: service_id, monday..sunday (7 ints)
+            sqlite3_bind_text(stmt, 1, (serviceId as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(stmt, 2, fields[monIdx] == "1" ? 1 : 0)
+            sqlite3_bind_int(stmt, 3, fields[tueIdx] == "1" ? 1 : 0)
+            sqlite3_bind_int(stmt, 4, fields[wedIdx] == "1" ? 1 : 0)
+            sqlite3_bind_int(stmt, 5, fields[thuIdx] == "1" ? 1 : 0)
+            sqlite3_bind_int(stmt, 6, fields[friIdx] == "1" ? 1 : 0)
+            sqlite3_bind_int(stmt, 7, fields[satIdx] == "1" ? 1 : 0)
+            sqlite3_bind_int(stmt, 8, fields[sunIdx] == "1" ? 1 : 0)
+            sqlite3_step(stmt)
+            sqlite3_reset(stmt)
         }
+
+        db.commitTransaction()
+        db.finalize(stmt)
+    }
+
+    private func timeToSeconds(_ time: String) -> Int {
+        let parts = time.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 3 else { return 0 }
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
     }
 
     private func parseCSVRow(_ row: String) -> [String] {
@@ -348,63 +466,11 @@ actor GTFSScheduleService {
         fields.append(current.trimmingCharacters(in: .whitespaces))
         return fields
     }
-
-    // MARK: - Binary Parsed Cache
-
-    private static let cacheMaxAge: TimeInterval = 7 * 24 * 3600 // 7 days
-
-    /// Serializable wrapper for the full parsed schedule
-    private struct ScheduleCache: Codable {
-        let trips: [String: GTFSTrip]
-        let stopTimes: [String: [GTFSStopTime]]
-        let tripStopTimes: [String: [GTFSStopTime]]
-        let calendars: [String: GTFSServiceCalendar]
-    }
-
-    private func saveParsedCache(to dir: URL) {
-        let cache = ScheduleCache(
-            trips: trips,
-            stopTimes: stopTimes,
-            tripStopTimes: tripStopTimes,
-            calendars: calendars
-        )
-        do {
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: dir.appendingPathComponent("gtfs_schedule_cache.json"))
-        } catch {
-            // Cache save failure is non-fatal — next launch will re-parse
-        }
-    }
-
-    private func loadParsedCache(from dir: URL) -> Bool {
-        let cacheFile = dir.appendingPathComponent("gtfs_schedule_cache.json")
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: cacheFile.path),
-              let modDate = attrs[.modificationDate] as? Date,
-              Date().timeIntervalSince(modDate) < Self.cacheMaxAge else {
-            return false
-        }
-
-        do {
-            let start = Date()
-            let data = try Data(contentsOf: cacheFile)
-            let cache = try JSONDecoder().decode(ScheduleCache.self, from: data)
-            self.trips = cache.trips
-            self.stopTimes = cache.stopTimes
-            self.tripStopTimes = cache.tripStopTimes
-            self.calendars = cache.calendars
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            // Log will be called by the caller
-            return !trips.isEmpty
-        } catch {
-            return false
-        }
-    }
 }
 
 // MARK: - Expose ZIP extraction from GTFSStopLoader
 
 extension GTFSStopLoader {
-    /// Extract a named file from ZIP data (exposed for GTFSScheduleService)
     func extractFile(from data: Data, named fileName: String) -> String? {
         extractFileFromZip(data: data, fileName: fileName)
     }
