@@ -904,6 +904,10 @@ struct MapTabView: View {
             .padding(.vertical, 10)
             .background(.ultraThinMaterial)
             .clipShape(Capsule())
+            .contentShape(Capsule()) // Ensure entire bar is tappable
+            .onTapGesture {
+                isSearchFocused = true
+            }
 
 
             // Overlap toggle — only visible when 2+ layers active
