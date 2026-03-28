@@ -78,19 +78,12 @@ struct UserPreferencesView: View {
                 .pickerStyle(.menu)
             }
 
-            HStack {
-                Text("Transit preference")
-                Spacer()
-                Picker("", selection: Binding(
-                    get: { profile.transitModePreference },
-                    set: { profile.transitModePreference = $0; profile.updatedAt = Date() }
-                )) {
-                    Text("Fastest").tag("fastest")
-                    Text("Prefer Tram/Rail").tag("preferTramRail")
-                    Text("Prefer Bus").tag("preferBus")
-                }
-                .pickerStyle(.menu)
-            }
+            // Transit preference is now driven by map layer toggles and favorites.
+            // Toggle Luas/DART layers on → tram/rail routes are prioritized.
+            // Favorite a route → it always ranks higher.
+            Text("Tip: Toggle transit layers on the map to prioritize modes. Favorite stops to boost specific routes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

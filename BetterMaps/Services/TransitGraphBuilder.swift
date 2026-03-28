@@ -42,6 +42,7 @@ struct TransitGraph: Codable {
     let buildDate: String              // YYYYMMDD
     let serviceDay: String             // "weekday" or "saturday" or "sunday"
     let buildTimestamp: TimeInterval    // for staleness display
+    var version: Int = 0               // graph format version for cache invalidation (0 = pre-versioning)
 
     /// Time bucket for a given seconds-since-midnight
     static func timeBucket(for seconds: Int) -> Int {
@@ -74,10 +75,16 @@ actor TransitGraphBuilder {
             .appendingPathComponent("transit_graph.json")
     }()
 
-    /// Load cached graph if fresh, or return nil to trigger rebuild
+    /// Graph format version — increment to invalidate old caches after structural fixes.
+    /// v2: Fixed stop ordering using GTFS stop_sequence instead of segment chaining.
+    private static let graphVersion = 2
+
+    /// Load cached graph if fresh and correct version, or return nil to trigger rebuild
     static func loadCached() -> TransitGraph? {
         guard let data = try? Data(contentsOf: cacheURL),
               let graph = try? JSONDecoder().decode(TransitGraph.self, from: data) else { return nil }
+        // Invalidate if old version (stop order was broken in v1)
+        if graph.version != graphVersion { return nil }
         // Valid if built within last 7 days
         if Date().timeIntervalSince1970 - graph.buildTimestamp > 7 * 24 * 3600 { return nil }
         return graph
@@ -100,8 +107,68 @@ actor TransitGraphBuilder {
             stopLons.append(Float(stop.longitude))
         }
 
-        // 2. Compute segment travel times per route/direction/bucket
         let serviceList = activeServices.map { "'\($0)'" }.joined(separator: ",")
+        struct RouteKey: Hashable { let routeId: String; let directionId: Int }
+
+        // 2. Get authoritative stop order from GTFS stop_times.
+        // Step 1: Find the longest trip per route/direction (most stops = covers branches)
+        let longestTripSQL = """
+            SELECT t.route_id, t.direction_id, t.trip_id, COUNT(*) as stop_count,
+                   COALESCE(r.route_type, 3), COALESCE(r.route_short_name, '')
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            LEFT JOIN routes r ON t.route_id = r.route_id
+            WHERE t.service_id IN (\(serviceList))
+            GROUP BY t.route_id, t.direction_id, t.trip_id
+            ORDER BY t.route_id, t.direction_id, stop_count DESC
+        """
+
+        var canonicalTripId: [RouteKey: String] = [:]
+        var routeMeta: [RouteKey: (type: Int, name: String)] = [:]
+
+        if let stmt = db.prepare(longestTripSQL) {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let routeId = db.columnText(stmt, index: 0) ?? ""
+                let dirId = db.columnInt(stmt, index: 1)
+                let tripId = db.columnText(stmt, index: 2) ?? ""
+                let routeType = db.columnInt(stmt, index: 4)
+                let routeName = db.columnText(stmt, index: 5) ?? ""
+
+                let key = RouteKey(routeId: routeId, directionId: dirId)
+                // First row per route/dir has highest stop_count (ORDER BY ... DESC)
+                if canonicalTripId[key] == nil {
+                    canonicalTripId[key] = tripId
+                    routeMeta[key] = (routeType, routeName)
+                }
+            }
+            db.finalize(stmt)
+        }
+
+        // Step 2: Get the stop sequence for just those canonical trips
+        let tripList = canonicalTripId.values.map { "'\($0)'" }.joined(separator: ",")
+        let stopOrderSQL = """
+            SELECT t.route_id, t.direction_id, st.stop_id, st.stop_sequence
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            WHERE t.trip_id IN (\(tripList))
+            ORDER BY t.route_id, t.direction_id, st.stop_sequence
+        """
+
+        var canonicalStopOrder: [RouteKey: [String]] = [:]
+
+        if let stmt = db.prepare(stopOrderSQL) {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let routeId = db.columnText(stmt, index: 0) ?? ""
+                let dirId = db.columnInt(stmt, index: 1)
+                let stopId = db.columnText(stmt, index: 2) ?? ""
+
+                let key = RouteKey(routeId: routeId, directionId: dirId)
+                canonicalStopOrder[key, default: []].append(stopId)
+            }
+            db.finalize(stmt)
+        }
+
+        // 3. Compute segment travel times per route/direction/bucket
         let segmentSQL = """
             SELECT t.route_id, t.direction_id, st1.stop_id, st2.stop_id,
                 CASE
@@ -111,20 +178,16 @@ actor TransitGraphBuilder {
                     WHEN st1.departure_seconds BETWEEN 66600 AND 79199 THEN 3
                     ELSE 4
                 END AS bucket,
-                AVG(st2.arrival_seconds - st1.departure_seconds) AS avg_sec,
-                COALESCE(r.route_type, 3), COALESCE(r.route_short_name, '')
+                AVG(st2.arrival_seconds - st1.departure_seconds) AS avg_sec
             FROM stop_times st1
             JOIN stop_times st2 ON st1.trip_id = st2.trip_id AND st2.stop_sequence = st1.stop_sequence + 1
             JOIN trips t ON st1.trip_id = t.trip_id
-            LEFT JOIN routes r ON t.route_id = r.route_id
             WHERE t.service_id IN (\(serviceList))
             GROUP BY t.route_id, t.direction_id, st1.stop_id, st2.stop_id, bucket
         """
 
         // route_id+dir → bucket → [(fromStop, toStop, avgSec)]
-        struct RouteKey: Hashable { let routeId: String; let directionId: Int }
         var segmentsByRoute: [RouteKey: [Int: [(from: String, to: String, sec: Int)]]] = [:]
-        var routeMeta: [RouteKey: (type: Int, name: String)] = [:]
 
         if let stmt = db.prepare(segmentSQL) {
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -134,12 +197,9 @@ actor TransitGraphBuilder {
                 let toStop = db.columnText(stmt, index: 3) ?? ""
                 let bucket = db.columnInt(stmt, index: 4)
                 let avgSec = db.columnInt(stmt, index: 5)
-                let routeType = db.columnInt(stmt, index: 6)
-                let routeName = db.columnText(stmt, index: 7) ?? ""
 
                 let key = RouteKey(routeId: routeId, directionId: dirId)
                 segmentsByRoute[key, default: [:]][bucket, default: []].append((fromStop, toStop, max(avgSec, 1)))
-                if routeMeta[key] == nil { routeMeta[key] = (routeType, routeName) }
             }
             db.finalize(stmt)
         }
@@ -194,10 +254,8 @@ actor TransitGraphBuilder {
         for (key, bucketSegments) in segmentsByRoute {
             guard let meta = routeMeta[key] else { continue }
 
-            // Reconstruct stop order from segments (follow the chain)
-            let allBucketSegments = bucketSegments.values.flatMap { $0 }
-            var stopOrder = buildStopOrder(from: allBucketSegments)
-            guard stopOrder.count >= 2 else { continue }
+            // Use authoritative stop order from GTFS stop_sequence
+            guard let stopOrder = canonicalStopOrder[key], stopOrder.count >= 2 else { continue }
 
             // Build cumulative seconds per bucket
             var cumulativeSeconds: [[UInt16]] = []
@@ -281,7 +339,8 @@ actor TransitGraphBuilder {
             stopLons: stopLons,
             buildDate: dateStr,
             serviceDay: serviceDay,
-            buildTimestamp: Date().timeIntervalSince1970
+            buildTimestamp: Date().timeIntervalSince1970,
+            version: Self.graphVersion
         )
 
         // Save to cache
@@ -300,28 +359,6 @@ actor TransitGraphBuilder {
     }
 
     // MARK: - Helpers
-
-    /// Reconstruct ordered stop sequence from segment pairs
-    private func buildStopOrder(from segments: [(from: String, to: String, sec: Int)]) -> [String] {
-        var fromToMap: [String: String] = [:]
-        var toSet = Set<String>()
-        for seg in segments {
-            fromToMap[seg.from] = seg.to
-            toSet.insert(seg.to)
-        }
-        // Find the first stop (appears as 'from' but never as 'to')
-        guard let firstStop = fromToMap.keys.first(where: { !toSet.contains($0) }) else {
-            return Array(Set(segments.flatMap { [$0.from, $0.to] }))
-        }
-        var order = [firstStop]
-        var current = firstStop
-        while let next = fromToMap[current] {
-            order.append(next)
-            current = next
-            if order.count > 200 { break }  // Safety
-        }
-        return order
-    }
 
     private func haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
         let R = 6371000.0

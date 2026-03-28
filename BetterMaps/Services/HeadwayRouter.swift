@@ -57,6 +57,7 @@ actor HeadwayRouter {
 
     var isReady: Bool { graph != nil }
     var stalenessLabel: String { graph?.stalenessLabel ?? "No data" }
+    private(set) var debugLog: String = ""
 
     /// Find routes that connect origin to destination.
     /// Simple approach: for each route, check if it has stops near both endpoints.
@@ -72,25 +73,52 @@ actor HeadwayRouter {
         guard let graph else { return [] }
 
         let timeBucket = TransitGraph.timeBucket(for: departureTime)
-        let srcLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
-        let dstLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+
+        // Fast distance approximation for Dublin (~53°N).
+        // Avoids CLLocation object creation + Haversine per stop.
+        // At 53°N: 1° lat ≈ 111,320m, 1° lon ≈ cos(53°) * 111,320 ≈ 67,000m
+        let latScale = 111_320.0
+        let lonScale = 67_000.0
+
+        func fastDistMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
+            let dLat = (lat1 - lat2) * latScale
+            let dLon = (lon1 - lon2) * lonScale
+            return sqrt(dLat * dLat + dLon * dLon)
+        }
+
+        // Bounding box pre-filter (degrees) to skip distant stops entirely
+        let latMargin = walkRadiusMeters / latScale
+        let lonMargin = walkRadiusMeters / lonScale
 
         // Pre-compute distances from source and destination to all stops
-        // Only compute for stops that appear in routes (use graph.stopIdToIndex)
         var srcDist: [Int: Double] = [:]  // stopIndex → meters from source
         var dstDist: [Int: Double] = [:]  // stopIndex → meters from destination
 
-        for (stopId, idx) in graph.stopIdToIndex {
+        for (_, idx) in graph.stopIdToIndex {
             let lat = Double(graph.stopLats[idx])
             let lon = Double(graph.stopLons[idx])
-            let stopLoc = CLLocation(latitude: lat, longitude: lon)
 
-            let fromSrc = stopLoc.distance(from: srcLoc)
-            if fromSrc <= walkRadiusMeters { srcDist[idx] = fromSrc }
-
-            let fromDst = stopLoc.distance(from: dstLoc)
-            if fromDst <= walkRadiusMeters { dstDist[idx] = fromDst }
+            // Quick bounding box check before computing distance
+            if abs(lat - source.latitude) <= latMargin && abs(lon - source.longitude) <= lonMargin {
+                let dist = fastDistMeters(lat1: lat, lon1: lon, lat2: source.latitude, lon2: source.longitude)
+                if dist <= walkRadiusMeters { srcDist[idx] = dist }
+            }
+            if abs(lat - destination.latitude) <= latMargin && abs(lon - destination.longitude) <= lonMargin {
+                let dist = fastDistMeters(lat1: lat, lon1: lon, lat2: destination.latitude, lon2: destination.longitude)
+                if dist <= walkRadiusMeters { dstDist[idx] = dist }
+            }
         }
+
+        // Diagnostic: log graph composition and nearby stop counts
+        let graphRouteTypes = Dictionary(grouping: graph.routes, by: { $0.routeType })
+        let typeLabels = graphRouteTypes.map { type, routes in
+            let label = type == 0 ? "luas" : type == 2 ? "rail" : type == 3 ? "bus" : "type\(type)"
+            return "\(routes.count) \(label)"
+        }.sorted().joined(separator: ", ")
+        // Track non-bus route failures for diagnostics
+        var nonBusDiag: [(name: String, type: Int, reason: String)] = []
+
+        debugLog = "graph: \(graph.routes.count) routes [\(typeLabels)] | \(srcDist.count) near origin, \(dstDist.count) near dest"
 
         var journeys: [HeadwayJourney] = []
 
@@ -124,12 +152,27 @@ actor HeadwayRouter {
                 }
             }
 
-            // Valid if board comes before alight in stop sequence
-            guard let board = bestBoard, let alight = bestAlight,
-                  board.pos < alight.pos,
-                  board.pos < cumulative.count, alight.pos < cumulative.count else { continue }
+            // Track non-bus route match results
+            if route.routeType != 3 {
+                if bestBoard == nil && bestAlight == nil {
+                    nonBusDiag.append((route.routeName, route.routeType, "no stops near origin or dest"))
+                } else if bestBoard == nil {
+                    nonBusDiag.append((route.routeName, route.routeType, "no stop near origin"))
+                } else if bestAlight == nil {
+                    nonBusDiag.append((route.routeName, route.routeType, "no stop near dest"))
+                }
+                // "wrong direction" is no longer a failure — we handle both directions
+            }
 
-            let rideSec = Int(cumulative[alight.pos]) - Int(cumulative[board.pos])
+            guard let board = bestBoard, let alight = bestAlight else { continue }
+
+            // Tram/rail lines run both directions with ~symmetric travel times.
+            // Use min/max positions so backward travel works (e.g., Green Luas southbound).
+            let startPos = min(board.pos, alight.pos)
+            let endPos = max(board.pos, alight.pos)
+            guard startPos < cumulative.count, endPos < cumulative.count else { continue }
+
+            let rideSec = Int(cumulative[endPos]) - Int(cumulative[startPos])
             let waitSec = headway / 2
             let totalSec = board.walkSec + waitSec + rideSec + alight.walkSec
 
@@ -148,6 +191,15 @@ actor HeadwayRouter {
                 totalSeconds: totalSec
             ))
         }
+
+        // Append non-bus route match summary
+        let nonBusMatched = journeys.filter { $0.primaryMode != .bus }
+        let matchedSummary = Dictionary(grouping: nonBusMatched, by: { $0.primaryMode.rawValue })
+            .map { "\($0.value.count) \($0.key)" }.sorted().joined(separator: ", ")
+        let failSummary = Dictionary(grouping: nonBusDiag, by: { $0.reason.prefix(while: { $0 != " " && $0 != "(" }) })
+            .map { "\($0.value.count) \($0.key)" }.sorted().joined(separator: ", ")
+        if !matchedSummary.isEmpty { debugLog += " | matched: \(matchedSummary)" }
+        if !failSummary.isEmpty { debugLog += " | unmatched: \(failSummary)" }
 
         // --- Phase 2: Transfer routes (ride A → walk → ride B) ---
         if maxTransfers > 0 {
@@ -174,13 +226,13 @@ actor HeadwayRouter {
                 }
                 guard let bA = boardA else { continue }
 
-                // For each stop on route A after boarding, check if it's a transfer point
-                for (posA, stopIdA) in routeA.stopIds.enumerated() where posA > bA.pos {
+                // For each stop on route A, check if it's a transfer point.
+                // No direction constraint — tram/rail run both ways.
+                for (posA, stopIdA) in routeA.stopIds.enumerated() where posA != bA.pos {
                     guard let transferIdx = graph.stopIdToIndex[stopIdA],
                           posA < cumA.count else { continue }
                     let transferLat = Double(graph.stopLats[transferIdx])
                     let transferLon = Double(graph.stopLons[transferIdx])
-                    let transferLoc = CLLocation(latitude: transferLat, longitude: transferLon)
 
                     // Check routes near this transfer point (rail/tram first)
                     for routeB in sortedRoutes {
@@ -197,7 +249,7 @@ actor HeadwayRouter {
                             guard let bIdx = graph.stopIdToIndex[stopIdB] else { continue }
                             let bLat = Double(graph.stopLats[bIdx])
                             let bLon = Double(graph.stopLons[bIdx])
-                            let dist = transferLoc.distance(from: CLLocation(latitude: bLat, longitude: bLon))
+                            let dist = fastDistMeters(lat1: transferLat, lon1: transferLon, lat2: bLat, lon2: bLon)
                             if dist <= 400 {
                                 let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
                                 if boardB == nil || walkSec < boardB!.walkSec {
@@ -207,17 +259,18 @@ actor HeadwayRouter {
                         }
                         guard let bB = boardB else { continue }
 
-                        // Find alighting on route B near destination
+                        // Find alighting on route B near destination (any position — bidirectional)
                         var alightB: (idx: Int, pos: Int, walkSec: Int)?
-                        for (posB, stopIdB) in routeB.stopIds.enumerated() where posB > bB.pos {
+                        for (posB, stopIdB) in routeB.stopIds.enumerated() where posB != bB.pos {
                             guard let aIdx = graph.stopIdToIndex[stopIdB], let dist = dstDist[aIdx] else { continue }
                             let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
                             if alightB == nil || walkSec < alightB!.walkSec { alightB = (aIdx, posB, walkSec) }
                         }
                         guard let aB = alightB, bB.pos < cumB.count, aB.pos < cumB.count else { continue }
 
-                        let rideA = Int(cumA[posA]) - Int(cumA[bA.pos])
-                        let rideB = Int(cumB[aB.pos]) - Int(cumB[bB.pos])
+                        // Use absolute ride times — routes run both directions
+                        let rideA = abs(Int(cumA[posA]) - Int(cumA[bA.pos]))
+                        let rideB = abs(Int(cumB[aB.pos]) - Int(cumB[bB.pos]))
                         let totalSec = bA.walkSec + (headwayA / 2) + rideA + bB.walkSec + (headwayB / 2) + rideB + aB.walkSec
 
                         // Only include if competitive (not much worse than best direct)
@@ -270,15 +323,26 @@ actor HeadwayRouter {
             }
         }
 
-        // Start with one per route, sorted by time
-        var results = Array(bestByRoute.values).sorted { $0.totalSeconds < $1.totalSeconds }
+        // Split into bus and non-bus, then interleave to guarantee mode diversity.
+        // Non-bus routes (Luas, DART, Rail) always get slots regardless of speed.
+        let allByRoute = Array(bestByRoute.values).sorted { $0.totalSeconds < $1.totalSeconds }
+        let nonBusRoutes = allByRoute.filter { $0.primaryMode != .bus }
+        let busRoutes = allByRoute.filter { $0.primaryMode == .bus }
 
-        // Guarantee at least one non-bus option if any exists
-        let hasNonBus = results.contains { $0.primaryMode != .bus }
-        if !hasNonBus, let bestNonBus = journeys.first(where: { $0.primaryMode != .bus }) {
-            results.insert(bestNonBus, at: 0)
+        // Always include ALL non-bus routes (typically few: 2-8), then fill with bus
+        var results = nonBusRoutes
+        for bus in busRoutes where results.count < 8 {
+            results.append(bus)
         }
 
-        return Array(results.prefix(5))
+        // Sort final list: non-bus first, then by time within each group
+        results.sort { a, b in
+            let aIsBus = a.primaryMode == .bus
+            let bIsBus = b.primaryMode == .bus
+            if aIsBus != bIsBus { return !aIsBus }  // non-bus first
+            return a.totalSeconds < b.totalSeconds
+        }
+
+        return Array(results.prefix(8))
     }
 }

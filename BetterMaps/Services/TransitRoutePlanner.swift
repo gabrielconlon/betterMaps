@@ -118,45 +118,11 @@ actor TransitRoutePlanner {
         onRouteFound: (@Sendable (TransitRouteOption) async -> Void)? = nil
     ) async -> [TransitRouteOption] {
 
-        // Smart radius by mode — generous for rail/tram (fewer, further apart),
-        // tighter for bus (many stops, close together) to keep query count reasonable
-        let walkRadiusMeters: Double = 2500  // ~30 min walk, main radius for findNearbyStopIds
-
         await GTFSScheduleService.shared.loadIfNeeded()
 
-        // Find nearby stops per mode with appropriate limits.
-        // Bus stops are dense (~10/km²) so cap at 15. Tram/rail are sparse so keep all within radius.
+        // HeadwayRouter handles its own distance filtering using the transit graph.
+        // We just need the stop lookup dictionary for converting results back to UI.
         let stopById = Dictionary(uniqueKeysWithValues: transitStops.map { ($0.id, $0) })
-
-        func nearbyStopIds(near coord: CLLocationCoordinate2D) -> [String] {
-            let loc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-            let nearby = transitStops
-                .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: loc)) }
-                .filter { $0.dist <= walkRadiusMeters }
-
-            // Keep all tram/rail/dart stops (sparse, important for mode diversity)
-            let railStops = nearby.filter { $0.stop.type != .bus }.map { $0.stop.id }
-            // Keep closest 15 bus stops (dense, more than enough for routing)
-            let busStops = nearby.filter { $0.stop.type == .bus }
-                .sorted { $0.dist < $1.dist }
-                .prefix(15)
-                .map { $0.stop.id }
-            return railStops + busStops
-        }
-
-        let originStopIds = nearbyStopIds(near: source)
-        let destStopIds = nearbyStopIds(near: destination)
-
-        guard !originStopIds.isEmpty, !destStopIds.isEmpty else {
-            await APILogger.shared.log(
-                service: "Transit Planner", endpoint: "findRoutes", status: .failure,
-                durationMs: 0,
-                detail: "No stops near origin (\(originStopIds.count)) or dest (\(destStopIds.count))"
-            )
-            return []
-        }
-
-        let destStopIdSet = Set(destStopIds)
 
         // Use Irish timezone for GTFS time calculations
         var irishCal = Calendar.current
@@ -207,59 +173,29 @@ actor TransitRoutePlanner {
             }
 
             let headwayMs = Int(Date().timeIntervalSince(searchStart) * 1000)
+            let graphDebug = await headwayRouter.debugLog
             await APILogger.shared.log(
                 service: "HeadwayRouter", endpoint: "search",
                 status: options.isEmpty ? .failure : .success, durationMs: headwayMs,
-                detail: "\(options.count) routes found in \(headwayMs)ms | \(await headwayRouter.stalenessLabel)"
+                detail: "\(options.count) routes in \(headwayMs)ms | \(graphDebug) | \(await headwayRouter.stalenessLabel)"
             )
         }
 
-        // RAPTOR refinement disabled — HeadwayRouter provides instant results.
-        // RAPTOR can be re-enabled once binary cache optimization reduces build from 60s to <1s.
+        // Return HeadwayRouter results directly — RoutingViewModel handles
+        // mode diversity, favorites, and preference-based scoring.
+        // Previously a second best-per-mode filter here was killing non-bus results.
 
-        // --- Best-per-mode selection with preference boost ---
-        let sortScore: (TransitRouteOption) -> Double = { option in
-            let base = option.totalDuration
-            guard let mode = option.primaryMode else { return base }
-            switch transitPreference {
-            case "preferTramRail":
-                return (mode == .luas || mode == .dart || mode == .rail) ? base - 600 : base
-            case "preferBus":
-                return mode == .bus ? base - 600 : base
-            default:
-                return base
-            }
-        }
-
-        var seen = Set<String>()
-        let unique = options.filter { seen.insert("\($0.summary)|\($0.transfers)").inserted }
-
-        var bestByMode: [TransitLegMode: TransitRouteOption] = [:]
-        for option in unique {
-            guard let mode = option.primaryMode else { continue }
-            if let existing = bestByMode[mode] {
-                if sortScore(option) < sortScore(existing) { bestByMode[mode] = option }
-            } else {
-                bestByMode[mode] = option
-            }
-        }
-
-        var results = Array(bestByMode.values).sorted { sortScore($0) < sortScore($1) }
-        let selectedIds = Set(results.map { $0.id })
-        let remaining = unique.filter { !selectedIds.contains($0.id) }
-            .sorted { sortScore($0) < sortScore($1) }
-        for option in remaining where results.count < maxResults {
-            results.append(option)
-        }
-
+        // Log with mode breakdown so we can diagnose "all bus" issues
+        let modeBreakdown = Dictionary(grouping: options, by: { $0.primaryMode?.rawValue ?? "?" })
+            .map { "\($0.value.count) \($0.key)" }.sorted().joined(separator: ", ")
         let totalMs = Int(Date().timeIntervalSince(searchStart) * 1000)
         await APILogger.shared.log(
             service: "Transit Planner", endpoint: "findRoutes",
-            status: results.isEmpty ? .failure : .success, durationMs: totalMs,
-            detail: "\(results.count) route(s) | \(options.count) options | \(originStopIds.count) origins, \(destStopIds.count) dests"
+            status: options.isEmpty ? .failure : .success, durationMs: totalMs,
+            detail: "\(options.count) route(s) [\(modeBreakdown)]"
         )
 
-        return results
+        return options
     }
 
     // MARK: - RAPTOR Journey → TransitRouteOption Conversion
