@@ -249,24 +249,34 @@ actor HeadwayRouter {
             }
         }
 
-        // --- Select best per mode ---
+        // --- Select best per route (not just per mode) ---
+        // Groups by mode + route name so Red Luas and Green Luas are separate slots.
+        // Also ensures at least one non-bus option if any exists.
         journeys.sort { $0.totalSeconds < $1.totalSeconds }
 
-        var bestByMode: [TransitLegMode: HeadwayJourney] = [:]
+        // Dedup key: mode + primary route name (e.g. "luas-Red", "dart-DART", "bus-39A")
+        func routeKey(_ j: HeadwayJourney) -> String {
+            let mode = j.primaryMode.rawValue
+            let name = j.rideLegs.first?.routeName ?? "unknown"
+            let transfers = j.transfers > 0 ? "-transfer" : ""
+            return "\(mode)-\(name)\(transfers)"
+        }
+
+        var bestByRoute: [String: HeadwayJourney] = [:]
         for j in journeys {
-            if bestByMode[j.primaryMode] == nil {
-                bestByMode[j.primaryMode] = j
+            let key = routeKey(j)
+            if bestByRoute[key] == nil {
+                bestByRoute[key] = j
             }
         }
 
-        var results = Array(bestByMode.values).sorted { $0.totalSeconds < $1.totalSeconds }
-        let selectedModes = Set(results.map { $0.primaryMode })
-        for j in journeys where results.count < 5 {
-            if !selectedModes.contains(j.primaryMode) || results.count < 3 {
-                if !results.contains(where: { $0.totalSeconds == j.totalSeconds && $0.primaryMode == j.primaryMode }) {
-                    results.append(j)
-                }
-            }
+        // Start with one per route, sorted by time
+        var results = Array(bestByRoute.values).sorted { $0.totalSeconds < $1.totalSeconds }
+
+        // Guarantee at least one non-bus option if any exists
+        let hasNonBus = results.contains { $0.primaryMode != .bus }
+        if !hasNonBus, let bestNonBus = journeys.first(where: { $0.primaryMode != .bus }) {
+            results.insert(bestNonBus, at: 0)
         }
 
         return Array(results.prefix(5))

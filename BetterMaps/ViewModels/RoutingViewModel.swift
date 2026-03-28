@@ -451,25 +451,26 @@ class RoutingViewModel {
         var seen = Set<String>()
         let unique = options.filter { seen.insert("\($0.summary)|\($0.transfers)").inserted }
 
-        // Best per mode
-        var bestByMode: [TransitLegMode: TransitRouteOption] = [:]
+        // Best per route (mode + route name) so Red/Green Luas both get slots
+        var bestByRoute: [String: TransitRouteOption] = [:]
         for option in unique {
-            guard let mode = option.primaryMode else { continue }
-            if let existing = bestByMode[mode] {
-                if sortScore(option) < sortScore(existing) { bestByMode[mode] = option }
+            let key = "\(option.primaryMode?.rawValue ?? "unknown")-\(option.summary)"
+            if let existing = bestByRoute[key] {
+                if sortScore(option) < sortScore(existing) { bestByRoute[key] = option }
             } else {
-                bestByMode[mode] = option
+                bestByRoute[key] = option
             }
         }
 
-        var results = Array(bestByMode.values).sorted { sortScore($0) < sortScore($1) }
-        let selectedIds = Set(results.map { $0.id })
-        let remaining = unique.filter { !selectedIds.contains($0.id) }
-            .sorted { sortScore($0) < sortScore($1) }
-        for option in remaining where results.count < 5 {
-            results.append(option)
+        var results = Array(bestByRoute.values).sorted { sortScore($0) < sortScore($1) }
+
+        // Guarantee at least one non-bus option
+        let hasNonBus = results.contains { $0.primaryMode != .bus }
+        if !hasNonBus, let bestNonBus = unique.first(where: { $0.primaryMode != .bus }) {
+            results.insert(bestNonBus, at: 0)
         }
-        return results
+
+        return Array(results.prefix(5))
     }
 
     /// Load transit stops for the planner using ONLY GTFS stops.
