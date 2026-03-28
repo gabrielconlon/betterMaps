@@ -117,21 +117,38 @@ actor TransitRoutePlanner {
         transitStops: [TransitStop],
         maxTransfers: Int = 1,
         transitPreference: String = "fastest",
-        departureTime: Date = Date()
+        departureTime: Date = Date(),
+        onRouteFound: (@Sendable (TransitRouteOption) async -> Void)? = nil
     ) async -> [TransitRouteOption] {
 
-        // 5km radius (~60 min walk) — no hard walk cutoff, walk time factors into sort
-        let walkRadiusMeters: Double = 5000
+        // Smart radius by mode — generous for rail/tram (fewer, further apart),
+        // tighter for bus (many stops, close together) to keep query count reasonable
+        let walkRadiusMeters: Double = 2500  // ~30 min walk, main radius for findNearbyStopIds
 
         await GTFSScheduleService.shared.loadIfNeeded()
 
-        // Find stops near origin and destination
-        let originStopIds = await GTFSScheduleService.shared.findNearbyStopIds(
-            coordinate: source, radiusMeters: walkRadiusMeters, allStops: transitStops
-        )
-        let destStopIds = await GTFSScheduleService.shared.findNearbyStopIds(
-            coordinate: destination, radiusMeters: walkRadiusMeters, allStops: transitStops
-        )
+        // Find nearby stops per mode with appropriate limits.
+        // Bus stops are dense (~10/km²) so cap at 15. Tram/rail are sparse so keep all within radius.
+        let stopById = Dictionary(uniqueKeysWithValues: transitStops.map { ($0.id, $0) })
+
+        func nearbyStopIds(near coord: CLLocationCoordinate2D) -> [String] {
+            let loc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+            let nearby = transitStops
+                .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: loc)) }
+                .filter { $0.dist <= walkRadiusMeters }
+
+            // Keep all tram/rail/dart stops (sparse, important for mode diversity)
+            let railStops = nearby.filter { $0.stop.type != .bus }.map { $0.stop.id }
+            // Keep closest 15 bus stops (dense, more than enough for routing)
+            let busStops = nearby.filter { $0.stop.type == .bus }
+                .sorted { $0.dist < $1.dist }
+                .prefix(15)
+                .map { $0.stop.id }
+            return railStops + busStops
+        }
+
+        let originStopIds = nearbyStopIds(near: source)
+        let destStopIds = nearbyStopIds(near: destination)
 
         guard !originStopIds.isEmpty, !destStopIds.isEmpty else {
             await APILogger.shared.log(
@@ -142,7 +159,6 @@ actor TransitRoutePlanner {
             return []
         }
 
-        let stopById = Dictionary(uniqueKeysWithValues: transitStops.map { ($0.id, $0) })
         let destStopIdSet = Set(destStopIds)
 
         // Use Irish timezone for GTFS time calculations
@@ -257,12 +273,14 @@ actor TransitRoutePlanner {
                         Double(max(waitSeconds, 0) + max(rideSeconds, 0)) + Double(walkFromDest * 60)
                     )
 
-                    options.append(TransitRouteOption(
+                    let route = TransitRouteOption(
                         id: UUID(), legs: legs, totalDuration: totalSeconds,
                         totalWalkingMinutes: walkToOrigin + walkFromDest,
                         departureTime: depDate, arrivalTime: arrDate,
                         transfers: 0, summary: trip.routeShortName
-                    ))
+                    )
+                    options.append(route)
+                    await onRouteFound?(route)
                 }
             }
         }
@@ -409,12 +427,14 @@ actor TransitRoutePlanner {
                                     let depDate = departureTime.addingTimeInterval(Double(walkToOrigin * 60))
                                     let arrDate = depDate.addingTimeInterval(totalSeconds - Double(walkToOrigin * 60))
 
-                                    options.append(TransitRouteOption(
+                                    let route = TransitRouteOption(
                                         id: UUID(), legs: legs, totalDuration: totalSeconds,
                                         totalWalkingMinutes: walkToOrigin + transferWalkMin + walkFromDest,
                                         departureTime: depDate, arrivalTime: arrDate,
                                         transfers: 1, summary: "\(trip.routeShortName) → \(connTrip.routeShortName)"
-                                    ))
+                                    )
+                                    options.append(route)
+                                    await onRouteFound?(route)
                                 }
                             }
                         }

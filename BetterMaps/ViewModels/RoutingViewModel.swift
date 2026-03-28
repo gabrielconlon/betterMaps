@@ -156,30 +156,30 @@ class RoutingViewModel {
                 let maxTransfers = userProfile?.maxTransfers ?? 1
                 let transitPref = userProfile?.transitModePreference ?? "fastest"
 
-                // 15-second timeout — active service pre-computation makes queries faster,
-                // but complex multi-transfer searches still need headroom
-                let result = await withTaskGroup(of: [TransitRouteOption].self) { group in
-                    group.addTask {
-                        await self.transitPlanner.findRoutes(
-                            from: source, to: destination,
-                            transitStops: allStops,
-                            maxTransfers: maxTransfers,
-                            transitPreference: transitPref,
-                            departureTime: departureTime
-                        )
+                // Stream results as they're found — Luas/DART arrive first (fewer stops),
+                // bus fills in after. No hard timeout needed since results appear incrementally.
+                let allResults = await self.transitPlanner.findRoutes(
+                    from: source, to: destination,
+                    transitStops: allStops,
+                    maxTransfers: maxTransfers,
+                    transitPreference: transitPref,
+                    departureTime: departureTime,
+                    onRouteFound: { @Sendable route in
+                        await MainActor.run {
+                            // Add to displayed options immediately, keep sorted
+                            self.transitOptions.append(route)
+                            self.transitOptions.sort { $0.totalDuration < $1.totalDuration }
+                            // Cap at 5 displayed
+                            if self.transitOptions.count > 5 {
+                                self.transitOptions = Array(self.transitOptions.prefix(5))
+                            }
+                            self.transitStatusMessage = nil
+                        }
                     }
-                    group.addTask {
-                        try? await Task.sleep(for: .seconds(15))
-                        return [] as [TransitRouteOption]
-                    }
-                    let first = await group.next() ?? []
-                    group.cancelAll()
-                    return first
-                }
+                )
 
-                var allTransitOptions = result
-                allTransitOptions.sort { $0.totalDuration < $1.totalDuration }
-                transitOptions = Array(allTransitOptions.prefix(3))
+                // Final pass: apply best-per-mode selection from complete results
+                transitOptions = selectBestPerMode(from: allResults, preference: transitPref)
 
                 if transitOptions.isEmpty {
                     transitStatusMessage = "No transit routes found for this time."
@@ -418,6 +418,49 @@ class RoutingViewModel {
         transitOptions = []
         errorMessage = nil
         failedModes = [:]
+    }
+
+    /// Select best route per mode, then fill remaining slots.
+    /// Ensures mode diversity: one Luas, one DART, one bus if available.
+    private func selectBestPerMode(from options: [TransitRouteOption], preference: String) -> [TransitRouteOption] {
+        guard !options.isEmpty else { return [] }
+
+        let sortScore: (TransitRouteOption) -> Double = { option in
+            let base = option.totalDuration
+            guard let mode = option.primaryMode else { return base }
+            switch preference {
+            case "preferTramRail":
+                return (mode == .luas || mode == .dart || mode == .rail) ? base - 600 : base
+            case "preferBus":
+                return mode == .bus ? base - 600 : base
+            default:
+                return base
+            }
+        }
+
+        // Deduplicate
+        var seen = Set<String>()
+        let unique = options.filter { seen.insert("\($0.summary)|\($0.transfers)").inserted }
+
+        // Best per mode
+        var bestByMode: [TransitLegMode: TransitRouteOption] = [:]
+        for option in unique {
+            guard let mode = option.primaryMode else { continue }
+            if let existing = bestByMode[mode] {
+                if sortScore(option) < sortScore(existing) { bestByMode[mode] = option }
+            } else {
+                bestByMode[mode] = option
+            }
+        }
+
+        var results = Array(bestByMode.values).sorted { sortScore($0) < sortScore($1) }
+        let selectedIds = Set(results.map { $0.id })
+        let remaining = unique.filter { !selectedIds.contains($0.id) }
+            .sorted { sortScore($0) < sortScore($1) }
+        for option in remaining where results.count < 5 {
+            results.append(option)
+        }
+        return results
     }
 
     /// Load transit stops for the planner using ONLY GTFS stops.
