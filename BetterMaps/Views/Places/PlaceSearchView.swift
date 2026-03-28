@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct PlaceSearchView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \Place.name) private var allPlaces: [Place]
     @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
     @State private var searchText = ""
@@ -73,6 +74,13 @@ struct PlaceSearchView: View {
                         PlaceSearchRow(place: place)
                     }
                     .tint(.primary)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            modelContext.delete(place)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
             }
         }

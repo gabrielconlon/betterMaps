@@ -5,6 +5,7 @@ import MapKit
 struct PlaceFormView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
 
     let place: Place?
     let initialCoordinate: CLLocationCoordinate2D?
@@ -19,6 +20,7 @@ struct PlaceFormView: View {
     @State private var longitude: Double = -122.4194
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var photoData: [Data] = []
+    @State private var selectedLayerIds: Set<UUID> = []
 
     var isEditing: Bool { place != nil }
 
@@ -73,6 +75,34 @@ struct PlaceFormView: View {
 
                 Section("Photos") {
                     PhotoPickerView(photoData: $photoData)
+                }
+
+                // Layer picker — only for new places without a pre-set target layer
+                if !isEditing && targetLayer == nil && !allLayers.isEmpty {
+                    Section("Add to Layer") {
+                        ForEach(allLayers) { layer in
+                            Button {
+                                if selectedLayerIds.contains(layer.id) {
+                                    selectedLayerIds.remove(layer.id)
+                                } else {
+                                    selectedLayerIds.insert(layer.id)
+                                }
+                            } label: {
+                                HStack {
+                                    Circle()
+                                        .fill(Color(hex: layer.colorHex) ?? .gray)
+                                        .frame(width: 12, height: 12)
+                                    Text(layer.name)
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    if selectedLayerIds.contains(layer.id) {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.blue)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             .navigationTitle(isEditing ? "Edit Place" : "New Place")
@@ -139,10 +169,14 @@ struct PlaceFormView: View {
             modelContext.insert(newPlace)
 
             if let targetLayer {
-                if targetLayer.places == nil {
-                    targetLayer.places = []
-                }
+                if targetLayer.places == nil { targetLayer.places = [] }
                 targetLayer.places?.append(newPlace)
+            } else {
+                // Add to user-selected layers (from the picker)
+                for layer in allLayers where selectedLayerIds.contains(layer.id) {
+                    if layer.places == nil { layer.places = [] }
+                    layer.places?.append(newPlace)
+                }
             }
         }
         dismiss()
