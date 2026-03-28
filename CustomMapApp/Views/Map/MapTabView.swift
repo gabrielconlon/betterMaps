@@ -302,32 +302,22 @@ struct MapTabView: View {
             savedLiveTransit = serializeTransitTypes(newValue)
         }
         .task {
-            // Load transit stops from three sources.
-            // Hardcoded Luas stops first (curated coordinates, always included),
-            // then GTFS (correct stop IDs for timetables), then Irish Rail API (gap-fill).
+            // Load transit stops from two sources:
+            // 1. Hardcoded Luas stops (curated coordinates, always included)
+            // 2. GTFS stops (correct stop IDs for timetable lookups)
+            // Irish Rail API stations are NOT loaded here — their IDs don't match
+            // GTFS stop_times so they create orphan pins with no timetables.
+            // GTFS already has all rail stations; reclassification tags them correctly.
             var allStops: [TransitStop] = LuasStopCoordinates.stops
 
             // GTFS stops — add if not near a hardcoded Luas stop.
-            // These have IDs that match stop_times for timetable lookups.
+            // 300m threshold because GTFS Luas coordinates can differ from hardcoded ones.
             let loader = GTFSStopLoader()
             let gtfsStops = await loader.loadStops()
             let fixedStops = allStops  // Snapshot of Luas stops for proximity check
             for stop in gtfsStops {
-                if !isNearExistingStop(stop, in: fixedStops, thresholdMeters: 150) {
+                if !isNearExistingStop(stop, in: fixedStops, thresholdMeters: 300) {
                     allStops.append(stop)
-                }
-            }
-
-            // Irish Rail API stations — add only if not already covered.
-            // Irish Rail API IDs (e.g. "BRAY") don't match GTFS stop_times, so we
-            // only add stations that GTFS missed to avoid orphan stops with no timetable.
-            let railService = IrishRailService()
-            let stations = await railService.fetchStations()
-            for station in stations {
-                let type: TransitStop.TransitStopType = station.type == .dart ? .dart : .rail
-                let newStop = TransitStop(id: station.id, name: station.name, latitude: station.latitude, longitude: station.longitude, type: type)
-                if !isNearExistingStop(newStop, in: allStops, thresholdMeters: 250) {
-                    allStops.append(newStop)
                 }
             }
 

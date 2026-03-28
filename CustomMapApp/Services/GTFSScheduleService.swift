@@ -466,13 +466,14 @@ actor GTFSScheduleService {
     }
 
     /// Shape coordinates for DART routes only (route_short_name = 'DART').
+    /// DART has multiple branches (Howth + Malahide) sharing the same route_id,
+    /// so we get all distinct shapes rather than one per direction.
     func shapeCoordinatesForDART() -> [[CLLocationCoordinate2D]] {
         let sql = """
-            SELECT MIN(t.shape_id)
+            SELECT DISTINCT t.shape_id
             FROM trips t
             JOIN routes r ON t.route_id = r.route_id
             WHERE r.route_type = 2 AND UPPER(r.route_short_name) = 'DART' AND t.shape_id != ''
-            GROUP BY r.route_id, t.direction_id
         """
         guard let stmt = db.prepare(sql) else { return [] }
         defer { db.finalize(stmt) }
@@ -489,13 +490,14 @@ actor GTFSScheduleService {
     }
 
     /// Shape coordinates for non-DART rail (Commuter, InterCity, etc.)
+    /// Uses DISTINCT shape_id to capture branch lines (e.g. Westport/Ballina
+    /// split at Manulla Junction but share a route_id).
     func shapeCoordinatesForNonDartRail() -> [[CLLocationCoordinate2D]] {
         let sql = """
-            SELECT MIN(t.shape_id)
+            SELECT DISTINCT t.shape_id
             FROM trips t
             JOIN routes r ON t.route_id = r.route_id
             WHERE r.route_type = 2 AND UPPER(r.route_short_name) != 'DART' AND t.shape_id != ''
-            GROUP BY r.route_id, t.direction_id
         """
         guard let stmt = db.prepare(sql) else { return [] }
         defer { db.finalize(stmt) }
