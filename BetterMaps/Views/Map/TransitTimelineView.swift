@@ -259,10 +259,11 @@ struct TransitTimelineView: View {
                 to: to
             )
 
-        case .ride(_, let routeName, _, let boardStop, let alightStop,
+        case .ride(_, let routeName, let routeLongName, let boardStop, let alightStop,
                    let departureTime, let arrivalTime, let numStops, let mode, _, _, _):
             rideLegContent(
                 routeName: routeName,
+                routeLongName: routeLongName,
                 boardStop: boardStop,
                 alightStop: alightStop,
                 departureTime: departureTime,
@@ -319,6 +320,7 @@ struct TransitTimelineView: View {
 
     private func rideLegContent(
         routeName: String,
+        routeLongName: String = "",
         boardStop: String,
         alightStop: String,
         departureTime: String,
@@ -344,10 +346,18 @@ struct TransitTimelineView: View {
                     .lineLimit(1)
             }
 
-            HStack(spacing: 4) {
-                Text("\(numStops) stop\(numStops == 1 ? "" : "s")")
-                    .font(.caption)
+            if !routeLongName.isEmpty {
+                Text(routeLongName)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 4) {
+                if numStops > 0 {
+                    Text("\(numStops) stop\(numStops == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             HStack(spacing: 12) {

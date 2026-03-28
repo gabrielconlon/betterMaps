@@ -10,6 +10,7 @@ import SQLite3
 struct RouteTravelData: Codable {
     let routeId: String
     let routeName: String
+    let routeLongName: String  // e.g. "Dublin - Maynooth", "Bray - Howth"
     let routeType: Int  // 0=luas/tram, 2=rail/dart, 3=bus
     let directionId: Int
     let stopIds: [String]  // ordered by stop_sequence
@@ -77,7 +78,8 @@ actor TransitGraphBuilder {
 
     /// Graph format version — increment to invalidate old caches after structural fixes.
     /// v2: Fixed stop ordering using GTFS stop_sequence instead of segment chaining.
-    private static let graphVersion = 2
+    /// v3: Added routeLongName for descriptive rail route names.
+    private static let graphVersion = 3
 
     /// Load cached graph if fresh and correct version, or return nil to trigger rebuild
     static func loadCached() -> TransitGraph? {
@@ -114,7 +116,8 @@ actor TransitGraphBuilder {
         // Step 1: Find the longest trip per route/direction (most stops = covers branches)
         let longestTripSQL = """
             SELECT t.route_id, t.direction_id, t.trip_id, COUNT(*) as stop_count,
-                   COALESCE(r.route_type, 3), COALESCE(r.route_short_name, '')
+                   COALESCE(r.route_type, 3), COALESCE(r.route_short_name, ''),
+                   COALESCE(r.route_long_name, '')
             FROM stop_times st
             JOIN trips t ON st.trip_id = t.trip_id
             LEFT JOIN routes r ON t.route_id = r.route_id
@@ -124,7 +127,7 @@ actor TransitGraphBuilder {
         """
 
         var canonicalTripId: [RouteKey: String] = [:]
-        var routeMeta: [RouteKey: (type: Int, name: String)] = [:]
+        var routeMeta: [RouteKey: (type: Int, name: String, longName: String)] = [:]
 
         if let stmt = db.prepare(longestTripSQL) {
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -133,12 +136,12 @@ actor TransitGraphBuilder {
                 let tripId = db.columnText(stmt, index: 2) ?? ""
                 let routeType = db.columnInt(stmt, index: 4)
                 let routeName = db.columnText(stmt, index: 5) ?? ""
+                let routeLongName = db.columnText(stmt, index: 6) ?? ""
 
                 let key = RouteKey(routeId: routeId, directionId: dirId)
-                // First row per route/dir has highest stop_count (ORDER BY ... DESC)
                 if canonicalTripId[key] == nil {
                     canonicalTripId[key] = tripId
-                    routeMeta[key] = (routeType, routeName)
+                    routeMeta[key] = (routeType, routeName, routeLongName)
                 }
             }
             db.finalize(stmt)
@@ -280,6 +283,7 @@ actor TransitGraphBuilder {
             routes.append(RouteTravelData(
                 routeId: key.routeId,
                 routeName: meta.name,
+                routeLongName: meta.longName,
                 routeType: meta.type,
                 directionId: key.directionId,
                 stopIds: stopOrder,

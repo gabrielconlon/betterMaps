@@ -280,8 +280,14 @@ actor TransitRoutePlanner {
             }
             ridePath.append(alightCoord)
 
+            // Look up long name from graph for display (e.g. "Dublin - Maynooth")
+            let longName: String = {
+                guard let g = graph else { return "" }
+                return g.routes.first(where: { $0.routeName == leg.routeName && $0.routeType == leg.routeType })?.routeLongName ?? ""
+            }()
+
             transitLegs.append(.ride(
-                id: UUID(), routeName: leg.routeName, routeId: "",
+                id: UUID(), routeName: leg.routeName, routeId: longName,
                 boardStop: boardStop?.name ?? boardId,
                 alightStop: alightStop?.name ?? alightId,
                 departureTime: "~\(leg.waitSeconds / 60) min wait",
@@ -306,16 +312,8 @@ actor TransitRoutePlanner {
             ))
         }
 
-        // Build readable summary — replace generic "rail" with destination context
-        let summary = journey.rideLegs.map { leg -> String in
-            if leg.routeName.lowercased() == "rail" {
-                let alightId = graph?.stopIds[leg.alightStopIndex] ?? ""
-                let alightName = stopById[alightId]?.name ?? leg.routeName
-                // Shorten to "Rail via <station>" for clarity
-                return "Rail via \(alightName)"
-            }
-            return leg.routeName
-        }.joined(separator: " → ")
+        // Build summary: short name for card title, long name available in ride leg details
+        let summary = journey.rideLegs.map { $0.routeName }.joined(separator: " → ")
 
         return TransitRouteOption(
             id: UUID(), legs: transitLegs,
