@@ -212,6 +212,14 @@ actor HeadwayRouter {
                 .filter { $0.routeType == 0 || $0.routeType == 2 }
                 .sorted { $0.routeType < $1.routeType }
 
+            // Pre-sort route B candidates: non-bus first so DART/Rail found before bus fills cap
+            let sortedRoutesB = graph.routes.sorted { a, b in
+                let aIsRail = a.routeType == 0 || a.routeType == 2
+                let bIsRail = b.routeType == 0 || b.routeType == 2
+                if aIsRail != bIsRail { return aIsRail }
+                return false
+            }
+
             for routeA in nonBusGraphRoutes {
                 let bucketA = min(timeBucket, routeA.cumulativeSeconds.count - 1)
                 guard bucketA >= 0 else { continue }
@@ -227,17 +235,20 @@ actor HeadwayRouter {
                 }
                 guard let bA = boardA else { continue }
 
-                var transfersForThisRoute = 0
-
                 // For each stop on route A, check if it's a transfer point.
+                // No per-route cap — we need to reach Connolly (mid-line) for Luas→DART.
                 for (posA, stopIdA) in routeA.stopIds.enumerated() where posA != bA.pos {
                     guard let transferIdx = graph.stopIdToIndex[stopIdA],
                           posA < cumA.count else { continue }
                     let transferLat = Double(graph.stopLats[transferIdx])
                     let transferLon = Double(graph.stopLons[transferIdx])
+                    var busTransfersAtThisStop = 0
 
-                    for routeB in graph.routes {
-                        if routeB.routeId == routeA.routeId && routeB.directionId == routeA.directionId { continue }
+                    // Check non-bus routes first as route B so Luas→DART/Rail
+                    // connections are found before bus fills the per-route cap
+                    for routeB in sortedRoutesB {
+                        // Skip same route (any direction) — Red→Red is nonsensical
+                        if routeB.routeId == routeA.routeId { continue }
 
                         let bucketB = min(timeBucket, routeB.cumulativeSeconds.count - 1)
                         guard bucketB >= 0 else { continue }
@@ -258,7 +269,15 @@ actor HeadwayRouter {
                                 }
                             }
                         }
+                        // Log DART-specific diagnostics
+                        let isDart = routeB.routeName.uppercased() == "DART"
+                        if isDart && boardB == nil && routeA.routeType == 0 {
+                            print("[DART-DEBUG] \(routeA.routeName) transfer@\(graph.stopIds[transferIdx]) → DART: no DART stop within 400m")
+                        }
                         guard let bB = boardB else { continue }
+                        if isDart && routeA.routeType == 0 {
+                            print("[DART-DEBUG] \(routeA.routeName) transfer@\(graph.stopIds[transferIdx]) → DART boardB found at \(graph.stopIds[bB.idx]), walk \(bB.walkSec/60)m")
+                        }
 
                         // Find alighting on route B near destination (bidirectional)
                         var alightB: (idx: Int, pos: Int, walkSec: Int)?
@@ -266,6 +285,12 @@ actor HeadwayRouter {
                             guard let aIdx = graph.stopIdToIndex[stopIdB], let dist = dstDist[aIdx] else { continue }
                             let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
                             if alightB == nil || walkSec < alightB!.walkSec { alightB = (aIdx, posB, walkSec) }
+                        }
+                        if isDart && alightB == nil && routeA.routeType == 0 {
+                            print("[DART-DEBUG] \(routeA.routeName)→DART: board found but NO alight stop near dest (dstDist has \(dstDist.count) stops)")
+                        }
+                        if isDart && alightB != nil && routeA.routeType == 0 {
+                            print("[DART-DEBUG] \(routeA.routeName)→DART: alightB at \(graph.stopIds[alightB!.idx]), walk \(alightB!.walkSec/60)m, bB.pos=\(bB.pos) cumB.count=\(cumB.count) aB.pos=\(alightB!.pos)")
                         }
                         guard let aB = alightB, bB.pos < cumB.count, aB.pos < cumB.count,
                               bA.pos < cumA.count else { continue }
@@ -291,12 +316,13 @@ actor HeadwayRouter {
                             totalSeconds: totalSec
                         ))
                         transferCount += 1
-                        transfersForThisRoute += 1
+                        if routeB.routeType == 3 { busTransfersAtThisStop += 1 }
                         print("[TRANSFER] \(routeA.routeName)→\(routeB.routeName) | walk \(bA.walkSec/60)m, ride \(rideA/60)m, xfer \(bB.walkSec/60)m, ride \(rideB/60)m, walk \(aB.walkSec/60)m = \(totalSec/60)m total")
 
-                        if transfersForThisRoute >= 3 { break }  // Enough for this route, try next transfer point
+                        // Cap bus transfers per stop (1 is enough), but always check rail/dart
+                        if routeB.routeType == 3 && busTransfersAtThisStop >= 1 { break }
                     }
-                    if transfersForThisRoute >= 3 { break }  // Move to next routeA
+                    // No per-stop break for the outer loop — keep checking all stops on route A
                 }
                 if transferCount >= 20 { break }  // Hard safety cap across all routes
             }
@@ -308,12 +334,11 @@ actor HeadwayRouter {
         // Also ensures at least one non-bus option if any exists.
         journeys.sort { $0.totalSeconds < $1.totalSeconds }
 
-        // Dedup key: mode + primary route name (e.g. "luas-Red", "dart-DART", "bus-39A")
+        // Dedup key includes all leg route names so Red→DART and Red→rail are separate
         func routeKey(_ j: HeadwayJourney) -> String {
             let mode = j.primaryMode.rawValue
-            let name = j.rideLegs.first?.routeName ?? "unknown"
-            let transfers = j.transfers > 0 ? "-transfer" : ""
-            return "\(mode)-\(name)\(transfers)"
+            let names = j.rideLegs.map { $0.routeName }.joined(separator: "→")
+            return "\(mode)-\(names)"
         }
 
         var bestByRoute: [String: HeadwayJourney] = [:]
