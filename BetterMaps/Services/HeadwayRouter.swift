@@ -349,23 +349,25 @@ actor HeadwayRouter {
             }
         }
 
-        // Split into bus and non-bus, then interleave to guarantee mode diversity.
-        // Non-bus routes (Luas, DART, Rail) always get slots regardless of speed.
-        let allByRoute = Array(bestByRoute.values).sorted { $0.totalSeconds < $1.totalSeconds }
-        let nonBusRoutes = allByRoute.filter { $0.primaryMode != .bus }
-        let busRoutes = allByRoute.filter { $0.primaryMode == .bus }
+        // Categorize routes for selection priority:
+        // 1. Direct non-bus (Red, Green, DART, rail)
+        // 2. Fully non-bus transfers (Red→DART, Green→rail)
+        // 3. Mixed transfers (Red→bus) — still valuable but lower priority
+        // 4. Direct bus
+        let allByRoute = Array(bestByRoute.values)
 
-        // Always include ALL non-bus routes (typically few: 2-8), then fill with bus
-        var results = nonBusRoutes
-        for bus in busRoutes where results.count < 8 {
-            results.append(bus)
+        func priority(_ j: HeadwayJourney) -> Int {
+            let allLegsNonBus = j.rideLegs.allSatisfy { $0.routeType == 0 || $0.routeType == 2 }
+            if j.transfers == 0 && j.primaryMode != .bus { return 0 }  // Direct Luas/DART/Rail
+            if j.transfers > 0 && allLegsNonBus { return 1 }           // Luas→DART, Luas→Rail
+            if j.transfers > 0 && j.primaryMode != .bus { return 2 }   // Luas→Bus
+            return 3                                                     // Direct bus
         }
 
-        // Sort final list: non-bus first, then by time within each group
-        results.sort { a, b in
-            let aIsBus = a.primaryMode == .bus
-            let bIsBus = b.primaryMode == .bus
-            if aIsBus != bIsBus { return !aIsBus }  // non-bus first
+        var results = allByRoute.sorted { a, b in
+            let pa = priority(a)
+            let pb = priority(b)
+            if pa != pb { return pa < pb }
             return a.totalSeconds < b.totalSeconds
         }
 
