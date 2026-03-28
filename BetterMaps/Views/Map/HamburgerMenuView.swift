@@ -9,6 +9,7 @@ struct HamburgerMenuView: View {
     @Binding var bicyclePreference: BicycleRoutePreference
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
     @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
+    var onSelectPlace: ((Place) -> Void)?
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
     @AppStorage("favTransitBus") private var favBus = true
@@ -33,6 +34,16 @@ struct HamburgerMenuView: View {
                     }
                     NavigationLink(destination: WeatherRulesView()) {
                         Label("Weather Rules", systemImage: "cloud.sun")
+                    }
+                }
+
+                // MARK: - My Places
+                Section("My Places") {
+                    NavigationLink(destination: PlaceSearchView(onSelectPlace: { place in
+                        dismiss()
+                        onSelectPlace?(place)
+                    })) {
+                        Label("All Saved Places", systemImage: "mappin.and.ellipse")
                     }
                 }
 

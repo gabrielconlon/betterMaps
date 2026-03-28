@@ -17,6 +17,7 @@ struct MapTabView: View {
     @State private var selectedTransitOption: TransitRouteOption?
     @State private var searchText = ""
     @State private var searchResults: [MKMapItem] = []
+    @State private var placeSearchResults: [Place] = []
     @State private var transitSearchResults: [TransitStop] = []
     @State private var routeSearchResults: [(routeId: String, routeName: String, longName: String, routeType: Int)] = []
     @State private var showSearchResults = false
@@ -189,9 +190,57 @@ struct MapTabView: View {
                 Spacer()
 
                 // Search results above bottom bar
-                if showSearchResults && (!transitSearchResults.isEmpty || !routeSearchResults.isEmpty || !searchResults.isEmpty) {
+                if showSearchResults && (!placeSearchResults.isEmpty || !transitSearchResults.isEmpty || !routeSearchResults.isEmpty || !searchResults.isEmpty) {
                     ScrollView {
                         VStack(spacing: 0) {
+                            // Saved place matches
+                            ForEach(placeSearchResults.prefix(5)) { place in
+                                Button(action: {
+                                    showSearchResults = false
+                                    searchText = ""
+                                    cameraPosition = .region(MKCoordinateRegion(
+                                        center: place.coordinate,
+                                        span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                                    ))
+                                    viewModel.selectPlace(place)
+                                }) {
+                                    HStack(spacing: 10) {
+                                        // Layer color dots
+                                        ZStack {
+                                            let layerColors = (place.layers ?? []).prefix(2).compactMap { Color(hex: $0.colorHex) }
+                                            if let first = layerColors.first {
+                                                Circle().fill(first).frame(width: 28, height: 28)
+                                                Image(systemName: "mappin")
+                                                    .font(.caption.bold())
+                                                    .foregroundStyle(.white)
+                                            } else {
+                                                Circle().fill(.gray.opacity(0.3)).frame(width: 28, height: 28)
+                                                Image(systemName: "mappin")
+                                                    .font(.caption.bold())
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(place.name)
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.primary)
+                                            let layerNames = (place.layers ?? []).map(\.name)
+                                            Text(layerNames.isEmpty ? "Saved place" : layerNames.joined(separator: ", "))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        Text("Saved")
+                                            .font(.caption2.bold())
+                                            .foregroundStyle(.green)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 10)
+                                }
+                                Divider()
+                            }
+
                             // Transit route matches (e.g. "39A", "DART", "Green Line")
                             ForEach(routeSearchResults, id: \.routeId) { route in
                                 Button(action: {
@@ -264,9 +313,9 @@ struct MapTabView: View {
                                 Divider()
                             }
 
-                            // Separator between transit and Apple Maps results
-                            if (!transitSearchResults.isEmpty || !routeSearchResults.isEmpty) && !searchResults.isEmpty {
-                                Text("Places")
+                            // Separator before Apple Maps results
+                            if (!placeSearchResults.isEmpty || !transitSearchResults.isEmpty || !routeSearchResults.isEmpty) && !searchResults.isEmpty {
+                                Text("Nearby")
                                     .font(.caption2.bold())
                                     .foregroundStyle(.tertiary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -406,7 +455,7 @@ struct MapTabView: View {
                           stop.type != newType else { return stop }
                     return TransitStop(id: stop.id, name: stop.name,
                                        latitude: stop.latitude, longitude: stop.longitude,
-                                       type: newType)
+                                       type: newType, stopCode: stop.stopCode)
                 }
             }
 
@@ -513,7 +562,17 @@ struct MapTabView: View {
                 activeWeatherOverlays: $activeWeatherOverlays,
                 bicyclePreference: $routingVM.bicyclePreference,
                 showTransitStops: $showTransitStops,
-                showLiveTransit: $showLiveTransit
+                showLiveTransit: $showLiveTransit,
+                onSelectPlace: { place in
+                    viewModel.activeSheet = nil
+                    cameraPosition = .region(MKCoordinateRegion(
+                        center: place.coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                    ))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        viewModel.selectPlace(place)
+                    }
+                }
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -533,12 +592,12 @@ struct MapTabView: View {
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
 
-        case .transitArrivals(let name, let coord, let type, let stopId):
+        case .transitArrivals(let name, let coord, let type, let stopCode):
             TransitArrivalsView(
                 stationName: name,
                 coordinate: coord,
                 stopType: type,
-                stopId: stopId,
+                stopCode: stopCode,
                 onSelectRoute: { routeId, routeName in
                     // User tapped a bus route — load and display its shape on the map
                     selectedBusRouteName = routeName
@@ -631,7 +690,7 @@ struct MapTabView: View {
                     Annotation(pin.isTappable ? stop.name : "", coordinate: stop.coordinate) {
                         if pin.isTappable {
                             pin.onTapGesture {
-                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type, stopId: stop.id)
+                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type, stopCode: stop.stopCode)
                             }
                         } else {
                             pin
@@ -831,6 +890,7 @@ struct MapTabView: View {
                     Button(action: {
                         searchText = ""
                         searchResults = []
+                        placeSearchResults = []
                         transitSearchResults = []
                         routeSearchResults = []
                         showSearchResults = false
@@ -975,6 +1035,20 @@ struct MapTabView: View {
     private func performSearch() async {
         guard !searchText.isEmpty else { return }
         let query = searchText.trimmingCharacters(in: .whitespaces)
+
+        // Search saved places (instant, in-memory)
+        placeSearchResults = places
+            .filter {
+                $0.name.localizedCaseInsensitiveContains(query) ||
+                $0.tags.contains { $0.localizedCaseInsensitiveContains(query) } ||
+                $0.notes.localizedCaseInsensitiveContains(query)
+            }
+            .sorted { a, b in
+                let aPrefix = a.name.lowercased().hasPrefix(query.lowercased())
+                let bPrefix = b.name.lowercased().hasPrefix(query.lowercased())
+                if aPrefix != bPrefix { return aPrefix }
+                return a.name < b.name
+            }
 
         // Search transit stops by name (instant, in-memory)
         let lowerQuery = query.lowercased()
