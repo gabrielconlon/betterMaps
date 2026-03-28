@@ -251,16 +251,45 @@ actor TransitRoutePlanner {
                 }
             }
 
+            let boardCoord = LegCoordinate(boardStop?.coordinate ?? source)
+            let alightCoord = LegCoordinate(alightStop?.coordinate ?? destination)
+
+            // Build path through intermediate stops on this route for map polyline
+            var ridePath: [LegCoordinate] = [boardCoord]
+            if let g = graph {
+                // Find the route in the graph that matches this leg
+                if let graphRoute = g.routes.first(where: { $0.routeName == leg.routeName && $0.routeType == leg.routeType }) {
+                    // Find positions of board and alight stops within the route's stop sequence
+                    let boardPos = graphRoute.stopIds.firstIndex(where: { g.stopIdToIndex[$0] == leg.boardStopIndex })
+                    let alightPos = graphRoute.stopIds.firstIndex(where: { g.stopIdToIndex[$0] == leg.alightStopIndex })
+                    if let bp = boardPos, let ap = alightPos {
+                        let lo = min(bp, ap)
+                        let hi = max(bp, ap)
+                        // Add all intermediate stop coordinates
+                        for pos in (lo + 1)..<hi {
+                            let sid = graphRoute.stopIds[pos]
+                            if let idx = g.stopIdToIndex[sid] {
+                                ridePath.append(LegCoordinate(
+                                    latitude: Double(g.stopLats[idx]),
+                                    longitude: Double(g.stopLons[idx])
+                                ))
+                            }
+                        }
+                    }
+                }
+            }
+            ridePath.append(alightCoord)
+
             transitLegs.append(.ride(
                 id: UUID(), routeName: leg.routeName, routeId: "",
                 boardStop: boardStop?.name ?? boardId,
                 alightStop: alightStop?.name ?? alightId,
                 departureTime: "~\(leg.waitSeconds / 60) min wait",
                 arrivalTime: "~\(leg.travelSeconds / 60) min ride",
-                numStops: 0, mode: mode,
-                boardCoord: LegCoordinate(boardStop?.coordinate ?? source),
-                alightCoord: LegCoordinate(alightStop?.coordinate ?? destination),
-                pathCoords: []
+                numStops: max(0, ridePath.count - 1), mode: mode,
+                boardCoord: boardCoord,
+                alightCoord: alightCoord,
+                pathCoords: ridePath
             ))
         }
 
@@ -277,7 +306,16 @@ actor TransitRoutePlanner {
             ))
         }
 
-        let summary = journey.rideLegs.map { $0.routeName }.joined(separator: " → ")
+        // Build readable summary — replace generic "rail" with destination context
+        let summary = journey.rideLegs.map { leg -> String in
+            if leg.routeName.lowercased() == "rail" {
+                let alightId = graph?.stopIds[leg.alightStopIndex] ?? ""
+                let alightName = stopById[alightId]?.name ?? leg.routeName
+                // Shorten to "Rail via <station>" for clarity
+                return "Rail via \(alightName)"
+            }
+            return leg.routeName
+        }.joined(separator: " → ")
 
         return TransitRouteOption(
             id: UUID(), legs: transitLegs,
