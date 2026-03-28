@@ -486,16 +486,31 @@ struct MapTabView: View {
             dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForDART()
             railShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
 
-            // Pre-build RAPTOR data structures in background so route searches are instant.
-            // This runs while the user browses the map, completing before they search.
+            // Load cached transit graph for instant route planning.
+            // If no cache (first launch), build in background.
             Task.detached(priority: .utility) {
+                // Try loading cached headway graph first (~50ms)
+                await TransitRoutePlanner.shared.headwayRouter.loadGraph()
+
+                // If no cache, build it
+                if await !TransitRoutePlanner.shared.headwayRouter.isReady {
+                    let services = await GTFSScheduleService.shared.activeServiceIds(for: Date())
+                    let stops = await GTFSStopLoader().loadStops()
+                    let builder = TransitGraphBuilder()
+                    let graph = await builder.build(
+                        db: GTFSScheduleService.shared.database,
+                        activeServices: services, allStops: stops
+                    )
+                    await TransitRoutePlanner.shared.headwayRouter.setGraph(graph)
+                }
+
+                // Also build RAPTOR in background for exact time refinement
                 let services = await GTFSScheduleService.shared.activeServiceIds(for: Date())
                 let stops = await GTFSStopLoader().loadStops()
                 let engine = await TransitRoutePlanner.shared.getRaptorEngine()
                 await engine.buildIfNeeded(
                     db: GTFSScheduleService.shared.database,
-                    activeServices: services,
-                    allStops: stops
+                    activeServices: services, allStops: stops
                 )
             }
         }

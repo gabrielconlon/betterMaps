@@ -59,6 +59,7 @@ actor RaptorEngine {
     private var stopCoords: [String: (lat: Double, lon: Double)] = [:]
 
     private var isBuilt = false
+    var isReady: Bool { isBuilt }
 
     // MARK: - Build Data Structures
 

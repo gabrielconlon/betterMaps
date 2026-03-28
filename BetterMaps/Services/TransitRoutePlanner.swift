@@ -101,6 +101,7 @@ actor TransitRoutePlanner {
     private let transferBufferSeconds: Int = 120
 
     private let raptorEngine = RaptorEngine()
+    let headwayRouter = HeadwayRouter()
 
     /// Expose RAPTOR engine for pre-building at app startup
     func getRaptorEngine() -> RaptorEngine { raptorEngine }
@@ -184,40 +185,60 @@ actor TransitRoutePlanner {
             return []
         }
 
-        // --- RAPTOR-based routing ---
-        // Build RAPTOR data structures (cached after first call per session)
-        await raptorEngine.buildIfNeeded(
-            db: GTFSScheduleService.shared.database,
-            activeServices: activeServices,
-            allStops: transitStops
-        )
-
-        // Map origin/dest stops to (stopId, walkSeconds) pairs
-        let originPairs: [(stopId: String, walkSeconds: Int)] = originStopIds.compactMap { id in
-            guard let stop = stopById[id] else { return nil }
-            return (id, walkingMinutes(from: source, to: stop.coordinate) * 60)
-        }
-        let destPairs: [(stopId: String, walkSeconds: Int)] = destStopIds.compactMap { id in
-            guard let stop = stopById[id] else { return nil }
-            return (id, walkingMinutes(from: stop.coordinate, to: destination) * 60)
-        }
-
+        // --- Layer 1: HeadwayRouter (instant, ~5ms) ---
+        // Uses pre-computed travel times + headway estimates for instant results
         let searchStart = Date()
-        let journeys = await raptorEngine.search(
-            originStops: originPairs,
-            destStops: destPairs,
-            departureTime: secondsSinceMidnight,
-            maxRounds: maxTransfers + 1
-        )
-        let searchMs = Int(Date().timeIntervalSince(searchStart) * 1000)
-
-        // Convert RAPTOR journeys to TransitRouteOption
         var options: [TransitRouteOption] = []
-        for journey in journeys {
-            let option = convertJourney(journey, source: source, destination: destination,
-                                        departureDate: departureTime, stopById: stopById)
-            options.append(option)
-            await onRouteFound?(option)
+
+        if await headwayRouter.isReady {
+            let headwayJourneys = await headwayRouter.search(
+                from: source, to: destination,
+                allStops: transitStops,
+                departureTime: secondsSinceMidnight,
+                maxTransfers: maxTransfers
+            )
+
+            for journey in headwayJourneys {
+                let option = convertHeadwayJourney(journey, source: source, destination: destination,
+                                                    departureDate: departureTime, graph: nil, stopById: stopById)
+                options.append(option)
+                await onRouteFound?(option)
+            }
+
+            let headwayMs = Int(Date().timeIntervalSince(searchStart) * 1000)
+            await APILogger.shared.log(
+                service: "HeadwayRouter", endpoint: "search",
+                status: options.isEmpty ? .failure : .success, durationMs: headwayMs,
+                detail: "\(options.count) routes found in \(headwayMs)ms | \(await headwayRouter.stalenessLabel)"
+            )
+        }
+
+        // --- Layer 2: RAPTOR refinement (background, when ready) ---
+        if await raptorEngine.isReady {
+            let originPairs: [(stopId: String, walkSeconds: Int)] = originStopIds.compactMap { id in
+                guard let stop = stopById[id] else { return nil }
+                return (id, walkingMinutes(from: source, to: stop.coordinate) * 60)
+            }
+            let destPairs: [(stopId: String, walkSeconds: Int)] = destStopIds.compactMap { id in
+                guard let stop = stopById[id] else { return nil }
+                return (id, walkingMinutes(from: stop.coordinate, to: destination) * 60)
+            }
+
+            let raptorJourneys = await raptorEngine.search(
+                originStops: originPairs, destStops: destPairs,
+                departureTime: secondsSinceMidnight, maxRounds: maxTransfers + 1
+            )
+
+            // Replace headway estimates with exact RAPTOR results
+            if !raptorJourneys.isEmpty {
+                options = []
+                for journey in raptorJourneys {
+                    let option = convertJourney(journey, source: source, destination: destination,
+                                                departureDate: departureTime, stopById: stopById)
+                    options.append(option)
+                    await onRouteFound?(option)
+                }
+            }
         }
 
         // --- Best-per-mode selection with preference boost ---
@@ -255,16 +276,107 @@ actor TransitRoutePlanner {
             results.append(option)
         }
 
+        let totalMs = Int(Date().timeIntervalSince(searchStart) * 1000)
         await APILogger.shared.log(
             service: "Transit Planner", endpoint: "findRoutes",
-            status: results.isEmpty ? .failure : .success, durationMs: searchMs,
-            detail: "\(results.count) route(s) | \(journeys.count) RAPTOR journeys | \(originStopIds.count) origins, \(destStopIds.count) dests"
+            status: results.isEmpty ? .failure : .success, durationMs: totalMs,
+            detail: "\(results.count) route(s) | \(options.count) options | \(originStopIds.count) origins, \(destStopIds.count) dests"
         )
 
         return results
     }
 
     // MARK: - RAPTOR Journey → TransitRouteOption Conversion
+
+    private func convertHeadwayJourney(
+        _ journey: HeadwayJourney,
+        source: CLLocationCoordinate2D,
+        destination: CLLocationCoordinate2D,
+        departureDate: Date,
+        graph: TransitGraph?,
+        stopById: [String: TransitStop]
+    ) -> TransitRouteOption {
+        var transitLegs: [TransitLeg] = []
+
+        // Walk to first board stop
+        if journey.originWalkSeconds > 0, let first = journey.rideLegs.first {
+            let stopId = graph?.stopIds[first.boardStopIndex] ?? ""
+            let stop = stopById[stopId]
+            transitLegs.append(.walk(
+                id: UUID(), durationMinutes: journey.originWalkSeconds / 60,
+                distance: Double(journey.originWalkSeconds) / 60 * walkingSpeedMPerMin,
+                from: "Current Location", to: stop?.name ?? "Stop",
+                fromCoord: LegCoordinate(source),
+                toCoord: LegCoordinate(stop?.coordinate ?? source)
+            ))
+        }
+
+        for (i, leg) in journey.rideLegs.enumerated() {
+            let boardId = graph?.stopIds[leg.boardStopIndex] ?? ""
+            let alightId = graph?.stopIds[leg.alightStopIndex] ?? ""
+            let boardStop = stopById[boardId]
+            let alightStop = stopById[alightId]
+
+            let mode: TransitLegMode = {
+                switch leg.routeType {
+                case 0: return .luas
+                case 2: return leg.routeName.uppercased() == "DART" ? .dart : .rail
+                default: return .bus
+                }
+            }()
+
+            // Transfer walk before this leg (if not first)
+            if i > 0 {
+                if let wl = journey.walkLegs.first(where: { $0.toStopIndex == leg.boardStopIndex }) {
+                    let fromId = graph?.stopIds[wl.fromStopIndex] ?? ""
+                    let fromStop = stopById[fromId]
+                    transitLegs.append(.transfer(
+                        id: UUID(), walkMinutes: max(wl.walkSeconds / 60, 2),
+                        fromStop: fromStop?.name ?? "Stop", toStop: boardStop?.name ?? "Stop",
+                        fromCoord: LegCoordinate(fromStop?.coordinate ?? source),
+                        toCoord: LegCoordinate(boardStop?.coordinate ?? destination)
+                    ))
+                }
+            }
+
+            transitLegs.append(.ride(
+                id: UUID(), routeName: leg.routeName, routeId: "",
+                boardStop: boardStop?.name ?? boardId,
+                alightStop: alightStop?.name ?? alightId,
+                departureTime: "~\(leg.waitSeconds / 60) min wait",
+                arrivalTime: "~\(leg.travelSeconds / 60) min ride",
+                numStops: 0, mode: mode,
+                boardCoord: LegCoordinate(boardStop?.coordinate ?? source),
+                alightCoord: LegCoordinate(alightStop?.coordinate ?? destination),
+                pathCoords: []
+            ))
+        }
+
+        // Walk from last alight to destination
+        if journey.destWalkSeconds > 0, let last = journey.rideLegs.last {
+            let stopId = graph?.stopIds[last.alightStopIndex] ?? ""
+            let stop = stopById[stopId]
+            transitLegs.append(.walk(
+                id: UUID(), durationMinutes: journey.destWalkSeconds / 60,
+                distance: Double(journey.destWalkSeconds) / 60 * walkingSpeedMPerMin,
+                from: stop?.name ?? "Stop", to: "Destination",
+                fromCoord: LegCoordinate(stop?.coordinate ?? destination),
+                toCoord: LegCoordinate(destination)
+            ))
+        }
+
+        let summary = journey.rideLegs.map { $0.routeName }.joined(separator: " → ")
+
+        return TransitRouteOption(
+            id: UUID(), legs: transitLegs,
+            totalDuration: Double(journey.totalSeconds),
+            totalWalkingMinutes: (journey.originWalkSeconds + journey.destWalkSeconds) / 60,
+            departureTime: departureDate,
+            arrivalTime: departureDate.addingTimeInterval(Double(journey.totalSeconds)),
+            transfers: journey.transfers,
+            summary: summary.isEmpty ? "Transit" : summary
+        )
+    }
 
     private func convertJourney(
         _ journey: RaptorJourney,
