@@ -102,11 +102,22 @@ actor TransitRoutePlanner {
     /// Known Dublin interchange stop name keywords — only check these for transfers
     /// instead of every intermediate stop (kills the O(n⁴) problem)
     private let interchangeKeywords = [
+        // Luas/Rail hubs
         "connolly", "heuston", "abbey", "tara", "pearse",
         "busáras", "busaras", "o'connell", "oconnell", "dundrum",
         "stillorgan", "sandyford", "jervis", "stephens", "stephen's",
         "george's dock", "mayor square", "spencer dock", "marlborough",
-        "ranelagh", "charlemont", "phibsborough", "broombridge"
+        "ranelagh", "charlemont", "phibsborough", "broombridge",
+        // DART stations (for bus/luas → DART transfers)
+        "grand canal", "docklands", "lansdowne", "sandymount",
+        "sydney parade", "booterstown", "blackrock", "seapoint",
+        "salthill", "monkstown", "dun laoghaire", "dalkey",
+        "killiney", "shankill", "bray", "greystones",
+        "howth junction", "howth", "raheny", "harmonstown",
+        "killester", "clontarf", "malahide", "portmarnock",
+        // Red Line Luas
+        "smithfield", "museum", "four courts", "fatima", "rialto",
+        "james", "belgard", "tallaght", "red cow", "kingswood"
     ]
 
     // MARK: - Public API
@@ -188,14 +199,22 @@ actor TransitRoutePlanner {
             return []
         }
 
-        var options: [TransitRouteOption] = []
+        var directOptions: [TransitRouteOption] = []   // Phase 1: direct routes
+        var transferOptions: [TransitRouteOption] = [] // Phase 2: transfer routes
 
         var totalDepartures = 0
+
+        // Sort origin stops by walk distance so closer stops are checked first.
+        // This ensures we find the nearest Luas/DART stop, not a farther one.
+        let sortedOriginIds = originStopIds.sorted { a, b in
+            guard let sa = stopById[a], let sb = stopById[b] else { return false }
+            return walkingDistance(from: source, to: sa.coordinate) < walkingDistance(from: source, to: sb.coordinate)
+        }
 
         // --- Phase 1: Direct routes (no transfer) ---
         // No walk cutoff — walk time factors into total duration for sorting.
         // No early exit — scan all stops to discover all modes (bus, Luas, DART).
-        for originStopId in originStopIds {
+        for originStopId in sortedOriginIds {
             guard let originStop = stopById[originStopId] else { continue }
 
             let walkToOrigin = walkingMinutes(from: source, to: originStop.coordinate)
@@ -216,16 +235,22 @@ actor TransitRoutePlanner {
                 // This replaces per-dest tripReachesStop() calls (N×M queries → N queries).
                 let tripStops = await GTFSScheduleService.shared.stopsForTrip(tripId: trip.tripId)
 
-                for destStopId in destStopIds {
-                    guard let alightStopTime = tripStops.first(where: {
-                        $0.stopId == destStopId && $0.stopSequence > boardStopTime.stopSequence
-                    }) else { continue }
+                // Find the best alighting stop — closest to destination by walk time
+                let reachableDestStops = destStopIds.compactMap { destId -> (stopTime: GTFSStopTime, stop: TransitStop, walkMin: Int, walkDist: Double)? in
+                    guard let alightTime = tripStops.first(where: { $0.stopId == destId && $0.stopSequence > boardStopTime.stopSequence }),
+                          let stop = stopById[destId] else { return nil }
+                    let walkMin = walkingMinutes(from: stop.coordinate, to: destination)
+                    let walkDist = walkingDistance(from: stop.coordinate, to: destination)
+                    return (alightTime, stop, walkMin, walkDist)
+                }
+                guard let best = reachableDestStops.min(by: { $0.walkMin < $1.walkMin }) else { continue }
 
-                    guard let destStop = stopById[destStopId] else { continue }
+                let alightStopTime = best.stopTime
+                let destStop = best.stop
+                let walkFromDest = best.walkMin
+                let walkFromDestDistance = best.walkDist
 
-                    let walkFromDest = walkingMinutes(from: destStop.coordinate, to: destination)
-                    let walkFromDestDistance = walkingDistance(from: destStop.coordinate, to: destination)
-
+                do {
                     let numStops = alightStopTime.stopSequence - boardStopTime.stopSequence
                     let mode = legMode(for: originStop, trip: trip)
 
@@ -279,15 +304,18 @@ actor TransitRoutePlanner {
                         departureTime: depDate, arrivalTime: arrDate,
                         transfers: 0, summary: trip.routeShortName
                     )
-                    options.append(route)
+                    directOptions.append(route)
                     await onRouteFound?(route)
-                }
+                } // do
             }
         }
 
-        // --- Phase 2: One-transfer routes (only if <2 direct routes found) ---
-        if options.count < 2 && maxTransfers > 0 {
-            outerTransfer: for originStopId in originStopIds {
+        // --- Phase 2: One-transfer routes (always search, separate pool) ---
+        // Process non-bus stops first AND check actual departure route types.
+        // Some bus stops near Luas stations are misclassified as .luas but return bus routes.
+        // Only the real Luas platform stop_ids return actual Luas departures.
+        if maxTransfers > 0 {
+            outerTransfer: for originStopId in sortedOriginIds {
                 guard let originStop = stopById[originStopId] else { continue }
 
                 let walkToOrigin = walkingMinutes(from: source, to: originStop.coordinate)
@@ -302,7 +330,11 @@ actor TransitRoutePlanner {
                 )
 
                 for (boardStopTime, trip) in departures {
-                    if options.count >= maxResults { break outerTransfer }
+                    // Only cap when we have enough diversity (at least 1 non-bus transfer)
+                    // or hit a generous overall limit
+                    let hasNonBusTransfer = transferOptions.contains { $0.primaryMode != .bus }
+                    if transferOptions.count >= 5 && hasNonBusTransfer { break outerTransfer }
+                    if transferOptions.count >= 20 { break outerTransfer }
 
                     let tripStops = await GTFSScheduleService.shared.stopsForTrip(tripId: trip.tripId)
 
@@ -313,8 +345,22 @@ actor TransitRoutePlanner {
                         isInterchangeStop(stopId: st.stopId, stopById: stopById)
                     }
 
+                    // Log non-bus interchange discoveries
+                    if originStop.type != .bus && !interchangeStops.isEmpty {
+                        let ixNames = interchangeStops.prefix(5).compactMap { stopById[$0.stopId]?.name }
+                        await APILogger.shared.log(
+                            service: "Transit Planner", endpoint: "transfer-scan",
+                            status: .success, durationMs: 0,
+                            detail: "\(originStop.name)→\(trip.routeShortName): \(interchangeStops.count) interchanges [\(ixNames.joined(separator: ", "))]"
+                        )
+                    }
+
                     for midStopTime in interchangeStops {
-                        if options.count >= maxResults { break outerTransfer }
+                        // Only cap when we have enough diversity (at least 1 non-bus transfer)
+                    // or hit a generous overall limit
+                    let hasNonBusTransfer = transferOptions.contains { $0.primaryMode != .bus }
+                    if transferOptions.count >= 5 && hasNonBusTransfer { break outerTransfer }
+                    if transferOptions.count >= 20 { break outerTransfer }
 
                         guard let midStop = stopById[midStopTime.stopId] else { continue }
 
@@ -326,7 +372,11 @@ actor TransitRoutePlanner {
                         )
 
                         for transferStopId in nearbyTransferIds {
-                            if options.count >= maxResults { break outerTransfer }
+                            // Only cap when we have enough diversity (at least 1 non-bus transfer)
+                    // or hit a generous overall limit
+                    let hasNonBusTransfer = transferOptions.contains { $0.primaryMode != .bus }
+                    if transferOptions.count >= 5 && hasNonBusTransfer { break outerTransfer }
+                    if transferOptions.count >= 20 { break outerTransfer }
 
                             let connectingDepartures = await GTFSScheduleService.shared.departuresFromStop(
                                 stopId: transferStopId,
@@ -334,6 +384,17 @@ actor TransitRoutePlanner {
                                 withinSeconds: transferConnectionSeconds,
                                 activeServices: activeServices
                             )
+
+                            // Log non-bus connecting departures at interchanges
+                            if originStop.type != .bus && !connectingDepartures.isEmpty {
+                                let connRoutes = Set(connectingDepartures.map { $0.1.routeShortName }).prefix(3)
+                                let transferStopName = stopById[transferStopId]?.name ?? transferStopId
+                                await APILogger.shared.log(
+                                    service: "Transit Planner", endpoint: "transfer-connect",
+                                    status: .success, durationMs: 0,
+                                    detail: "at \(midStop.name)→\(transferStopName): \(connectingDepartures.count) deps [\(connRoutes.joined(separator: ","))]"
+                                )
+                            }
 
                             for (connBoardTime, connTrip) in connectingDepartures {
                                 if connTrip.tripId == trip.tripId { continue }
@@ -433,7 +494,7 @@ actor TransitRoutePlanner {
                                         departureTime: depDate, arrivalTime: arrDate,
                                         transfers: 1, summary: "\(trip.routeShortName) → \(connTrip.routeShortName)"
                                     )
-                                    options.append(route)
+                                    transferOptions.append(route)
                                     await onRouteFound?(route)
                                 }
                             }
@@ -461,9 +522,10 @@ actor TransitRoutePlanner {
             }
         }
 
-        // Deduplicate by route summary
+        // Merge direct + transfer results and deduplicate
+        let allOptions = directOptions + transferOptions
         var seen = Set<String>()
-        let unique = options.filter { option in
+        let unique = allOptions.filter { option in
             let key = "\(option.summary)|\(option.transfers)"
             return seen.insert(key).inserted
         }
@@ -493,7 +555,7 @@ actor TransitRoutePlanner {
         await APILogger.shared.log(
             service: "Transit Planner", endpoint: "findRoutes",
             status: results.isEmpty ? .failure : .success, durationMs: 0,
-            detail: "\(results.count) route(s) | \(originStopIds.count) origins, \(destStopIds.count) dests | \(totalDepartures) departures scanned"
+            detail: "\(results.count) route(s) | \(originStopIds.count) origins, \(destStopIds.count) dests | \(totalDepartures) deps | \(directOptions.count) direct + \(transferOptions.count) transfers found"
         )
 
         return results

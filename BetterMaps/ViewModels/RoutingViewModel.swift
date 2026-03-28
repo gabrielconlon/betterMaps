@@ -70,7 +70,8 @@ class RoutingViewModel {
         to destination: CLLocationCoordinate2D,
         weatherRules: [WeatherRule],
         context: ModelContext? = nil,
-        departureTime: Date = Date()
+        departureTime: Date = Date(),
+        activeTransitLayers: Set<TransitStop.TransitStopType> = []
     ) async {
         isLoading = true
         errorMessage = nil
@@ -154,7 +155,15 @@ class RoutingViewModel {
                 transitStatusMessage = "Searching routes..."
 
                 let maxTransfers = userProfile?.maxTransfers ?? 1
-                let transitPref = userProfile?.transitModePreference ?? "fastest"
+                // If user has Luas/DART layers on, auto-prefer tram/rail unless they set otherwise
+                var transitPref = userProfile?.transitModePreference ?? "fastest"
+                if transitPref == "fastest" {
+                    let hasTramRailLayers = activeTransitLayers.contains(.luas) || activeTransitLayers.contains(.dart) || activeTransitLayers.contains(.rail)
+                    let hasBusLayer = activeTransitLayers.contains(.bus)
+                    if hasTramRailLayers && !hasBusLayer {
+                        transitPref = "preferTramRail"
+                    }
+                }
 
                 // Stream results as they're found — Luas/DART arrive first (fewer stops),
                 // bus fills in after. No hard timeout needed since results appear incrementally.

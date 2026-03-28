@@ -1099,13 +1099,13 @@ struct MapTabView: View {
     private func calculateRouteToMapItem(_ mapItem: MKMapItem) async {
         guard let userLocation = locationManager.userLocation else { return }
         let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
-        await routingVM.calculateRoutes(from: userLocation, to: mapItem.placemark.coordinate, weatherRules: weatherRules ?? [], context: modelContext)
+        await routingVM.calculateRoutes(from: userLocation, to: mapItem.placemark.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: showTransitStops)
     }
 
     @MainActor
     private func calculateRoute(to destination: Place) async {
         guard let userLocation = locationManager.userLocation else { return }
         let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
-        await routingVM.calculateRoutes(from: userLocation, to: destination.coordinate, weatherRules: weatherRules ?? [], context: modelContext)
+        await routingVM.calculateRoutes(from: userLocation, to: destination.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: showTransitStops)
     }
 }
