@@ -57,6 +57,12 @@ struct LayerDetailView: View {
                     Button(action: { showEditForm = true }) {
                         Label("Edit Layer", systemImage: "pencil")
                     }
+                    Button(action: { layer.isFavorite.toggle() }) {
+                        Label(
+                            layer.isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                            systemImage: layer.isFavorite ? "star.slash" : "star.fill"
+                        )
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
