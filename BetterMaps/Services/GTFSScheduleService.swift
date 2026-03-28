@@ -68,7 +68,10 @@ struct GTFSServiceCalendar: Codable {
 actor GTFSScheduleService {
     static let shared = GTFSScheduleService()
 
-    private let db = GTFSDatabase()
+    let db = GTFSDatabase()
+
+    /// Expose database for RAPTOR engine to build data structures
+    var database: GTFSDatabase { db }
     private var isLoaded = false
 
     /// Weekday column names for SQL calendar queries
