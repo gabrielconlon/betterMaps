@@ -93,7 +93,16 @@ final class GTFSDatabase {
             CREATE TABLE IF NOT EXISTS calendars (
                 service_id TEXT PRIMARY KEY,
                 monday INTEGER, tuesday INTEGER, wednesday INTEGER,
-                thursday INTEGER, friday INTEGER, saturday INTEGER, sunday INTEGER
+                thursday INTEGER, friday INTEGER, saturday INTEGER, sunday INTEGER,
+                start_date TEXT, end_date TEXT
+            )
+        """)
+
+        execute("""
+            CREATE TABLE IF NOT EXISTS calendar_dates (
+                service_id TEXT NOT NULL,
+                date TEXT NOT NULL,
+                exception_type INTEGER NOT NULL
             )
         """)
 
@@ -138,6 +147,8 @@ final class GTFSDatabase {
         execute("CREATE INDEX IF NOT EXISTS idx_st_trip_stop_seq ON stop_times(trip_id, stop_id, stop_sequence)")
         // Accelerates classifyTramAndRailStops(), shapeCoordinatesForDART/NonDartRail()
         execute("CREATE INDEX IF NOT EXISTS idx_routes_type_name ON routes(route_type, route_short_name)")
+        // Accelerates activeServiceIds() date lookup
+        execute("CREATE INDEX IF NOT EXISTS idx_calendar_dates_date ON calendar_dates(date)")
     }
 
     func prepareInsertShape() -> OpaquePointer? {
@@ -174,7 +185,11 @@ final class GTFSDatabase {
     }
 
     func prepareInsertCalendar() -> OpaquePointer? {
-        prepare("INSERT OR REPLACE INTO calendars VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        prepare("INSERT OR REPLACE INTO calendars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    }
+
+    func prepareInsertCalendarDate() -> OpaquePointer? {
+        prepare("INSERT INTO calendar_dates VALUES (?, ?, ?)")
     }
 
     func bindAndStep(_ stmt: OpaquePointer, strings: [String?], ints: [Int?] = []) {

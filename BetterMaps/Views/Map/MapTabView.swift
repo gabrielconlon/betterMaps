@@ -21,7 +21,7 @@ struct MapTabView: View {
     @State private var transitSearchResults: [TransitStop] = []
     @State private var routeSearchResults: [(routeId: String, routeName: String, longName: String, routeType: Int)] = []
     @State private var showSearchResults = false
-    @State private var isSearchFocused = false
+    @FocusState private var isSearchFocused: Bool
     @State private var activeWeatherOverlays: Set<WeatherOverlay> = []
     @State private var mapRegion: MKCoordinateRegion?
     @State private var transitStops: [TransitStop] = []
@@ -395,23 +395,15 @@ struct MapTabView: View {
                     .padding(.bottom, 4)
                 }
 
-                // Bus route label + dismiss (show when route shape OR stop filter is active)
+                // Dismiss button for selected bus route (route name is shown on the map line)
                 if !selectedBusRouteCoords.isEmpty || !selectedBusRouteStopIds.isEmpty {
                     HStack(spacing: 8) {
-                        Label("Route \(selectedBusRouteName)", systemImage: "bus.fill")
-                            .font(.caption.bold())
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.blue.opacity(0.15))
-                            .foregroundStyle(.blue)
-                            .clipShape(Capsule())
-
                         Button(action: {
                             selectedBusRouteCoords = []
                             selectedBusRouteName = ""
                             selectedBusRouteStopIds = []
                         }) {
-                            Label("Dismiss", systemImage: "xmark.circle.fill")
+                            Label("Dismiss Route", systemImage: "xmark.circle.fill")
                                 .font(.caption.bold())
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
@@ -459,18 +451,29 @@ struct MapTabView: View {
                 }
             }
 
-            // Deduplicate Luas stops — GTFS has multiple entries per station
-            // (e.g. "Rialto" and "Rialto Luas") with coordinates 50-150m apart.
-            // 200m is safe: closest adjacent Luas stops are ~300m apart in the city centre.
-            // Sort so stops WITH timetable data (in classification result) come first,
-            // ensuring the dedup keeps the useful stop and drops the dataless one.
+            // Deduplicate Luas stops — GTFS has multiple entries per station with
+            // different names ("Red Cow" vs "Red Cow Luas") and coordinates up to 400m apart.
+            // Dedup by proximity (250m) OR by name similarity (handles large interchanges).
+            // Sort so stops WITH timetable data come first to win the dedup.
             let classifiedIds = Set(classification.keys)
             let luasStops = transitStops.filter { $0.type == .luas }
                 .sorted { classifiedIds.contains($0.id) && !classifiedIds.contains($1.id) }
             let nonLuas = transitStops.filter { $0.type != .luas }
             var keptLuas: [TransitStop] = []
             for stop in luasStops {
-                if !isNearExistingStop(stop, in: keptLuas, thresholdMeters: 200) {
+                let isDuplicate = keptLuas.contains { kept in
+                    // Proximity check (250m)
+                    let loc1 = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+                    let loc2 = CLLocation(latitude: kept.latitude, longitude: kept.longitude)
+                    if loc1.distance(from: loc2) < 250 { return true }
+                    // Name similarity: if one name contains the other (e.g. "Red Cow" in "Red Cow Luas")
+                    let a = stop.name.lowercased().replacingOccurrences(of: " luas", with: "")
+                        .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
+                    let b = kept.name.lowercased().replacingOccurrences(of: " luas", with: "")
+                        .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
+                    return a == b || a.contains(b) || b.contains(a)
+                }
+                if !isDuplicate {
                     keptLuas.append(stop)
                 }
             }
@@ -824,7 +827,6 @@ struct MapTabView: View {
                 // Dismiss keyboard if searching
                 if isSearchFocused {
                     isSearchFocused = false
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                     return
                 }
                 // Clear any displayed bus route overlay
@@ -854,7 +856,6 @@ struct MapTabView: View {
                 // Dismiss keyboard when user pans the map
                 if isSearchFocused {
                     isSearchFocused = false
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                 }
             }
         }
@@ -878,10 +879,9 @@ struct MapTabView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Search stops, routes, places...", text: $searchText, onEditingChanged: { editing in
-                    isSearchFocused = editing
-                })
+                TextField("Search stops, routes, places...", text: $searchText)
                     .textFieldStyle(.plain)
+                    .focused($isSearchFocused)
                     .onSubmit {
                         isSearchFocused = false
                         Task { await performSearch() }

@@ -1,6 +1,6 @@
 import XCTest
 import CoreLocation
-@testable import CustomMapApp
+@testable import BetterMapsApp
 
 /// Tests for TransitRoutePlanner logic: walking calculations, mode detection,
 /// interchange identification, and route finding with Dublin-based scenarios.

@@ -157,7 +157,8 @@ class RoutingViewModel {
                 let maxTransfers = userProfile?.maxTransfers ?? 1
                 let preferBus = userProfile?.preferBusOverTram ?? false
 
-                // 8-second timeout (wider stop search needs slightly more time)
+                // 15-second timeout — active service pre-computation makes queries faster,
+                // but complex multi-transfer searches still need headroom
                 let result = await withTaskGroup(of: [TransitRouteOption].self) { group in
                     group.addTask {
                         await self.transitPlanner.findRoutes(
@@ -169,7 +170,7 @@ class RoutingViewModel {
                         )
                     }
                     group.addTask {
-                        try? await Task.sleep(for: .seconds(8))
+                        try? await Task.sleep(for: .seconds(15))
                         return [] as [TransitRouteOption]
                     }
                     let first = await group.next() ?? []
@@ -439,7 +440,7 @@ class RoutingViewModel {
                       stop.type != newType else { return stop }
                 return TransitStop(id: stop.id, name: stop.name,
                                    latitude: stop.latitude, longitude: stop.longitude,
-                                   type: newType)
+                                   type: newType, stopCode: stop.stopCode)
             }
         }
         return stops

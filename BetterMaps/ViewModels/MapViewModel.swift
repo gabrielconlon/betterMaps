@@ -62,8 +62,8 @@ class MapViewModel {
         activeSheet = .newPlace(coordinate)
     }
 
-    func showTransitArrivals(stationName: String, coordinate: CLLocationCoordinate2D, stopType: TransitStop.TransitStopType? = nil, stopId: String? = nil) {
-        activeSheet = .transitArrivals(stationName, coordinate, stopType, stopId)
+    func showTransitArrivals(stationName: String, coordinate: CLLocationCoordinate2D, stopType: TransitStop.TransitStopType? = nil, stopCode: String? = nil) {
+        activeSheet = .transitArrivals(stationName, coordinate, stopType, stopCode)
     }
 
     func dismissSheet() {

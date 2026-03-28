@@ -140,11 +140,32 @@ actor TransitRoutePlanner {
         let stopById = Dictionary(uniqueKeysWithValues: transitStops.map { ($0.id, $0) })
         let destStopIdSet = Set(destStopIds)
 
-        let calendar = Calendar.current
-        let components = calendar.dateComponents([.hour, .minute, .second], from: departureTime)
+        // Use Irish timezone for GTFS time calculations
+        var irishCal = Calendar.current
+        irishCal.timeZone = TimeZone(identifier: "Europe/Dublin")!
+        let components = irishCal.dateComponents([.hour, .minute, .second], from: departureTime)
         let secondsSinceMidnight = (components.hour ?? 0) * 3600
                                  + (components.minute ?? 0) * 60
                                  + (components.second ?? 0)
+
+        // Pre-compute active service IDs once (OTP-style) — avoids calendar JOIN per query
+        var activeServices = await GTFSScheduleService.shared.activeServiceIds(for: departureTime)
+
+        // After midnight (before 3 AM), also include previous day's services
+        // GTFS encodes post-midnight trips as >24:00 on the previous day
+        if secondsSinceMidnight < 10800 {
+            let yesterday = irishCal.date(byAdding: .day, value: -1, to: departureTime) ?? departureTime
+            let yesterdayServices = await GTFSScheduleService.shared.activeServiceIds(for: yesterday)
+            activeServices.formUnion(yesterdayServices)
+        }
+
+        guard !activeServices.isEmpty else {
+            await APILogger.shared.log(
+                service: "Transit Planner", endpoint: "findRoutes", status: .failure,
+                durationMs: 0, detail: "No active services for today"
+            )
+            return []
+        }
 
         var options: [TransitRouteOption] = []
 
@@ -160,7 +181,8 @@ actor TransitRoutePlanner {
             let departures = await GTFSScheduleService.shared.departuresFromStop(
                 stopId: originStopId,
                 afterSeconds: effectiveDepartureSeconds,
-                withinSeconds: departureWindowSeconds
+                withinSeconds: departureWindowSeconds,
+                activeServices: activeServices
             )
 
             for (boardStopTime, trip) in departures {
@@ -253,7 +275,8 @@ actor TransitRoutePlanner {
                 let departures = await GTFSScheduleService.shared.departuresFromStop(
                     stopId: originStopId,
                     afterSeconds: effectiveDepartureSeconds,
-                    withinSeconds: departureWindowSeconds
+                    withinSeconds: departureWindowSeconds,
+                    activeServices: activeServices
                 )
 
                 for (boardStopTime, trip) in departures {
@@ -286,7 +309,8 @@ actor TransitRoutePlanner {
                             let connectingDepartures = await GTFSScheduleService.shared.departuresFromStop(
                                 stopId: transferStopId,
                                 afterSeconds: arrivalAtMid + transferBufferSeconds,
-                                withinSeconds: transferConnectionSeconds
+                                withinSeconds: transferConnectionSeconds,
+                                activeServices: activeServices
                             )
 
                             for (connBoardTime, connTrip) in connectingDepartures {

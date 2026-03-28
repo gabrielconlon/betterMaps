@@ -5,7 +5,7 @@ struct TransitArrivalsView: View {
     let stationName: String
     let coordinate: CLLocationCoordinate2D
     var stopType: TransitStop.TransitStopType?  // When set, only fetch data for this type
-    var stopId: String?  // GTFS stop_id (bus stop number for display)
+    var stopCode: String?  // Public-facing stop number from GTFS stop_code
     /// Callback when user taps a bus route to view it on the map
     var onSelectRoute: ((String, String) -> Void)?  // (routeId, routeName)
 
@@ -52,8 +52,8 @@ struct TransitArrivalsView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(stationName)
                         .font(.title3.bold())
-                    if let stopId, stopType == .bus || stopType == nil {
-                        Text("Stop \(stopId)")
+                    if let stopCode {
+                        Text("Stop \(stopCode)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 6)
@@ -365,21 +365,26 @@ struct TransitArrivalsView: View {
                 .min(by: { $0.distance < $1.distance })
 
             if let busStop = nearbyBusStop {
-                let calendar = Calendar.current
+                var irishCal = Calendar.current
+                irishCal.timeZone = TimeZone(identifier: "Europe/Dublin")!
                 let now = Date()
-                let secondsSinceMidnight = calendar.component(.hour, from: now) * 3600 +
-                    calendar.component(.minute, from: now) * 60 +
-                    calendar.component(.second, from: now)
+                let secondsSinceMidnight = irishCal.component(.hour, from: now) * 3600 +
+                    irishCal.component(.minute, from: now) * 60 +
+                    irishCal.component(.second, from: now)
 
                 // Query routes that serve this stop
                 let routes = await GTFSScheduleService.shared.routesForStop(stopId: busStop.stop.id)
                 busRoutes = routes
 
+                // Pre-compute active services for correct calendar filtering
+                let activeServices = await GTFSScheduleService.shared.activeServiceIds(for: now)
+
                 // Query next departures
                 let departures = await GTFSScheduleService.shared.departuresFromStop(
                     stopId: busStop.stop.id,
                     afterSeconds: secondsSinceMidnight,
-                    withinSeconds: 3600
+                    withinSeconds: 3600,
+                    activeServices: activeServices
                 )
 
                 busDepartures = departures.prefix(10).map { stopTime, trip in

@@ -10,6 +10,7 @@ struct TransitStop: Identifiable {
     let latitude: Double
     let longitude: Double
     let type: TransitStopType
+    var stopCode: String?   // Public-facing stop number (from GTFS stop_code)
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
@@ -242,6 +243,7 @@ actor GTFSStopLoader {
               let lonIdx = headers.firstIndex(of: "stop_lon") else {
             return []
         }
+        let codeIdx = headers.firstIndex(of: "stop_code")
 
         var stops: [TransitStop] = []
 
@@ -255,13 +257,15 @@ actor GTFSStopLoader {
             let stopId = fields[idIdx]
             let name = fields[nameIdx]
             let type = classifyStop(id: stopId, name: name)
+            let code = codeIdx.flatMap { fields.count > $0 ? fields[$0] : nil }
 
             stops.append(TransitStop(
                 id: stopId,
                 name: name,
                 latitude: lat,
                 longitude: lon,
-                type: type
+                type: type,
+                stopCode: code?.isEmpty == true ? nil : code
             ))
         }
 
@@ -447,11 +451,11 @@ actor GTFSStopLoader {
             return nil
         }
 
-        return cached.map { TransitStop(id: $0.id, name: $0.name, latitude: $0.lat, longitude: $0.lon, type: TransitStop.TransitStopType(rawValue: $0.type) ?? .bus) }
+        return cached.map { TransitStop(id: $0.id, name: $0.name, latitude: $0.lat, longitude: $0.lon, type: TransitStop.TransitStopType(rawValue: $0.type) ?? .bus, stopCode: $0.stopCode) }
     }
 
     private func saveToCache(_ stops: [TransitStop]) {
-        let cacheable = stops.map { CachedTransitStop(id: $0.id, name: $0.name, lat: $0.latitude, lon: $0.longitude, type: $0.type.rawValue) }
+        let cacheable = stops.map { CachedTransitStop(id: $0.id, name: $0.name, lat: $0.latitude, lon: $0.longitude, type: $0.type.rawValue, stopCode: $0.stopCode) }
         if let data = try? JSONEncoder().encode(cacheable) {
             try? data.write(to: cacheURL)
         }
@@ -480,4 +484,5 @@ private struct CachedTransitStop: Codable {
     let lat: Double
     let lon: Double
     let type: String
+    var stopCode: String?
 }

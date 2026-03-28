@@ -76,6 +76,69 @@ actor GTFSScheduleService {
         "", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"
     ]
 
+    /// Irish timezone calendar for all GTFS date/time operations
+    private static let irishCalendar: Calendar = {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Europe/Dublin")!
+        return cal
+    }()
+
+    /// Format a Date as GTFS date string (YYYYMMDD) in Irish timezone
+    private func formatGTFSDate(_ date: Date) -> String {
+        let cal = Self.irishCalendar
+        let y = cal.component(.year, from: date)
+        let m = cal.component(.month, from: date)
+        let d = cal.component(.day, from: date)
+        return String(format: "%04d%02d%02d", y, m, d)
+    }
+
+    /// Compute active service IDs for a given date (OTP-style).
+    /// Checks calendar.txt (weekday + date range) then applies calendar_dates.txt exceptions.
+    func activeServiceIds(for date: Date) -> Set<String> {
+        let cal = Self.irishCalendar
+        let weekday = cal.component(.weekday, from: date)
+        let weekdayCol = Self.weekdayColumns[weekday]
+        let dateStr = formatGTFSDate(date)
+
+        var services = Set<String>()
+
+        // 1. Base services: weekday=1 AND today within [start_date, end_date]
+        let baseSql = """
+            SELECT service_id FROM calendars
+            WHERE \(weekdayCol) = 1 AND start_date <= ? AND end_date >= ?
+        """
+        if let stmt = db.prepare(baseSql) {
+            sqlite3_bind_text(stmt, 1, (dateStr as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (dateStr as NSString).utf8String, -1, nil)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let sid = db.columnText(stmt, index: 0) { services.insert(sid) }
+            }
+            db.finalize(stmt)
+        }
+
+        // 2. Add services from calendar_dates (exception_type=1)
+        let addSql = "SELECT service_id FROM calendar_dates WHERE date = ? AND exception_type = 1"
+        if let stmt = db.prepare(addSql) {
+            sqlite3_bind_text(stmt, 1, (dateStr as NSString).utf8String, -1, nil)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let sid = db.columnText(stmt, index: 0) { services.insert(sid) }
+            }
+            db.finalize(stmt)
+        }
+
+        // 3. Remove services from calendar_dates (exception_type=2)
+        let removeSql = "SELECT service_id FROM calendar_dates WHERE date = ? AND exception_type = 2"
+        if let stmt = db.prepare(removeSql) {
+            sqlite3_bind_text(stmt, 1, (dateStr as NSString).utf8String, -1, nil)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let sid = db.columnText(stmt, index: 0) { services.remove(sid) }
+            }
+            db.finalize(stmt)
+        }
+
+        return services
+    }
+
     // MARK: - Loading
 
     func loadIfNeeded() async {
@@ -187,10 +250,13 @@ actor GTFSScheduleService {
     // MARK: - Query Methods
 
     /// Find trips departing from a stop within a time window.
-    func departuresFromStop(stopId: String, afterSeconds: Int, withinSeconds: Int = 1200) -> [(GTFSStopTime, GTFSTrip)] {
-        let weekday = Calendar.current.component(.weekday, from: Date())
-        let weekdayCol = Self.weekdayColumns[weekday]
+    /// Uses pre-computed active service IDs (from activeServiceIds()) instead of
+    /// JOIN on calendars — faster and correctly handles calendar_dates exceptions.
+    func departuresFromStop(stopId: String, afterSeconds: Int, withinSeconds: Int = 1200,
+                            activeServices: Set<String>) -> [(GTFSStopTime, GTFSTrip)] {
+        guard !activeServices.isEmpty else { return [] }
         let upperBound = afterSeconds + withinSeconds
+        let placeholders = activeServices.map { _ in "?" }.joined(separator: ",")
 
         let sql = """
             SELECT st.trip_id, st.stop_id, st.departure_seconds, st.stop_sequence, st.departure_time,
@@ -198,10 +264,9 @@ actor GTFSScheduleService {
                    COALESCE(r.route_type, 3)
             FROM stop_times st
             JOIN trips t ON st.trip_id = t.trip_id
-            JOIN calendars c ON t.service_id = c.service_id
             LEFT JOIN routes r ON t.route_id = r.route_id
             WHERE st.stop_id = ? AND st.departure_seconds >= ? AND st.departure_seconds <= ?
-            AND c.\(weekdayCol) = 1
+            AND t.service_id IN (\(placeholders))
             ORDER BY st.departure_seconds
             LIMIT 50
         """
@@ -212,6 +277,10 @@ actor GTFSScheduleService {
         sqlite3_bind_text(stmt, 1, (stopId as NSString).utf8String, -1, nil)
         sqlite3_bind_int(stmt, 2, Int32(afterSeconds))
         sqlite3_bind_int(stmt, 3, Int32(upperBound))
+        // Bind active service IDs starting at parameter index 4
+        for (i, serviceId) in activeServices.enumerated() {
+            sqlite3_bind_text(stmt, Int32(4 + i), (serviceId as NSString).utf8String, -1, nil)
+        }
 
         var results: [(GTFSStopTime, GTFSTrip)] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
@@ -494,16 +563,14 @@ actor GTFSScheduleService {
     }
 
     /// Luas shapes split by line color. Returns (red, green) shape arrays.
-    /// Uses GROUP BY route_id to get ONE shape per route (not per direction),
-    /// preventing double-drawn lines from outbound/inbound overlapping shapes.
+    /// Uses DISTINCT shape_id to capture all branches (e.g. Red Line Tallaght + Saggart).
     /// Identifies Red vs Green by route_short_name or route_long_name.
     func luasShapesByLine() -> (red: [[CLLocationCoordinate2D]], green: [[CLLocationCoordinate2D]]) {
         let sql = """
-            SELECT MIN(t.shape_id), LOWER(COALESCE(r.route_short_name, '') || ' ' || COALESCE(r.route_long_name, ''))
+            SELECT DISTINCT t.shape_id, LOWER(COALESCE(r.route_short_name, '') || ' ' || COALESCE(r.route_long_name, ''))
             FROM trips t
             JOIN routes r ON t.route_id = r.route_id
             WHERE r.route_type = 0 AND t.shape_id != ''
-            GROUP BY r.route_id
         """
         guard let stmt = db.prepare(sql) else { return ([], []) }
         defer { db.finalize(stmt) }
@@ -613,6 +680,9 @@ actor GTFSScheduleService {
         }
         if let calendarCSV = await loader.extractFile(from: data, named: "calendar.txt") {
             parseCalendar(csv: calendarCSV)
+        }
+        if let calendarDatesCSV = await loader.extractFile(from: data, named: "calendar_dates.txt") {
+            parseCalendarDates(csv: calendarDatesCSV)
         }
         if let shapesCSV = await loader.extractFile(from: data, named: "shapes.txt") {
             parseShapes(csv: shapesCSV)
@@ -725,6 +795,8 @@ actor GTFSScheduleService {
               let friIdx = headers.firstIndex(of: "friday"),
               let satIdx = headers.firstIndex(of: "saturday"),
               let sunIdx = headers.firstIndex(of: "sunday") else { return }
+        let startIdx = headers.firstIndex(of: "start_date")
+        let endIdx = headers.firstIndex(of: "end_date")
 
         guard let stmt = db.prepareInsertCalendar() else { return }
         db.beginTransaction()
@@ -735,7 +807,10 @@ actor GTFSScheduleService {
             let serviceId = fields[sidIdx]
             guard !serviceId.isEmpty else { continue }
 
-            // Bind: service_id, monday..sunday (7 ints)
+            let startDate = startIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
+            let endDate = endIdx.flatMap { fields.count > $0 ? fields[$0] : nil } ?? ""
+
+            // Bind: service_id, mon-sun (7 ints), start_date, end_date
             sqlite3_bind_text(stmt, 1, (serviceId as NSString).utf8String, -1, nil)
             sqlite3_bind_int(stmt, 2, fields[monIdx] == "1" ? 1 : 0)
             sqlite3_bind_int(stmt, 3, fields[tueIdx] == "1" ? 1 : 0)
@@ -744,6 +819,39 @@ actor GTFSScheduleService {
             sqlite3_bind_int(stmt, 6, fields[friIdx] == "1" ? 1 : 0)
             sqlite3_bind_int(stmt, 7, fields[satIdx] == "1" ? 1 : 0)
             sqlite3_bind_int(stmt, 8, fields[sunIdx] == "1" ? 1 : 0)
+            sqlite3_bind_text(stmt, 9, (startDate as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 10, (endDate as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+            sqlite3_reset(stmt)
+        }
+
+        db.commitTransaction()
+        db.finalize(stmt)
+    }
+
+    private func parseCalendarDates(csv: String) {
+        let lines = csv.components(separatedBy: .newlines)
+        guard let header = lines.first else { return }
+        let headers = parseCSVRow(header)
+
+        guard let sidIdx = headers.firstIndex(of: "service_id"),
+              let dateIdx = headers.firstIndex(of: "date"),
+              let typeIdx = headers.firstIndex(of: "exception_type") else { return }
+
+        guard let stmt = db.prepareInsertCalendarDate() else { return }
+        db.beginTransaction()
+
+        for line in lines.dropFirst() {
+            let fields = parseCSVRow(line)
+            guard fields.count > max(sidIdx, dateIdx, typeIdx) else { continue }
+            let serviceId = fields[sidIdx]
+            let date = fields[dateIdx]
+            guard !serviceId.isEmpty, !date.isEmpty else { continue }
+            let exceptionType = Int(fields[typeIdx]) ?? 0
+
+            sqlite3_bind_text(stmt, 1, (serviceId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (date as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(stmt, 3, Int32(exceptionType))
             sqlite3_step(stmt)
             sqlite3_reset(stmt)
         }

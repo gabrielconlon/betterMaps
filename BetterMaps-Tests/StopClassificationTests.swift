@@ -1,6 +1,6 @@
 import XCTest
 import CoreLocation
-@testable import CustomMapApp
+@testable import BetterMapsApp
 
 /// Tests for transit stop classification, type properties, and the
 /// stop selection logic used by the routing view model.

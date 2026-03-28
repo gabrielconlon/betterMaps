@@ -1,5 +1,5 @@
 import XCTest
-@testable import CustomMapApp
+@testable import BetterMapsApp
 
 /// Tests for weather rule matching logic.
 /// Since WeatherKit's CurrentWeather can't be easily constructed in tests,

@@ -26,17 +26,19 @@ struct TransitStopPin: View {
                 .allowsHitTesting(false) // prevent tiny dots from stealing taps
         case .compact:
             Image(systemName: stop.type.systemImage)
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
-                .padding(4)
+                .padding(5)
                 .background(color)
                 .clipShape(Circle())
+                .frame(minWidth: 44, minHeight: 44) // Apple HIG minimum tap target
+                .contentShape(Circle())
         case .full:
             VStack(spacing: 0) {
                 Image(systemName: stop.type.systemImage)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
-                    .padding(6)
+                    .padding(7)
                     .background(color)
                     .clipShape(Circle())
                     .shadow(color: color.opacity(0.3), radius: 2, y: 1)
@@ -47,6 +49,8 @@ struct TransitStopPin: View {
                     .rotationEffect(.degrees(180))
                     .offset(y: -2)
             }
+            .frame(minWidth: 44, minHeight: 44) // Apple HIG minimum tap target
+            .contentShape(Rectangle())
         }
     }
 }
