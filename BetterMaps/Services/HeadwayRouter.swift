@@ -151,10 +151,15 @@ actor HeadwayRouter {
 
         // --- Phase 2: Transfer routes (ride A → walk → ride B) ---
         if maxTransfers > 0 {
-            // For each pair of routes, check if alighting from route A
-            // is within walking distance of boarding route B
-            let directRoutes = journeys  // Snapshot before adding transfers
-            for routeA in graph.routes {
+            // Prioritize tram/rail as route A so Luas→DART transfers are found
+            // before bus→bus fills the cap
+            let sortedRoutes = graph.routes.sorted { a, b in
+                let aIsRail = a.routeType == 0 || a.routeType == 2
+                let bIsRail = b.routeType == 0 || b.routeType == 2
+                if aIsRail != bIsRail { return aIsRail }
+                return false
+            }
+            for routeA in sortedRoutes {
                 let bucketA = min(timeBucket, routeA.cumulativeSeconds.count - 1)
                 guard bucketA >= 0 else { continue }
                 let cumA = routeA.cumulativeSeconds[bucketA]
@@ -177,8 +182,8 @@ actor HeadwayRouter {
                     let transferLon = Double(graph.stopLons[transferIdx])
                     let transferLoc = CLLocation(latitude: transferLat, longitude: transferLon)
 
-                    // Check routes that serve stops near this transfer point
-                    for routeB in graph.routes {
+                    // Check routes near this transfer point (rail/tram first)
+                    for routeB in sortedRoutes {
                         if routeB.routeId == routeA.routeId && routeB.directionId == routeA.directionId { continue }
 
                         let bucketB = min(timeBucket, routeB.cumulativeSeconds.count - 1)
