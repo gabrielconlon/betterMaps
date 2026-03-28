@@ -456,22 +456,23 @@ class RoutingViewModel {
 
     // MARK: - Transit Preference
 
-    /// Determine transit preference from layers + favorites (no Settings picker needed).
-    /// Layers on the map are the primary UX for expressing mode preference.
+    /// Determine transit preference from active layers on the map.
+    /// Simple rule: layers ON = prioritize those modes. Layers OFF = fastest wins.
+    /// Favorites boost within the ranking but don't override the layer-based preference.
     private func determineTransitPreference(
         userProfile: UserProfile?,
         layers: Set<TransitStop.TransitStopType>
     ) -> String {
-        let hasTramRailLayers = layers.contains(.luas) || layers.contains(.dart) || layers.contains(.rail)
-        let hasFavorites = !(userProfile?.favoriteRouteNames ?? []).isEmpty
+        // No layers = no preference, sort by fastest
+        if layers.isEmpty { return "fastest" }
 
-        // If user has ANY tram/rail layers on → prefer tram/rail in results.
-        // This is the primary UX: toggling Luas/DART layers means "show me these options."
-        if hasTramRailLayers { return "preferTramRail" }
-        // User has favorited tram/rail routes → prefer tram/rail
-        if hasFavorites { return "preferTramRail" }
-        // Respect stored preference as fallback
-        return userProfile?.transitModePreference ?? "fastest"
+        let hasTramRailLayers = layers.contains(.luas) || layers.contains(.dart) || layers.contains(.rail)
+        let hasBusLayer = layers.contains(.bus)
+
+        if hasTramRailLayers && !hasBusLayer { return "preferTramRail" }
+        if hasBusLayer && !hasTramRailLayers { return "preferBus" }
+        // Both on or other combos → fastest
+        return "fastest"
     }
 
     /// Select best routes with mode diversity.

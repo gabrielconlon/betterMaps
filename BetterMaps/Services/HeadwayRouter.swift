@@ -202,11 +202,15 @@ actor HeadwayRouter {
         if !failSummary.isEmpty { debugLog += " | unmatched: \(failSummary)" }
 
         // --- Phase 2: Transfer routes (ride A → walk → ride B) ---
-        // Only search non-bus route A — the point is to find Luas→DART, Luas→Bus, etc.
-        // Bus→Bus transfers are rarely useful and expensive to compute.
+        // Search Luas (routeType 0) FIRST, then rail (routeType 2).
+        // Per-route cap ensures every non-bus line gets checked.
         var transferCount = 0
         if maxTransfers > 0 {
-            let nonBusGraphRoutes = graph.routes.filter { $0.routeType == 0 || $0.routeType == 2 }
+            // Luas first (routeType 0 < 2), so Luas→DART transfers are found
+            // before Commuter→Bus fills the cap
+            let nonBusGraphRoutes = graph.routes
+                .filter { $0.routeType == 0 || $0.routeType == 2 }
+                .sorted { $0.routeType < $1.routeType }
 
             for routeA in nonBusGraphRoutes {
                 let bucketA = min(timeBucket, routeA.cumulativeSeconds.count - 1)
@@ -223,6 +227,8 @@ actor HeadwayRouter {
                 }
                 guard let bA = boardA else { continue }
 
+                var transfersForThisRoute = 0
+
                 // For each stop on route A, check if it's a transfer point.
                 for (posA, stopIdA) in routeA.stopIds.enumerated() where posA != bA.pos {
                     guard let transferIdx = graph.stopIdToIndex[stopIdA],
@@ -230,7 +236,6 @@ actor HeadwayRouter {
                     let transferLat = Double(graph.stopLats[transferIdx])
                     let transferLon = Double(graph.stopLons[transferIdx])
 
-                    // Check ALL routes for route B (including bus — Luas→Bus is useful)
                     for routeB in graph.routes {
                         if routeB.routeId == routeA.routeId && routeB.directionId == routeA.directionId { continue }
 
@@ -265,13 +270,9 @@ actor HeadwayRouter {
                         guard let aB = alightB, bB.pos < cumB.count, aB.pos < cumB.count,
                               bA.pos < cumA.count else { continue }
 
-                        // Use absolute ride times — routes run both directions
                         let rideA = abs(Int(cumA[posA]) - Int(cumA[bA.pos]))
                         let rideB = abs(Int(cumB[aB.pos]) - Int(cumB[bB.pos]))
                         let totalSec = bA.walkSec + (headwayA / 2) + rideA + bB.walkSec + (headwayB / 2) + rideB + aB.walkSec
-
-                        // No competitive filter — user explicitly wants multi-modal options
-                        // even if they're slower than direct bus
 
                         journeys.append(HeadwayJourney(
                             rideLegs: [
@@ -290,12 +291,14 @@ actor HeadwayRouter {
                             totalSeconds: totalSec
                         ))
                         transferCount += 1
+                        transfersForThisRoute += 1
+                        print("[TRANSFER] \(routeA.routeName)→\(routeB.routeName) | walk \(bA.walkSec/60)m, ride \(rideA/60)m, xfer \(bB.walkSec/60)m, ride \(rideB/60)m, walk \(aB.walkSec/60)m = \(totalSec/60)m total")
 
-                        if transferCount >= 10 { break }  // Cap transfer results
+                        if transfersForThisRoute >= 3 { break }  // Enough for this route, try next transfer point
                     }
-                    if transferCount >= 10 { break }
+                    if transfersForThisRoute >= 3 { break }  // Move to next routeA
                 }
-                if transferCount >= 10 { break }
+                if transferCount >= 20 { break }  // Hard safety cap across all routes
             }
         }
         debugLog += " | \(transferCount) transfers"
@@ -341,6 +344,10 @@ actor HeadwayRouter {
             return a.totalSeconds < b.totalSeconds
         }
 
-        return Array(results.prefix(8))
+        let final = Array(results.prefix(8))
+        let transferResults = final.filter { $0.transfers > 0 }
+        let directResults = final.filter { $0.transfers == 0 }
+        print("[RESULTS] \(directResults.count) direct + \(transferResults.count) transfer | keys: \(final.map { routeKey($0) }.joined(separator: ", "))")
+        return final
     }
 }
