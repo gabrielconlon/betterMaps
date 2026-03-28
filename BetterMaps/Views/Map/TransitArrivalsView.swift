@@ -304,19 +304,17 @@ struct TransitArrivalsView: View {
 
         // Check Luas (only if stop type matches or unknown)
         if shouldCheckLuas {
-            let tapLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            let nearbyLuasCoord = LuasStopCoordinates.stops
-                .map { stop in
-                    let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                    return (stop: stop, distance: stopLoc.distance(from: tapLocation))
-                }
-                .filter { $0.distance < 300 }
-                .min(by: { $0.distance < $1.distance })
-
-            if let match = nearbyLuasCoord {
+            // Match by station name against the Luas forecast API stop list.
+            // GTFS stop names may differ slightly (e.g. "Cabra Luas Stop" vs "Cabra"),
+            // so we use contains-matching on the canonical Luas stop name.
+            let lowerName = stationName.lowercased()
+            let matchedStop = LuasService.stops.first { luasStop in
+                let luasName = luasStop.name.lowercased()
+                return lowerName.contains(luasName) || luasName.contains(lowerName)
+            }
+            if let matchedStop {
                 hasLuas = true
-                let stopCode = String(match.stop.id.replacingOccurrences(of: "LUAS_", with: ""))
-                luasForecast = await luasService.fetchForecast(stopCode: stopCode)
+                luasForecast = await luasService.fetchForecast(stopCode: matchedStop.id)
             }
         }
 

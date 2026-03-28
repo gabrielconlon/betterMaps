@@ -465,6 +465,44 @@ actor GTFSScheduleService {
         }
     }
 
+    /// Luas shapes split by line color. Returns (red, green) shape arrays.
+    /// Uses GROUP BY route_id to get ONE shape per route (not per direction),
+    /// preventing double-drawn lines from outbound/inbound overlapping shapes.
+    /// Identifies Red vs Green by route_short_name or route_long_name.
+    func luasShapesByLine() -> (red: [[CLLocationCoordinate2D]], green: [[CLLocationCoordinate2D]]) {
+        let sql = """
+            SELECT MIN(t.shape_id), LOWER(COALESCE(r.route_short_name, '') || ' ' || COALESCE(r.route_long_name, ''))
+            FROM trips t
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE r.route_type = 0 AND t.shape_id != ''
+            GROUP BY r.route_id
+        """
+        guard let stmt = db.prepare(sql) else { return ([], []) }
+        defer { db.finalize(stmt) }
+
+        var redIds: [String] = []
+        var greenIds: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let shapeId = db.columnText(stmt, index: 0),
+                  let names = db.columnText(stmt, index: 1) else { continue }
+            if names.contains("red") {
+                redIds.append(shapeId)
+            } else {
+                greenIds.append(shapeId)
+            }
+        }
+
+        let red = redIds.compactMap { id -> [CLLocationCoordinate2D]? in
+            let coords = shapeCoordinates(for: id)
+            return coords.count >= 2 ? coords : nil
+        }
+        let green = greenIds.compactMap { id -> [CLLocationCoordinate2D]? in
+            let coords = shapeCoordinates(for: id)
+            return coords.count >= 2 ? coords : nil
+        }
+        return (red, green)
+    }
+
     /// Shape coordinates for DART routes only (route_short_name = 'DART').
     /// DART has multiple branches (Howth + Malahide) sharing the same route_id,
     /// so we get all distinct shapes rather than one per direction.

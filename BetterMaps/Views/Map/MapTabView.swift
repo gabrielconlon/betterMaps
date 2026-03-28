@@ -30,6 +30,8 @@ struct MapTabView: View {
     @State private var selectedBusRouteName: String = ""
     @State private var selectedBusRouteStopIds: Set<String> = [] // stops on selected bus route
     @State private var showFavoritesPanel = false
+    @State private var luasRedShapeLines: [[CLLocationCoordinate2D]] = []
+    @State private var luasGreenShapeLines: [[CLLocationCoordinate2D]] = []
     @State private var dartShapeLines: [[CLLocationCoordinate2D]] = [] // GTFS shapes for DART only
     @State private var railShapeLines: [[CLLocationCoordinate2D]] = [] // GTFS shapes for non-DART rail
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
@@ -302,33 +304,14 @@ struct MapTabView: View {
             savedLiveTransit = serializeTransitTypes(newValue)
         }
         .task {
-            // Load transit stops from two sources:
-            // 1. Hardcoded Luas stops (curated coordinates, always included)
-            // 2. GTFS stops (correct stop IDs for timetable lookups)
-            // Irish Rail API stations are NOT loaded here — their IDs don't match
-            // GTFS stop_times so they create orphan pins with no timetables.
-            // GTFS already has all rail stations; reclassification tags them correctly.
-            var allStops: [TransitStop] = LuasStopCoordinates.stops
-
-            // GTFS stops — add if not near a hardcoded Luas stop.
-            // 300m threshold because GTFS Luas coordinates can differ from hardcoded ones.
+            // GTFS is the single source of truth for all transit stops.
+            // No hardcoded stops — GTFS IDs match stop_times for timetable queries,
+            // and GTFS coordinates sit on the GTFS shape lines (no offset pins).
             let loader = GTFSStopLoader()
-            let gtfsStops = await loader.loadStops()
-            let fixedStops = allStops  // Snapshot of Luas stops for proximity check
-            for stop in gtfsStops {
-                if !isNearExistingStop(stop, in: fixedStops, thresholdMeters: 300) {
-                    allStops.append(stop)
-                }
-            }
+            transitStops = await loader.loadStops()
 
-            transitStops = allStops
-
-            // Open schedule database (already built by GTFSSetupView on first install,
-            // or cached SQLite on subsequent launches — this is fast)
+            // Load schedule database and reclassify stops by actual GTFS route data
             await GTFSScheduleService.shared.loadIfNeeded()
-
-            // Reclassify stops using GTFS route_type + route_short_name.
-            // Distinguishes DART (route_short_name='DART') from other rail (Commuter/InterCity).
             let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
             if !classification.isEmpty {
                 transitStops = transitStops.map { stop in
@@ -341,7 +324,21 @@ struct MapTabView: View {
                 }
             }
 
-            // Load shapes separately for DART vs other rail
+            // Deduplicate Luas stops (GTFS may have per-platform entries within 50m)
+            let luasStops = transitStops.filter { $0.type == .luas }
+            let nonLuas = transitStops.filter { $0.type != .luas }
+            var keptLuas: [TransitStop] = []
+            for stop in luasStops {
+                if !isNearExistingStop(stop, in: keptLuas, thresholdMeters: 50) {
+                    keptLuas.append(stop)
+                }
+            }
+            transitStops = nonLuas + keptLuas
+
+            // Load shapes from GTFS for all transit types
+            let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
+            luasRedShapeLines = luasShapes.red
+            luasGreenShapeLines = luasShapes.green
             dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForDART()
             railShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
         }
@@ -504,14 +501,16 @@ struct MapTabView: View {
                     }
                 }
 
-                // Luas route lines (always visible when Luas stops are on)
+                // Luas route lines (from GTFS shapes — accurate track geometry)
                 if showTransitStops.contains(.luas) {
-                    MapPolyline(coordinates: LuasStopCoordinates.lineCoordinates(LuasStopCoordinates.redLineMain))
-                        .stroke(.red.opacity(0.6), lineWidth: 3)
-                    MapPolyline(coordinates: LuasStopCoordinates.lineCoordinates(LuasStopCoordinates.redLineSaggart))
-                        .stroke(.red.opacity(0.6), lineWidth: 3)
-                    MapPolyline(coordinates: LuasStopCoordinates.lineCoordinates(LuasStopCoordinates.greenLine))
-                        .stroke(.green.opacity(0.6), lineWidth: 3)
+                    ForEach(Array(luasRedShapeLines.enumerated()), id: \.offset) { _, coords in
+                        MapPolyline(coordinates: coords)
+                            .stroke(.red.opacity(0.6), lineWidth: 3)
+                    }
+                    ForEach(Array(luasGreenShapeLines.enumerated()), id: \.offset) { _, coords in
+                        MapPolyline(coordinates: coords)
+                            .stroke(.green.opacity(0.6), lineWidth: 3)
+                    }
                 }
 
                 // DART lines (orange) — only the Dublin coastal line
