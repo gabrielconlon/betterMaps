@@ -12,6 +12,7 @@ struct RoutingPanelView: View {
 
     @Binding var selectedRouteId: UUID?
     @Binding var selectedTransitOption: TransitRouteOption?
+    @Binding var currentDetent: PresentationDetent
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
     @State private var departureTime: Date = Date()
@@ -19,41 +20,69 @@ struct RoutingPanelView: View {
     @State private var showTimePicker = false
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let transitOption = selectedTransitOption {
-                    TransitTimelineView(option: transitOption)
+        if currentDetent == .fraction(0.08) {
+            peekSummaryView
+        } else {
+            NavigationStack {
+                Group {
+                    if let transitOption = selectedTransitOption {
+                        TransitTimelineView(option: transitOption)
+                            .toolbar {
+                                ToolbarItem(placement: .topBarLeading) {
+                                    Button(action: { selectedTransitOption = nil }) {
+                                        Label("Routes", systemImage: "chevron.left")
+                                    }
+                                }
+                            }
+                    } else if let route = selectedRoute {
+                        // Step-by-step view replaces the route list
+                        NavigationStepsView(
+                            routeResult: route,
+                            destinationCoordinate: destination,
+                            destinationName: destinationName
+                        )
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
-                                Button(action: { selectedTransitOption = nil }) {
+                                Button(action: {
+                                    selectedRoute = nil
+                                    selectedRouteId = nil
+                                }) {
                                     Label("Routes", systemImage: "chevron.left")
                                 }
                             }
                         }
-                } else if let route = selectedRoute {
-                    // Step-by-step view replaces the route list
-                    NavigationStepsView(
-                        routeResult: route,
-                        destinationCoordinate: destination,
-                        destinationName: destinationName
-                    )
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button(action: {
-                                selectedRoute = nil
-                                selectedRouteId = nil
-                            }) {
-                                Label("Routes", systemImage: "chevron.left")
-                            }
-                        }
+                        .onAppear { selectedRouteId = route.id }
+                    } else {
+                        routeListView
                     }
-                    .onAppear { selectedRouteId = route.id }
-                } else {
-                    routeListView
                 }
+                .toast(isPresented: $saved, message: "Routes saved for offline!")
+                .sensoryFeedback(.success, trigger: saved)
             }
-            .toast(isPresented: $saved, message: "Routes saved for offline!")
-            .sensoryFeedback(.success, trigger: saved)
+        }
+    }
+
+    private var peekSummaryView: some View {
+        HStack {
+            Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                .foregroundStyle(.blue)
+            Text("\(viewModel.activeRoutes.count) routes")
+                .font(.subheadline.bold())
+            if let fastest = viewModel.activeRoutes.min(by: { $0.eta < $1.eta }) {
+                Text("· \(Int(fastest.eta / 60)) min")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.up")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation { currentDetent = .fraction(0.35) }
         }
     }
 

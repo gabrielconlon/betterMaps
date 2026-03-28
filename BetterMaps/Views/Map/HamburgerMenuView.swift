@@ -9,6 +9,7 @@ struct HamburgerMenuView: View {
     @Binding var bicyclePreference: BicycleRoutePreference
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
     @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
+    @Binding var mapStyleOption: MapStyleOption
     var onSelectPlace: ((Place) -> Void)?
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
@@ -16,6 +17,10 @@ struct HamburgerMenuView: View {
     @AppStorage("favTransitLuas") private var favLuas = true
     @AppStorage("favTransitDart") private var favDart = true
     @AppStorage("favTransitRail") private var favRail = true
+    @AppStorage("favMapStandard") private var favMapStandard = true
+    @AppStorage("favMapMuted") private var favMapMuted = true
+    @AppStorage("favMapSatellite") private var favMapSatellite = true
+    @AppStorage("favMapHybrid") private var favMapHybrid = true
 
     @Environment(\.modelContext) private var modelContext
     @State private var showLayerForm = false
@@ -90,6 +95,41 @@ struct HamburgerMenuView: View {
                         Text("Add NTA API key for live bus positions.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+
+                    // Map Style
+                    ForEach(MapStyleOption.allCases, id: \.self) { style in
+                        HStack {
+                            Image(systemName: style.icon)
+                                .foregroundStyle(.primary)
+                                .frame(width: 22)
+                            Text(style.rawValue)
+                                .font(.subheadline)
+                            Spacer()
+                            if mapStyleOption == style {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.blue)
+                                    .font(.caption)
+                            }
+                            if isMapStyleFav(style) {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.yellow)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { mapStyleOption = style }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                toggleMapStyleFav(style)
+                            } label: {
+                                Label(
+                                    isMapStyleFav(style) ? "Unpin" : "Pin to Layers",
+                                    systemImage: isMapStyleFav(style) ? "star.slash" : "star.fill"
+                                )
+                            }
+                            .tint(.yellow)
+                        }
                     }
 
                     // Weather Layers
@@ -317,6 +357,26 @@ struct HamburgerMenuView: View {
                         .offset(x: -4, y: 4)
                 }
             }
+    }
+
+    // MARK: - Map Style Favorites
+
+    private func isMapStyleFav(_ style: MapStyleOption) -> Bool {
+        switch style {
+        case .standard: return favMapStandard
+        case .muted: return favMapMuted
+        case .satellite: return favMapSatellite
+        case .hybrid: return favMapHybrid
+        }
+    }
+
+    private func toggleMapStyleFav(_ style: MapStyleOption) {
+        switch style {
+        case .standard: favMapStandard.toggle()
+        case .muted: favMapMuted.toggle()
+        case .satellite: favMapSatellite.toggle()
+        case .hybrid: favMapHybrid.toggle()
+        }
     }
 }
 

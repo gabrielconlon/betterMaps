@@ -20,11 +20,13 @@ struct MapTabView: View {
     @FocusState private var isSearchFocused: Bool
     @State private var activeWeatherOverlays: Set<WeatherOverlay> = []
     @State private var showFavoritesPanel = false
+    @State private var mapStyleOption: MapStyleOption = .standard
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
     @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("hasSeenCoachMarks") private var hasSeenCoachMarks = false
     @State private var showCoachMarks = false
+    @State private var routingDetent: PresentationDetent = .fraction(0.35)
 
     var filteredPlaces: [Place] {
         filterVM.filteredPlaces(allPlaces: places, allLayers: layers)
@@ -36,6 +38,19 @@ struct MapTabView: View {
 
     var isOverlapMode: Bool {
         filterVM.filterMode == .intersection && activeLayerCount > 1
+    }
+
+    private var currentMapStyle: MapStyle {
+        switch mapStyleOption {
+        case .standard:
+            return .standard(elevation: .realistic, pointsOfInterest: .all, showsTraffic: false)
+        case .muted:
+            return .standard(elevation: .realistic, emphasis: .muted, pointsOfInterest: .all, showsTraffic: false)
+        case .satellite:
+            return .imagery(elevation: .realistic)
+        case .hybrid:
+            return .hybrid(elevation: .realistic, pointsOfInterest: .all, showsTraffic: false)
+        }
     }
 
     var body: some View {
@@ -71,7 +86,8 @@ struct MapTabView: View {
                             FavoritesPanel(
                                 showTransitStops: $transitState.showTransitStops,
                                 showLiveTransit: $transitState.showLiveTransit,
-                                isPresented: $showFavoritesPanel
+                                isPresented: $showFavoritesPanel,
+                                mapStyle: $mapStyleOption
                             )
                             .transition(.move(edge: .leading).combined(with: .opacity))
                         }
@@ -118,38 +134,6 @@ struct MapTabView: View {
                     .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal)
-                    .padding(.bottom, 4)
-                }
-
-                // Route controls
-                if !routingVM.activeRoutes.isEmpty {
-                    HStack(spacing: 8) {
-                        // Reopen routes panel
-                        Button(action: {
-                            viewModel.showRouting()
-                        }) {
-                            Label("Routes", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                                .font(.caption.bold())
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                        }
-
-                        // Clear routes
-                        Button(action: {
-                            routingVM.clearRoutes()
-                            selectedRouteId = nil
-                            selectedTransitOption = nil
-                        }) {
-                            Label("Clear", systemImage: "xmark.circle.fill")
-                                .font(.caption.bold())
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                        }
-                    }
                     .padding(.bottom, 4)
                 }
 
@@ -205,6 +189,18 @@ struct MapTabView: View {
         .onChange(of: showCoachMarks) { _, newValue in
             if !newValue {
                 hasSeenCoachMarks = true
+            }
+        }
+        .onChange(of: viewModel.activeSheet) { old, new in
+            // Reset detent when routing sheet opens
+            if let new, case .routing = new {
+                routingDetent = .fraction(0.35)
+            }
+            // Clear routes when routing sheet is dismissed
+            if let old, case .routing = old, new == nil {
+                routingVM.clearRoutes()
+                selectedRouteId = nil
+                selectedTransitOption = nil
             }
         }
         .task {
@@ -360,6 +356,7 @@ struct MapTabView: View {
                 bicyclePreference: $routingVM.bicyclePreference,
                 showTransitStops: $transitState.showTransitStops,
                 showLiveTransit: $transitState.showLiveTransit,
+                mapStyleOption: $mapStyleOption,
                 onSelectPlace: { place in
                     viewModel.activeSheet = nil
                     cameraPosition = .region(MKCoordinateRegion(
@@ -381,9 +378,10 @@ struct MapTabView: View {
                 source: locationManager.userLocation,
                 destination: context?.coordinate,
                 selectedRouteId: $selectedRouteId,
-                selectedTransitOption: $selectedTransitOption
+                selectedTransitOption: $selectedTransitOption,
+                currentDetent: $routingDetent
             )
-            .presentationDetents([.fraction(0.35), .medium, .large])
+            .presentationDetents([.fraction(0.08), .fraction(0.35), .medium, .large], selection: $routingDetent)
             .presentationBackgroundInteraction(.enabled(upThrough: .medium))
 
         case .newPlace(let coordinate):
@@ -612,7 +610,7 @@ struct MapTabView: View {
                     }
                 }
             }
-            .mapStyle(.standard(elevation: .realistic))
+            .mapStyle(currentMapStyle)
             .mapControls {
                 MapUserLocationButton()
                 MapCompass()
