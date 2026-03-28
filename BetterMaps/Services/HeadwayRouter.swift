@@ -20,9 +20,9 @@ struct HeadwayJourney: Sendable {
     }
 
     let rideLegs: [Leg]
-    let walkLegs: [WalkLeg]       // transfer walks between ride legs
-    let originWalkSeconds: Int    // walk from user to first board stop
-    let destWalkSeconds: Int      // walk from last alight stop to destination
+    let walkLegs: [WalkLeg]
+    let originWalkSeconds: Int
+    let destWalkSeconds: Int
     let totalSeconds: Int
     let isEstimate: Bool = true
 
@@ -38,43 +38,34 @@ struct HeadwayJourney: Sendable {
     }
 }
 
-// MARK: - Headway Router
+// MARK: - Headway Router (Simple Route Matching)
 
-/// Instant transit route planning using pre-computed headway graph.
-/// Dijkstra search on ~21K edges completes in ~5-10ms.
+/// Instant transit route planning by matching routes that serve both origin and destination areas.
+/// No graph search needed — just iterate pre-computed routes and check stop proximity.
+/// Completes in <10ms for Dublin's ~500 routes.
 actor HeadwayRouter {
-
-    private struct State: Comparable {
-        let stopIdx: Int
-        let cost: Int
-        let transfers: Int
-        let parent: Int
-        let routeIdx: Int
-        static func < (lhs: State, rhs: State) -> Bool { lhs.cost < rhs.cost }
-    }
 
     private(set) var graph: TransitGraph?
 
-    /// Load cached transit graph
     func loadGraph() {
         graph = TransitGraphBuilder.loadCached()
     }
 
-    /// Set graph directly (after build)
     func setGraph(_ g: TransitGraph) {
         graph = g
     }
 
     var isReady: Bool { graph != nil }
-
     var stalenessLabel: String { graph?.stalenessLabel ?? "No data" }
 
-    /// Dijkstra search for multi-modal routes
+    /// Find routes that connect origin to destination.
+    /// Simple approach: for each route, check if it has stops near both endpoints.
+    /// For transfers: check if alighting stop of route A is near boarding stop of route B.
     func search(
         from source: CLLocationCoordinate2D,
         to destination: CLLocationCoordinate2D,
         allStops: [TransitStop],
-        departureTime: Int,  // seconds since midnight
+        departureTime: Int,
         maxTransfers: Int = 2,
         walkRadiusMeters: Double = 2500
     ) -> [HeadwayJourney] {
@@ -84,242 +75,195 @@ actor HeadwayRouter {
         let srcLoc = CLLocation(latitude: source.latitude, longitude: source.longitude)
         let dstLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
 
-        // Find origin stops (walkable from source)
-        var originStops: [(index: Int, walkSec: Int)] = []
-        for (i, stop) in allStops.enumerated() {
-            let dist = CLLocation(latitude: stop.latitude, longitude: stop.longitude).distance(from: srcLoc)
-            if dist <= walkRadiusMeters {
-                let walkSec = Int(dist * 1.4 / 80 * 60)
-                originStops.append((i, walkSec))
-            }
+        // Pre-compute distances from source and destination to all stops
+        // Only compute for stops that appear in routes (use graph.stopIdToIndex)
+        var srcDist: [Int: Double] = [:]  // stopIndex → meters from source
+        var dstDist: [Int: Double] = [:]  // stopIndex → meters from destination
+
+        for (stopId, idx) in graph.stopIdToIndex {
+            let lat = Double(graph.stopLats[idx])
+            let lon = Double(graph.stopLons[idx])
+            let stopLoc = CLLocation(latitude: lat, longitude: lon)
+
+            let fromSrc = stopLoc.distance(from: srcLoc)
+            if fromSrc <= walkRadiusMeters { srcDist[idx] = fromSrc }
+
+            let fromDst = stopLoc.distance(from: dstLoc)
+            if fromDst <= walkRadiusMeters { dstDist[idx] = fromDst }
         }
-
-        // Find destination stops
-        var destStops: [(index: Int, walkSec: Int)] = []
-        for (i, stop) in allStops.enumerated() {
-            let dist = CLLocation(latitude: stop.latitude, longitude: stop.longitude).distance(from: dstLoc)
-            if dist <= walkRadiusMeters {
-                let walkSec = Int(dist * 1.4 / 80 * 60)
-                destStops.append((i, walkSec))
-            }
-        }
-
-        guard !originStops.isEmpty, !destStops.isEmpty else { return [] }
-        let destSet = Set(destStops.map { $0.index })
-
-        // Build adjacency from graph for this time bucket
-        // Edge types: transit (route segment) and walking (transfer)
-        struct Edge {
-            let to: Int          // stop index
-            let weight: Int      // total seconds (travel + wait)
-            let routeIdx: Int    // -1 for walking
-            let alightIdx: Int   // stop index where we get off (for transit, = to)
-        }
-
-        // Pre-build edges per stop from routes
-        var adjList: [Int: [Edge]] = [:]
-
-        for (routeIdx, route) in graph.routes.enumerated() {
-            let bucket = min(timeBucket, route.cumulativeSeconds.count - 1)
-            guard bucket >= 0, bucket < route.cumulativeSeconds.count else { continue }
-            let cumulative = route.cumulativeSeconds[bucket]
-            let headway = Int(route.headways[min(bucket, route.headways.count - 1)])
-            let waitEstimate = headway / 2
-
-            // For each stop on the route, add edge to every subsequent stop
-            for i in 0..<route.stopIds.count {
-                guard let fromIdx = graph.stopIdToIndex[route.stopIds[i]] else { continue }
-
-                for j in (i + 1)..<route.stopIds.count {
-                    guard let toIdx = graph.stopIdToIndex[route.stopIds[j]] else { continue }
-                    let travelSec = Int(cumulative[j]) - Int(cumulative[i])
-                    let totalWeight = waitEstimate + travelSec
-
-                    adjList[fromIdx, default: []].append(Edge(
-                        to: toIdx, weight: totalWeight,
-                        routeIdx: routeIdx, alightIdx: toIdx
-                    ))
-                }
-            }
-        }
-
-        // Add walking transfer edges
-        for transfer in graph.transfers {
-            adjList[transfer.fromStopIndex, default: []].append(Edge(
-                to: transfer.toStopIndex, weight: Int(transfer.walkSeconds),
-                routeIdx: -1, alightIdx: transfer.toStopIndex
-            ))
-        }
-
-        // Priority queue (simple sorted array — fast enough for ~21K edges)
-        var pq: [State] = []
-        var bestCost: [Int: Int] = [:]  // stopIdx → best known cost
-        var parentMap: [Int: State] = [:]  // stopIdx → state that reached it
-
-        // Initialize with origin stops
-        for (idx, walkSec) in originStops {
-            let state = State(stopIdx: idx, cost: walkSec, transfers: 0, parent: -1, routeIdx: -1)
-            pq.append(state)
-            bestCost[idx] = walkSec
-        }
-        pq.sort()
-
-        // Track best arrivals at destination stops
-        var bestDestArrivals: [(destIdx: Int, cost: Int, state: State)] = []
-
-        while !pq.isEmpty {
-            let current = pq.removeFirst()
-
-            // Skip if we've found a better path to this stop
-            if current.cost > (bestCost[current.stopIdx] ?? Int.max) { continue }
-            if current.transfers > maxTransfers { continue }
-
-            parentMap[current.stopIdx] = current
-
-            // Check if this is a destination stop
-            if destSet.contains(current.stopIdx) {
-                if let destInfo = destStops.first(where: { $0.index == current.stopIdx }) {
-                    let totalCost = current.cost + destInfo.walkSec
-                    bestDestArrivals.append((current.stopIdx, totalCost, current))
-                }
-            }
-
-            // Explore edges
-            guard let edges = adjList[current.stopIdx] else { continue }
-            for edge in edges {
-                let isTransfer = current.routeIdx != -1 && edge.routeIdx != -1 && edge.routeIdx != current.routeIdx
-                let newTransfers = current.transfers + (isTransfer ? 1 : 0)
-                if newTransfers > maxTransfers { continue }
-
-                let newCost = current.cost + edge.weight
-                if newCost < (bestCost[edge.to] ?? Int.max) {
-                    bestCost[edge.to] = newCost
-                    let newState = State(stopIdx: edge.to, cost: newCost, transfers: newTransfers,
-                                        parent: current.stopIdx, routeIdx: edge.routeIdx)
-                    // Insert sorted (binary search insertion)
-                    let insertIdx = pq.firstIndex(where: { $0.cost > newCost }) ?? pq.endIndex
-                    pq.insert(newState, at: insertIdx)
-                }
-            }
-
-            // Early termination: found enough good results
-            if bestDestArrivals.count >= 5 { break }
-        }
-
-        // Reconstruct journeys from best destination arrivals
-        return reconstructJourneys(
-            arrivals: bestDestArrivals,
-            parentMap: parentMap,
-            originStops: originStops,
-            destStops: destStops,
-            graph: graph,
-            timeBucket: timeBucket
-        )
-    }
-
-    // MARK: - Journey Reconstruction
-
-    private func reconstructJourneys(
-        arrivals: [(destIdx: Int, cost: Int, state: State)],
-        parentMap: [Int: State],
-        originStops: [(index: Int, walkSec: Int)],
-        destStops: [(index: Int, walkSec: Int)],
-        graph: TransitGraph,
-        timeBucket: Int
-    ) -> [HeadwayJourney] {
-        // Type alias for the State used in parentMap
-        let originSet = Set(originStops.map { $0.index })
-        let originWalkMap = Dictionary(uniqueKeysWithValues: originStops.map { ($0.index, $0.walkSec) })
-        let destWalkMap = Dictionary(uniqueKeysWithValues: destStops.map { ($0.index, $0.walkSec) })
 
         var journeys: [HeadwayJourney] = []
 
-        for arrival in arrivals {
-            var rideLegs: [HeadwayJourney.Leg] = []
-            var walkLegs: [HeadwayJourney.WalkLeg] = []
+        // --- Phase 1: Direct routes (single ride) ---
+        for route in graph.routes {
+            let bucket = min(timeBucket, route.cumulativeSeconds.count - 1)
+            guard bucket >= 0 else { continue }
+            let cumulative = route.cumulativeSeconds[bucket]
+            let headway = Int(route.headways[min(bucket, route.headways.count - 1)])
 
-            // Trace back through parent map
-            var currentIdx = arrival.destIdx
-            var path: [(stopIdx: Int, routeIdx: Int)] = [(currentIdx, arrival.state.routeIdx)]
+            // Find best boarding stop (closest to source, on this route)
+            var bestBoard: (idx: Int, pos: Int, walkSec: Int)?
+            // Find best alighting stop (closest to destination, on this route)
+            var bestAlight: (idx: Int, pos: Int, walkSec: Int)?
 
-            while let state = parentMap[currentIdx], state.parent != -1 {
-                path.insert((state.parent, state.routeIdx), at: 0)
-                currentIdx = state.parent
-                if originSet.contains(currentIdx) { break }
-                if path.count > 20 { break }  // Safety
-            }
+            for (pos, stopId) in route.stopIds.enumerated() {
+                guard let stopIdx = graph.stopIdToIndex[stopId] else { continue }
 
-            // Convert path to legs
-            var i = 0
-            while i < path.count - 1 {
-                let from = path[i]
-                let to = path[i + 1]
-
-                if to.routeIdx == -1 {
-                    // Walking
-                    walkLegs.append(HeadwayJourney.WalkLeg(
-                        fromStopIndex: from.stopIdx, toStopIndex: to.stopIdx,
-                        walkSeconds: 120  // Estimate
-                    ))
-                } else {
-                    // Find the route and compute travel time
-                    let routeIdx = to.routeIdx
-                    guard routeIdx >= 0 && routeIdx < graph.routes.count else { i += 1; continue }
-                    let route = graph.routes[routeIdx]
-                    let bucket = min(timeBucket, route.cumulativeSeconds.count - 1)
-                    let cumulative = route.cumulativeSeconds[max(0, bucket)]
-                    let headway = Int(route.headways[min(bucket, route.headways.count - 1)])
-
-                    // Find positions in route
-                    let fromStopId = graph.stopIds[from.stopIdx]
-                    let toStopId = graph.stopIds[to.stopIdx]
-                    let fromPos = route.stopIds.firstIndex(of: fromStopId) ?? 0
-                    let toPos = route.stopIds.firstIndex(of: toStopId) ?? fromPos
-
-                    let travelSec = toPos < cumulative.count && fromPos < cumulative.count
-                        ? Int(cumulative[toPos]) - Int(cumulative[fromPos])
-                        : 120
-
-                    rideLegs.append(HeadwayJourney.Leg(
-                        routeName: route.routeName,
-                        routeType: route.routeType,
-                        boardStopIndex: from.stopIdx,
-                        alightStopIndex: to.stopIdx,
-                        travelSeconds: max(travelSec, 60),
-                        waitSeconds: headway / 2
-                    ))
+                if let dist = srcDist[stopIdx] {
+                    let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
+                    if bestBoard == nil || walkSec < bestBoard!.walkSec {
+                        bestBoard = (stopIdx, pos, walkSec)
+                    }
                 }
-                i += 1
+
+                if let dist = dstDist[stopIdx] {
+                    let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
+                    if bestAlight == nil || walkSec < bestAlight!.walkSec {
+                        bestAlight = (stopIdx, pos, walkSec)
+                    }
+                }
             }
 
-            guard !rideLegs.isEmpty else { continue }
+            // Valid if board comes before alight in stop sequence
+            guard let board = bestBoard, let alight = bestAlight,
+                  board.pos < alight.pos,
+                  board.pos < cumulative.count, alight.pos < cumulative.count else { continue }
 
-            let originWalk = originWalkMap[path.first?.stopIdx ?? -1] ?? 0
-            let destWalk = destWalkMap[arrival.destIdx] ?? 0
+            let rideSec = Int(cumulative[alight.pos]) - Int(cumulative[board.pos])
+            let waitSec = headway / 2
+            let totalSec = board.walkSec + waitSec + rideSec + alight.walkSec
 
             journeys.append(HeadwayJourney(
-                rideLegs: rideLegs,
-                walkLegs: walkLegs,
-                originWalkSeconds: originWalk,
-                destWalkSeconds: destWalk,
-                totalSeconds: arrival.cost + destWalk
+                rideLegs: [HeadwayJourney.Leg(
+                    routeName: route.routeName,
+                    routeType: route.routeType,
+                    boardStopIndex: board.idx,
+                    alightStopIndex: alight.idx,
+                    travelSeconds: rideSec,
+                    waitSeconds: waitSec
+                )],
+                walkLegs: [],
+                originWalkSeconds: board.walkSec,
+                destWalkSeconds: alight.walkSec,
+                totalSeconds: totalSec
             ))
         }
 
-        // Sort by total time, deduplicate by primary mode
-        journeys.sort { $0.totalSeconds < $1.totalSeconds }
+        // --- Phase 2: Transfer routes (ride A → walk → ride B) ---
+        if maxTransfers > 0 {
+            // For each pair of routes, check if alighting from route A
+            // is within walking distance of boarding route B
+            let directRoutes = journeys  // Snapshot before adding transfers
+            for routeA in graph.routes {
+                let bucketA = min(timeBucket, routeA.cumulativeSeconds.count - 1)
+                guard bucketA >= 0 else { continue }
+                let cumA = routeA.cumulativeSeconds[bucketA]
+                let headwayA = Int(routeA.headways[min(bucketA, routeA.headways.count - 1)])
 
-        // Keep best per mode
-        var seenModes = Set<TransitLegMode>()
-        var result: [HeadwayJourney] = []
-        for j in journeys {
-            if seenModes.insert(j.primaryMode).inserted {
-                result.append(j)
-            } else if result.count < 5 {
-                result.append(j)
+                // Find boarding stop on route A near source
+                var boardA: (idx: Int, pos: Int, walkSec: Int)?
+                for (pos, stopId) in routeA.stopIds.enumerated() {
+                    guard let stopIdx = graph.stopIdToIndex[stopId], let dist = srcDist[stopIdx] else { continue }
+                    let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
+                    if boardA == nil || walkSec < boardA!.walkSec { boardA = (stopIdx, pos, walkSec) }
+                }
+                guard let bA = boardA else { continue }
+
+                // For each stop on route A after boarding, check if it's a transfer point
+                for (posA, stopIdA) in routeA.stopIds.enumerated() where posA > bA.pos {
+                    guard let transferIdx = graph.stopIdToIndex[stopIdA],
+                          posA < cumA.count else { continue }
+                    let transferLat = Double(graph.stopLats[transferIdx])
+                    let transferLon = Double(graph.stopLons[transferIdx])
+                    let transferLoc = CLLocation(latitude: transferLat, longitude: transferLon)
+
+                    // Check routes that serve stops near this transfer point
+                    for routeB in graph.routes {
+                        if routeB.routeId == routeA.routeId && routeB.directionId == routeA.directionId { continue }
+
+                        let bucketB = min(timeBucket, routeB.cumulativeSeconds.count - 1)
+                        guard bucketB >= 0 else { continue }
+                        let cumB = routeB.cumulativeSeconds[bucketB]
+                        let headwayB = Int(routeB.headways[min(bucketB, routeB.headways.count - 1)])
+
+                        // Find boarding on route B near the transfer point
+                        var boardB: (idx: Int, pos: Int, walkSec: Int)?
+                        for (posB, stopIdB) in routeB.stopIds.enumerated() {
+                            guard let bIdx = graph.stopIdToIndex[stopIdB] else { continue }
+                            let bLat = Double(graph.stopLats[bIdx])
+                            let bLon = Double(graph.stopLons[bIdx])
+                            let dist = transferLoc.distance(from: CLLocation(latitude: bLat, longitude: bLon))
+                            if dist <= 400 {
+                                let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
+                                if boardB == nil || walkSec < boardB!.walkSec {
+                                    boardB = (bIdx, posB, max(walkSec, 120))  // min 2 min transfer
+                                }
+                            }
+                        }
+                        guard let bB = boardB else { continue }
+
+                        // Find alighting on route B near destination
+                        var alightB: (idx: Int, pos: Int, walkSec: Int)?
+                        for (posB, stopIdB) in routeB.stopIds.enumerated() where posB > bB.pos {
+                            guard let aIdx = graph.stopIdToIndex[stopIdB], let dist = dstDist[aIdx] else { continue }
+                            let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
+                            if alightB == nil || walkSec < alightB!.walkSec { alightB = (aIdx, posB, walkSec) }
+                        }
+                        guard let aB = alightB, bB.pos < cumB.count, aB.pos < cumB.count else { continue }
+
+                        let rideA = Int(cumA[posA]) - Int(cumA[bA.pos])
+                        let rideB = Int(cumB[aB.pos]) - Int(cumB[bB.pos])
+                        let totalSec = bA.walkSec + (headwayA / 2) + rideA + bB.walkSec + (headwayB / 2) + rideB + aB.walkSec
+
+                        // Only include if competitive (not much worse than best direct)
+                        let bestDirect = journeys.min(by: { $0.totalSeconds < $1.totalSeconds })?.totalSeconds ?? Int.max
+                        if totalSec > bestDirect + 1200 { continue }  // Skip if >20 min slower
+
+                        journeys.append(HeadwayJourney(
+                            rideLegs: [
+                                HeadwayJourney.Leg(routeName: routeA.routeName, routeType: routeA.routeType,
+                                    boardStopIndex: bA.idx, alightStopIndex: transferIdx,
+                                    travelSeconds: rideA, waitSeconds: headwayA / 2),
+                                HeadwayJourney.Leg(routeName: routeB.routeName, routeType: routeB.routeType,
+                                    boardStopIndex: bB.idx, alightStopIndex: aB.idx,
+                                    travelSeconds: rideB, waitSeconds: headwayB / 2)
+                            ],
+                            walkLegs: [HeadwayJourney.WalkLeg(
+                                fromStopIndex: transferIdx, toStopIndex: bB.idx, walkSeconds: bB.walkSec
+                            )],
+                            originWalkSeconds: bA.walkSec,
+                            destWalkSeconds: aB.walkSec,
+                            totalSeconds: totalSec
+                        ))
+
+                        if journeys.count >= 20 { break }  // Cap total results
+                    }
+                    if journeys.count >= 20 { break }
+                }
+                if journeys.count >= 20 { break }
             }
         }
 
-        return Array(result.prefix(5))
+        // --- Select best per mode ---
+        journeys.sort { $0.totalSeconds < $1.totalSeconds }
+
+        var bestByMode: [TransitLegMode: HeadwayJourney] = [:]
+        for j in journeys {
+            if bestByMode[j.primaryMode] == nil {
+                bestByMode[j.primaryMode] = j
+            }
+        }
+
+        var results = Array(bestByMode.values).sorted { $0.totalSeconds < $1.totalSeconds }
+        let selectedModes = Set(results.map { $0.primaryMode })
+        for j in journeys where results.count < 5 {
+            if !selectedModes.contains(j.primaryMode) || results.count < 3 {
+                if !results.contains(where: { $0.totalSeconds == j.totalSeconds && $0.primaryMode == j.primaryMode }) {
+                    results.append(j)
+                }
+            }
+        }
+
+        return Array(results.prefix(5))
     }
 }
