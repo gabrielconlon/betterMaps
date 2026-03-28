@@ -69,7 +69,8 @@ class RoutingViewModel {
         from source: CLLocationCoordinate2D,
         to destination: CLLocationCoordinate2D,
         weatherRules: [WeatherRule],
-        context: ModelContext? = nil
+        context: ModelContext? = nil,
+        departureTime: Date = Date()
     ) async {
         isLoading = true
         errorMessage = nil
@@ -146,16 +147,14 @@ class RoutingViewModel {
                     }
                 }
 
-                // Mode-aware stop selection: closest stops per mode, not 5 nearest of any type
+                // Pass all stops — findRoutes() handles distance filtering internally.
+                // Pre-filtering by mode was dropping valid Luas/DART stops when bus stops
+                // were closer, causing trips that should connect to show zero results.
                 let allStops = await loadTransitStopsForPlanner()
-                let nearbyStops = findNearbyStopsPerMode(
-                    allStops: allStops, origin: source, destination: destination
-                )
-                transitStatusMessage = "Searching \(nearbyStops.count) nearby stops..."
+                transitStatusMessage = "Searching routes..."
 
-                let maxWalk = userProfile?.maxWalkingMinutes ?? 15
                 let maxTransfers = userProfile?.maxTransfers ?? 1
-                let preferBus = userProfile?.preferBusOverTram ?? false
+                let transitPref = userProfile?.transitModePreference ?? "fastest"
 
                 // 15-second timeout — active service pre-computation makes queries faster,
                 // but complex multi-transfer searches still need headroom
@@ -163,10 +162,10 @@ class RoutingViewModel {
                     group.addTask {
                         await self.transitPlanner.findRoutes(
                             from: source, to: destination,
-                            transitStops: nearbyStops,
-                            maxWalkingMinutes: maxWalk,
+                            transitStops: allStops,
                             maxTransfers: maxTransfers,
-                            preferBusOverTram: preferBus
+                            transitPreference: transitPref,
+                            departureTime: departureTime
                         )
                     }
                     group.addTask {
@@ -443,6 +442,7 @@ class RoutingViewModel {
                                    type: newType, stopCode: stop.stopCode)
             }
         }
+
         return stops
     }
 

@@ -70,6 +70,14 @@ struct TransitRouteOption: Identifiable, Sendable {
     let arrivalTime: Date
     let transfers: Int
     let summary: String               // e.g. "39A -> Luas Green"
+
+    /// The mode of the first ride leg (bus, luas, dart, rail)
+    var primaryMode: TransitLegMode? {
+        for leg in legs {
+            if case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _) = leg { return mode }
+        }
+        return nil
+    }
 }
 
 // MARK: - Transit Route Planner
@@ -84,8 +92,8 @@ actor TransitRoutePlanner {
     private let roadRoutingFactor: Double = 1.4
     /// 20-minute departure window (was 60 min — users don't want options departing far in the future)
     private let departureWindowSeconds: Int = 1200
-    /// Max 3 results (was 5 — users want 1-3 fast options, not a wall of choices)
-    private let maxResults: Int = 3
+    /// Max results per search — 5 allows room for best-per-mode diversity
+    private let maxResults: Int = 5
     /// 15-minute transfer connection window (was 30 min)
     private let transferConnectionSeconds: Int = 900
     /// Minimum transfer buffer (2 minutes)
@@ -107,16 +115,13 @@ actor TransitRoutePlanner {
         from source: CLLocationCoordinate2D,
         to destination: CLLocationCoordinate2D,
         transitStops: [TransitStop],
-        maxWalkingMinutes: Int = 15,
         maxTransfers: Int = 1,
-        preferBusOverTram: Bool = false,
+        transitPreference: String = "fastest",
         departureTime: Date = Date()
     ) async -> [TransitRouteOption] {
 
-        let maxWalkMin = maxWalkingMinutes
-        let preferBus = preferBusOverTram
-
-        let walkRadiusMeters = Double(maxWalkMin) * walkingSpeedMPerMin
+        // 5km radius (~60 min walk) — no hard walk cutoff, walk time factors into sort
+        let walkRadiusMeters: Double = 5000
 
         await GTFSScheduleService.shared.loadIfNeeded()
 
@@ -169,12 +174,15 @@ actor TransitRoutePlanner {
 
         var options: [TransitRouteOption] = []
 
+        var totalDepartures = 0
+
         // --- Phase 1: Direct routes (no transfer) ---
+        // No walk cutoff — walk time factors into total duration for sorting.
+        // No early exit — scan all stops to discover all modes (bus, Luas, DART).
         for originStopId in originStopIds {
             guard let originStop = stopById[originStopId] else { continue }
 
             let walkToOrigin = walkingMinutes(from: source, to: originStop.coordinate)
-            if walkToOrigin > maxWalkMin { continue }
             let walkToOriginDistance = walkingDistance(from: source, to: originStop.coordinate)
             let effectiveDepartureSeconds = secondsSinceMidnight + walkToOrigin * 60
 
@@ -184,10 +192,9 @@ actor TransitRoutePlanner {
                 withinSeconds: departureWindowSeconds,
                 activeServices: activeServices
             )
+            totalDepartures += departures.count
 
             for (boardStopTime, trip) in departures {
-                // Early exit: found enough direct routes
-                if options.count >= maxResults { break }
 
                 // Bulk-load all stops for this trip ONCE, then check destinations in-memory.
                 // This replaces per-dest tripReachesStop() calls (N×M queries → N queries).
@@ -201,7 +208,6 @@ actor TransitRoutePlanner {
                     guard let destStop = stopById[destStopId] else { continue }
 
                     let walkFromDest = walkingMinutes(from: destStop.coordinate, to: destination)
-                    if walkFromDest > maxWalkMin { continue }
                     let walkFromDestDistance = walkingDistance(from: destStop.coordinate, to: destination)
 
                     let numStops = alightStopTime.stopSequence - boardStopTime.stopSequence
@@ -259,7 +265,6 @@ actor TransitRoutePlanner {
                     ))
                 }
             }
-            if options.count >= maxResults { break }
         }
 
         // --- Phase 2: One-transfer routes (only if <2 direct routes found) ---
@@ -268,7 +273,6 @@ actor TransitRoutePlanner {
                 guard let originStop = stopById[originStopId] else { continue }
 
                 let walkToOrigin = walkingMinutes(from: source, to: originStop.coordinate)
-                if walkToOrigin > maxWalkMin { continue }
                 let walkToOriginDistance = walkingDistance(from: source, to: originStop.coordinate)
                 let effectiveDepartureSeconds = secondsSinceMidnight + walkToOrigin * 60
 
@@ -328,7 +332,6 @@ actor TransitRoutePlanner {
                                           let transferStop = stopById[transferStopId] else { continue }
 
                                     let walkFromDest = walkingMinutes(from: destStop.coordinate, to: destination)
-                                    if walkFromDest > maxWalkMin { continue }
                                     let walkFromDestDistance = walkingDistance(from: destStop.coordinate, to: destination)
 
                                     let transferWalkMin: Int = transferStopId == midStopTime.stopId ? 0
@@ -420,28 +423,57 @@ actor TransitRoutePlanner {
             }
         }
 
-        // --- Sort and deduplicate ---
-        var sorted = options.sorted { lhs, rhs in
-            if preferBus {
-                let lhsHasBus = lhs.legs.contains { if case .ride(_, _, _, _, _, _, _, _, .bus, _, _, _) = $0 { true } else { false } }
-                let rhsHasBus = rhs.legs.contains { if case .ride(_, _, _, _, _, _, _, _, .bus, _, _, _) = $0 { true } else { false } }
-                if lhsHasBus != rhsHasBus { return lhsHasBus }
+        // --- Best-per-mode selection ---
+        // Guarantees mode diversity: one result per mode (bus, luas, dart, rail),
+        // then fill remaining slots with next-best options.
+
+        // Sort score with mode preference boost
+        let sortScore: (TransitRouteOption) -> Double = { option in
+            let base = option.totalDuration
+            guard let mode = option.primaryMode else { return base }
+            switch transitPreference {
+            case "preferTramRail":
+                return (mode == .luas || mode == .dart || mode == .rail) ? base - 600 : base
+            case "preferBus":
+                return mode == .bus ? base - 600 : base
+            default:
+                return base
             }
-            return lhs.totalDuration < rhs.totalDuration
         }
 
+        // Deduplicate by route summary
         var seen = Set<String>()
-        sorted = sorted.filter { option in
+        let unique = options.filter { option in
             let key = "\(option.summary)|\(option.transfers)"
             return seen.insert(key).inserted
         }
 
-        let results = Array(sorted.prefix(maxResults))
+        // Pick best per mode
+        var bestByMode: [TransitLegMode: TransitRouteOption] = [:]
+        for option in unique {
+            guard let mode = option.primaryMode else { continue }
+            if let existing = bestByMode[mode] {
+                if sortScore(option) < sortScore(existing) { bestByMode[mode] = option }
+            } else {
+                bestByMode[mode] = option
+            }
+        }
+
+        // Start with one per mode, sorted by preference
+        var results = Array(bestByMode.values).sorted { sortScore($0) < sortScore($1) }
+
+        // Fill remaining slots with next-best overall
+        let selectedIds = Set(results.map { $0.id })
+        let remaining = unique.filter { !selectedIds.contains($0.id) }
+            .sorted { sortScore($0) < sortScore($1) }
+        for option in remaining where results.count < maxResults {
+            results.append(option)
+        }
 
         await APILogger.shared.log(
             service: "Transit Planner", endpoint: "findRoutes",
             status: results.isEmpty ? .failure : .success, durationMs: 0,
-            detail: "\(results.count) route(s) from \(originStopIds.count) origin, \(destStopIds.count) dest stops"
+            detail: "\(results.count) route(s) | \(originStopIds.count) origins, \(destStopIds.count) dests | \(totalDepartures) departures scanned"
         )
 
         return results

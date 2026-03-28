@@ -149,7 +149,7 @@ actor GTFSScheduleService {
         await APILogger.shared.log(
             service: "GTFS", endpoint: "activeServiceIds",
             status: services.isEmpty ? .failure : .success, durationMs: 0,
-            detail: "date=\(dateStr) weekday=\(weekdayCol) | calendars:\(calendarCount) cal_dates:\(calendarDatesCount) | base:\(baseCount) +added:\(addedCount) -removed:\(removedCount) = \(services.count) active"
+            detail: "date=\(dateStr) weekday=\(weekdayCol) | base:\(baseCount) +added:\(addedCount) -removed:\(removedCount) = \(services.count) active"
         )
 
         return services

@@ -21,14 +21,11 @@ final class UserProfile {
 
     // MARK: - Transit Preferences
 
-    /// Maximum walking segment in multi-modal routes (minutes)
-    var maxWalkingMinutes: Int = 15
-
     /// Maximum number of transfers in transit routes
     var maxTransfers: Int = 2
 
-    /// When true, prefer bus over tram when both are available
-    var preferBusOverTram: Bool = false
+    /// Transit mode preference: "fastest" (default), "preferTramRail", "preferBus"
+    var transitModePreference: String = "fastest"
 
     // MARK: - Timestamps
     var createdAt: Date = Date()

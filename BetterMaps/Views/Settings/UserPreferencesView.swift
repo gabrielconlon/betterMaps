@@ -64,22 +64,6 @@ struct UserPreferencesView: View {
     private func transitOptionsSection(_ profile: UserProfile) -> some View {
         Section("Transit Options") {
             HStack {
-                Text("Max walking")
-                Spacer()
-                Picker("", selection: Binding(
-                    get: { profile.maxWalkingMinutes },
-                    set: { profile.maxWalkingMinutes = $0; profile.updatedAt = Date() }
-                )) {
-                    Text("5 min").tag(5)
-                    Text("10 min").tag(10)
-                    Text("15 min").tag(15)
-                    Text("20 min").tag(20)
-                    Text("30 min").tag(30)
-                }
-                .pickerStyle(.menu)
-            }
-
-            HStack {
                 Text("Max transfers")
                 Spacer()
                 Picker("", selection: Binding(
@@ -94,11 +78,18 @@ struct UserPreferencesView: View {
                 .pickerStyle(.menu)
             }
 
-            Toggle(isOn: Binding(
-                get: { profile.preferBusOverTram },
-                set: { profile.preferBusOverTram = $0; profile.updatedAt = Date() }
-            )) {
-                Text("Prefer bus over tram")
+            HStack {
+                Text("Transit preference")
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { profile.transitModePreference },
+                    set: { profile.transitModePreference = $0; profile.updatedAt = Date() }
+                )) {
+                    Text("Fastest").tag("fastest")
+                    Text("Prefer Tram/Rail").tag("preferTramRail")
+                    Text("Prefer Bus").tag("preferBus")
+                }
+                .pickerStyle(.menu)
             }
         }
     }

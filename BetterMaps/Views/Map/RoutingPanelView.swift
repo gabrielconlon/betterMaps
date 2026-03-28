@@ -14,6 +14,9 @@ struct RoutingPanelView: View {
     @Binding var selectedTransitOption: TransitRouteOption?
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
+    @State private var departureTime: Date = Date()
+    @State private var isCustomDeparture = false
+    @State private var showTimePicker = false
 
     var body: some View {
         NavigationStack {
@@ -95,6 +98,48 @@ struct RoutingPanelView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             }
+                            Spacer()
+                            // Departure time picker
+                            Button(action: { showTimePicker = true }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "clock")
+                                    Text(isCustomDeparture ? departureTime.formatted(date: .omitted, time: .shortened) : "Now")
+                                }
+                                .font(.caption.bold())
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(isCustomDeparture ? Color.blue.opacity(0.15) : Color.secondary.opacity(0.1))
+                                .foregroundStyle(isCustomDeparture ? .blue : .secondary)
+                                .clipShape(Capsule())
+                            }
+                        }
+                        .sheet(isPresented: $showTimePicker) {
+                            NavigationStack {
+                                VStack(spacing: 16) {
+                                    DatePicker("Depart at", selection: $departureTime, in: Date()..., displayedComponents: [.date, .hourAndMinute])
+                                        .datePickerStyle(.graphical)
+                                        .padding()
+                                    Button("Leave Now") {
+                                        departureTime = Date()
+                                        isCustomDeparture = false
+                                        showTimePicker = false
+                                        refreshTransit()
+                                    }
+                                    .foregroundStyle(.secondary)
+                                }
+                                .navigationTitle("Departure Time")
+                                .navigationBarTitleDisplayMode(.inline)
+                                .toolbar {
+                                    ToolbarItem(placement: .confirmationAction) {
+                                        Button("Done") {
+                                            isCustomDeparture = true
+                                            showTimePicker = false
+                                            refreshTransit()
+                                        }
+                                    }
+                                }
+                            }
+                            .presentationDetents([.medium])
                         }
 
                         if let status = viewModel.transitStatusMessage {
@@ -190,5 +235,17 @@ struct RoutingPanelView: View {
             destination: destination
         )
         saved = true
+    }
+
+    private func refreshTransit() {
+        guard let source, let destination else { return }
+        let rules = (try? modelContext.fetch(FetchDescriptor<WeatherRule>())) ?? []
+        Task {
+            await viewModel.calculateRoutes(
+                from: source, to: destination,
+                weatherRules: rules, context: modelContext,
+                departureTime: departureTime
+            )
+        }
     }
 }
