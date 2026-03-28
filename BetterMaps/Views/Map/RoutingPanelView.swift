@@ -52,6 +52,8 @@ struct RoutingPanelView: View {
                     routeListView
                 }
             }
+            .toast(isPresented: $saved, message: "Routes saved for offline!")
+            .sensoryFeedback(.success, trigger: saved)
         }
     }
 

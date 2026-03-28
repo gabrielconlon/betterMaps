@@ -21,6 +21,7 @@ struct PlaceFormView: View {
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var photoData: [Data] = []
     @State private var selectedLayerIds: Set<UUID> = []
+    @State private var showSaveToast = false
 
     var isEditing: Bool { place != nil }
 
@@ -135,6 +136,8 @@ struct PlaceFormView: View {
                     span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
                 ))
             }
+            .toast(isPresented: $showSaveToast, message: place != nil ? "Place updated!" : "Place saved!")
+            .sensoryFeedback(.success, trigger: showSaveToast)
         }
     }
 
@@ -179,6 +182,7 @@ struct PlaceFormView: View {
                 }
             }
         }
-        dismiss()
+        showSaveToast = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { dismiss() }
     }
 }

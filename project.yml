@@ -25,14 +25,14 @@ targets:
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - path: CustomMapApp
+      - path: BetterMaps
         excludes:
           - "**/.DS_Store"
     dependencies:
       - package: SwiftProtobuf
     settings:
       base:
-        INFOPLIST_FILE: CustomMapApp/Info.plist
-        CODE_SIGN_ENTITLEMENTS: CustomMapApp/CustomMapApp.entitlements
+        INFOPLIST_FILE: BetterMaps/Info.plist
+        CODE_SIGN_ENTITLEMENTS: BetterMaps/BetterMaps.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.gabrielconlon.CustomMapApp
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

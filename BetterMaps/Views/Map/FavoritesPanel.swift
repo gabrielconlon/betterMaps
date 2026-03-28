@@ -76,6 +76,8 @@ struct FavoritesPanel: View {
                     Label("Hide All", systemImage: "eye.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                 }
             }
         }
@@ -127,25 +129,27 @@ struct FavoritesPanel: View {
 
             Button(action: { toggleSet(&showTransitStops, type: type) }) {
                 Text("Stops")
-                    .font(.caption2)
+                    .font(.caption)
                     .fixedSize()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .background(showTransitStops.contains(type) ? color.opacity(0.2) : Color(.systemGray5))
                     .foregroundStyle(showTransitStops.contains(type) ? color : .secondary)
                     .clipShape(Capsule())
+                    .contentShape(Rectangle())
             }
 
             let liveDisabled = type == .bus && !NTATransitService.isConfigured
             Button(action: { toggleSet(&showLiveTransit, type: type) }) {
                 Text("Live")
-                    .font(.caption2)
+                    .font(.caption)
                     .fixedSize()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .background(showLiveTransit.contains(type) ? color.opacity(0.2) : Color(.systemGray5))
                     .foregroundStyle(showLiveTransit.contains(type) ? color : .secondary)
                     .clipShape(Capsule())
+                    .contentShape(Rectangle())
             }
             .disabled(liveDisabled)
             .opacity(liveDisabled ? 0.4 : 1)
