@@ -6,6 +6,7 @@ struct TransitArrivalsView: View {
     let coordinate: CLLocationCoordinate2D
     var stopType: TransitStop.TransitStopType?  // When set, only fetch data for this type
     var stopCode: String?  // Public-facing stop number from GTFS stop_code
+    var stopId: String?    // GTFS stop_id for favoriting
     /// Callback when user taps a bus route to view it on the map
     var onSelectRoute: ((String, String) -> Void)?  // (routeId, routeName)
 
@@ -60,6 +61,10 @@ struct TransitArrivalsView: View {
                             .padding(.vertical, 2)
                             .background(Color.secondary.opacity(0.15))
                             .clipShape(Capsule())
+                    }
+                    Spacer()
+                    if let stopId {
+                        FavoriteStopButton(stopId: stopId)
                     }
                 }
 
@@ -446,5 +451,41 @@ struct FlowLayout: Layout {
         }
 
         return (CGSize(width: maxX, height: y + rowHeight), positions)
+    }
+}
+
+// MARK: - Favorite Stop Button
+
+struct FavoriteStopButton: View {
+    let stopId: String
+    @Environment(\.modelContext) private var modelContext
+    @Query private var profiles: [UserProfile]
+
+    private var isFavorite: Bool {
+        profiles.first?.favoriteStopIds.contains(stopId) ?? false
+    }
+
+    var body: some View {
+        Button(action: toggleFavorite) {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .foregroundStyle(isFavorite ? .yellow : .secondary)
+                .font(.title3)
+        }
+    }
+
+    private func toggleFavorite() {
+        guard let profile = profiles.first else {
+            // Create profile if none exists
+            let newProfile = UserProfile()
+            newProfile.favoriteStopIds = [stopId]
+            modelContext.insert(newProfile)
+            return
+        }
+        if let idx = profile.favoriteStopIds.firstIndex(of: stopId) {
+            profile.favoriteStopIds.remove(at: idx)
+        } else {
+            profile.favoriteStopIds.append(stopId)
+        }
+        profile.updatedAt = Date()
     }
 }

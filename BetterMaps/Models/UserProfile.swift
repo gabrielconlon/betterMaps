@@ -27,6 +27,12 @@ final class UserProfile {
     /// Transit mode preference: "fastest" (default), "preferTramRail", "preferBus"
     var transitModePreference: String = "fastest"
 
+    /// Favorite transit stop IDs — routes through these get a priority boost
+    var favoriteStopIds: [String] = []
+
+    /// Favorite route names — these routes always appear if available (e.g. "Red", "DART")
+    var favoriteRouteNames: [String] = []
+
     // MARK: - Timestamps
     var createdAt: Date = Date()
     var updatedAt: Date = Date()

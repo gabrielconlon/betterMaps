@@ -612,12 +612,13 @@ struct MapTabView: View {
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
 
-        case .transitArrivals(let name, let coord, let type, let stopCode):
+        case .transitArrivals(let name, let coord, let type, let stopCode, let stopId):
             TransitArrivalsView(
                 stationName: name,
                 coordinate: coord,
                 stopType: type,
                 stopCode: stopCode,
+                stopId: stopId,
                 onSelectRoute: { routeId, routeName in
                     // User tapped a bus route — load and display its shape on the map
                     selectedBusRouteName = routeName
@@ -710,7 +711,7 @@ struct MapTabView: View {
                     Annotation(pin.isTappable ? stop.name : "", coordinate: stop.coordinate) {
                         if pin.isTappable {
                             pin.onTapGesture {
-                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type, stopCode: stop.stopCode)
+                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type, stopCode: stop.stopCode, stopId: stop.id)
                             }
                         } else {
                             pin
