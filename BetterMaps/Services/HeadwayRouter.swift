@@ -44,7 +44,16 @@ struct HeadwayJourney: Sendable {
 /// Dijkstra search on ~21K edges completes in ~5-10ms.
 actor HeadwayRouter {
 
-    private var graph: TransitGraph?
+    private struct State: Comparable {
+        let stopIdx: Int
+        let cost: Int
+        let transfers: Int
+        let parent: Int
+        let routeIdx: Int
+        static func < (lhs: State, rhs: State) -> Bool { lhs.cost < rhs.cost }
+    }
+
+    private(set) var graph: TransitGraph?
 
     /// Load cached transit graph
     func loadGraph() {
@@ -142,19 +151,6 @@ actor HeadwayRouter {
             ))
         }
 
-        // Dijkstra with transfer counting
-        struct State: Comparable {
-            let stopIdx: Int
-            let cost: Int
-            let transfers: Int
-            let parent: Int       // previous stop
-            let routeIdx: Int     // route used to get here (-1 = walk)
-
-            static func < (lhs: State, rhs: State) -> Bool {
-                lhs.cost < rhs.cost
-            }
-        }
-
         // Priority queue (simple sorted array — fast enough for ~21K edges)
         var pq: [State] = []
         var bestCost: [Int: Int] = [:]  // stopIdx → best known cost
@@ -232,8 +228,6 @@ actor HeadwayRouter {
         timeBucket: Int
     ) -> [HeadwayJourney] {
         // Type alias for the State used in parentMap
-        typealias State = (stopIdx: Int, cost: Int, transfers: Int, parent: Int, routeIdx: Int)
-
         let originSet = Set(originStops.map { $0.index })
         let originWalkMap = Dictionary(uniqueKeysWithValues: originStops.map { ($0.index, $0.walkSec) })
         let destWalkMap = Dictionary(uniqueKeysWithValues: destStops.map { ($0.index, $0.walkSec) })
@@ -327,15 +321,5 @@ actor HeadwayRouter {
         }
 
         return Array(result.prefix(5))
-    }
-
-    // State type for internal Dijkstra use
-    private struct State: Comparable {
-        let stopIdx: Int
-        let cost: Int
-        let transfers: Int
-        let parent: Int
-        let routeIdx: Int
-        static func < (lhs: State, rhs: State) -> Bool { lhs.cost < rhs.cost }
     }
 }

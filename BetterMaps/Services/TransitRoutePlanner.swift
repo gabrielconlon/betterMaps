@@ -198,9 +198,10 @@ actor TransitRoutePlanner {
                 maxTransfers: maxTransfers
             )
 
+            let currentGraph = await headwayRouter.graph
             for journey in headwayJourneys {
                 let option = convertHeadwayJourney(journey, source: source, destination: destination,
-                                                    departureDate: departureTime, graph: nil, stopById: stopById)
+                                                    departureDate: departureTime, graph: currentGraph, stopById: stopById)
                 options.append(option)
                 await onRouteFound?(option)
             }
@@ -213,33 +214,8 @@ actor TransitRoutePlanner {
             )
         }
 
-        // --- Layer 2: RAPTOR refinement (background, when ready) ---
-        if await raptorEngine.isReady {
-            let originPairs: [(stopId: String, walkSeconds: Int)] = originStopIds.compactMap { id in
-                guard let stop = stopById[id] else { return nil }
-                return (id, walkingMinutes(from: source, to: stop.coordinate) * 60)
-            }
-            let destPairs: [(stopId: String, walkSeconds: Int)] = destStopIds.compactMap { id in
-                guard let stop = stopById[id] else { return nil }
-                return (id, walkingMinutes(from: stop.coordinate, to: destination) * 60)
-            }
-
-            let raptorJourneys = await raptorEngine.search(
-                originStops: originPairs, destStops: destPairs,
-                departureTime: secondsSinceMidnight, maxRounds: maxTransfers + 1
-            )
-
-            // Replace headway estimates with exact RAPTOR results
-            if !raptorJourneys.isEmpty {
-                options = []
-                for journey in raptorJourneys {
-                    let option = convertJourney(journey, source: source, destination: destination,
-                                                departureDate: departureTime, stopById: stopById)
-                    options.append(option)
-                    await onRouteFound?(option)
-                }
-            }
-        }
+        // RAPTOR refinement disabled — HeadwayRouter provides instant results.
+        // RAPTOR can be re-enabled once binary cache optimization reduces build from 60s to <1s.
 
         // --- Best-per-mode selection with preference boost ---
         let sortScore: (TransitRouteOption) -> Double = { option in
