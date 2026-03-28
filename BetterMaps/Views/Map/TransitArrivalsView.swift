@@ -5,6 +5,7 @@ struct TransitArrivalsView: View {
     let stationName: String
     let coordinate: CLLocationCoordinate2D
     var stopType: TransitStop.TransitStopType?  // When set, only fetch data for this type
+    var stopId: String?  // GTFS stop_id (bus stop number for display)
     /// Callback when user taps a bus route to view it on the map
     var onSelectRoute: ((String, String) -> Void)?  // (routeId, routeName)
 
@@ -48,8 +49,19 @@ struct TransitArrivalsView: View {
                 }
                 .padding(.top, 8)
 
-                Text(stationName)
-                    .font(.title3.bold())
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(stationName)
+                        .font(.title3.bold())
+                    if let stopId, stopType == .bus || stopType == nil {
+                        Text("Stop \(stopId)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
 
                 // Only show loading spinner when no data has arrived yet
                 if isLoading && luasForecast == nil && railArrivals.isEmpty && busDepartures.isEmpty {

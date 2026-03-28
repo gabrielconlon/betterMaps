@@ -289,6 +289,34 @@ actor GTFSScheduleService {
             .map { $0.id }
     }
 
+    /// Search routes by short name (e.g. "39A", "DART", "Green").
+    /// Returns matching routes for the search bar.
+    func searchRoutes(query: String) -> [(routeId: String, routeName: String, longName: String, routeType: Int)] {
+        let sql = """
+            SELECT route_id, route_short_name, route_long_name, route_type
+            FROM routes
+            WHERE UPPER(route_short_name) LIKE '%' || UPPER(?) || '%'
+               OR UPPER(route_long_name) LIKE '%' || UPPER(?) || '%'
+            ORDER BY route_short_name
+            LIMIT 10
+        """
+        guard let stmt = db.prepare(sql) else { return [] }
+        defer { db.finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (query as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 2, (query as NSString).utf8String, -1, nil)
+
+        var results: [(String, String, String, Int)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append((
+                db.columnText(stmt, index: 0) ?? "",
+                db.columnText(stmt, index: 1) ?? "",
+                db.columnText(stmt, index: 2) ?? "",
+                db.columnInt(stmt, index: 3)
+            ))
+        }
+        return results
+    }
+
     /// Routes that serve a given stop (for bus timetable view)
     func routesForStop(stopId: String) -> [(routeId: String, routeName: String)] {
         let sql = """

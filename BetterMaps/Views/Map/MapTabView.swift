@@ -17,6 +17,8 @@ struct MapTabView: View {
     @State private var selectedTransitOption: TransitRouteOption?
     @State private var searchText = ""
     @State private var searchResults: [MKMapItem] = []
+    @State private var transitSearchResults: [TransitStop] = []
+    @State private var routeSearchResults: [(routeId: String, routeName: String, longName: String, routeType: Int)] = []
     @State private var showSearchResults = false
     @State private var isSearchFocused = false
     @State private var activeWeatherOverlays: Set<WeatherOverlay> = []
@@ -324,12 +326,18 @@ struct MapTabView: View {
                 }
             }
 
-            // Deduplicate Luas stops (GTFS may have per-platform entries within 50m)
+            // Deduplicate Luas stops — GTFS has multiple entries per station
+            // (e.g. "Rialto" and "Rialto Luas") with coordinates 50-150m apart.
+            // 200m is safe: closest adjacent Luas stops are ~300m apart in the city centre.
+            // Sort so stops WITH timetable data (in classification result) come first,
+            // ensuring the dedup keeps the useful stop and drops the dataless one.
+            let classifiedIds = Set(classification.keys)
             let luasStops = transitStops.filter { $0.type == .luas }
+                .sorted { classifiedIds.contains($0.id) && !classifiedIds.contains($1.id) }
             let nonLuas = transitStops.filter { $0.type != .luas }
             var keptLuas: [TransitStop] = []
             for stop in luasStops {
-                if !isNearExistingStop(stop, in: keptLuas, thresholdMeters: 50) {
+                if !isNearExistingStop(stop, in: keptLuas, thresholdMeters: 200) {
                     keptLuas.append(stop)
                 }
             }
@@ -441,11 +449,12 @@ struct MapTabView: View {
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
 
-        case .transitArrivals(let name, let coord, let type):
+        case .transitArrivals(let name, let coord, let type, let stopId):
             TransitArrivalsView(
                 stationName: name,
                 coordinate: coord,
                 stopType: type,
+                stopId: stopId,
                 onSelectRoute: { routeId, routeName in
                     // User tapped a bus route — load and display its shape on the map
                     selectedBusRouteName = routeName
@@ -538,7 +547,7 @@ struct MapTabView: View {
                     Annotation(pin.isTappable ? stop.name : "", coordinate: stop.coordinate) {
                         if pin.isTappable {
                             pin.onTapGesture {
-                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type)
+                                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type, stopId: stop.id)
                             }
                         } else {
                             pin

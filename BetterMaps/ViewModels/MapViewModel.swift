@@ -15,7 +15,7 @@ enum ActiveSheet: Identifiable {
     case layerSidebar
     case routing(RouteContext?)
     case newPlace(CLLocationCoordinate2D)
-    case transitArrivals(String, CLLocationCoordinate2D, TransitStop.TransitStopType?)
+    case transitArrivals(String, CLLocationCoordinate2D, TransitStop.TransitStopType?, String?)
     case vehicleDetail(GTFSVehiclePosition)
     case trainDetail(IrishRailTrainPosition)
 
@@ -26,7 +26,7 @@ enum ActiveSheet: Identifiable {
         case .layerSidebar: return "layerSidebar"
         case .routing: return "routing"
         case .newPlace: return "newPlace"
-        case .transitArrivals(let name, _, _): return "transit-\(name)"
+        case .transitArrivals(let name, _, _, _): return "transit-\(name)"
         case .vehicleDetail(let v): return "vehicle-\(v.id)"
         case .trainDetail(let t): return "train-\(t.id)"
         }
@@ -62,8 +62,8 @@ class MapViewModel {
         activeSheet = .newPlace(coordinate)
     }
 
-    func showTransitArrivals(stationName: String, coordinate: CLLocationCoordinate2D, stopType: TransitStop.TransitStopType? = nil) {
-        activeSheet = .transitArrivals(stationName, coordinate, stopType)
+    func showTransitArrivals(stationName: String, coordinate: CLLocationCoordinate2D, stopType: TransitStop.TransitStopType? = nil, stopId: String? = nil) {
+        activeSheet = .transitArrivals(stationName, coordinate, stopType, stopId)
     }
 
     func dismissSheet() {
