@@ -189,9 +189,93 @@ struct MapTabView: View {
                 Spacer()
 
                 // Search results above bottom bar
-                if showSearchResults && !searchResults.isEmpty {
+                if showSearchResults && (!transitSearchResults.isEmpty || !routeSearchResults.isEmpty || !searchResults.isEmpty) {
                     ScrollView {
                         VStack(spacing: 0) {
+                            // Transit route matches (e.g. "39A", "DART", "Green Line")
+                            ForEach(routeSearchResults, id: \.routeId) { route in
+                                Button(action: {
+                                    showSearchResults = false
+                                    searchText = ""
+                                    Task { await selectBusRoute(routeId: route.routeId, routeName: route.routeName) }
+                                }) {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: route.routeType == 0 ? "tram.fill" : (route.routeType == 2 ? "train.side.front.car" : "bus.fill"))
+                                            .foregroundStyle(.white)
+                                            .font(.caption.bold())
+                                            .frame(width: 28, height: 28)
+                                            .background(route.routeType == 0 ? .green : (route.routeType == 2 ? .orange : .blue))
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("Route \(route.routeName)")
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.primary)
+                                            if !route.longName.isEmpty {
+                                                Text(route.longName)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        Spacer()
+                                        Image(systemName: "map.fill")
+                                            .foregroundStyle(.blue)
+                                            .font(.caption)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 10)
+                                }
+                                Divider()
+                            }
+
+                            // Transit stop matches (Luas, DART, bus stops)
+                            ForEach(transitSearchResults.prefix(5)) { stop in
+                                Button(action: {
+                                    showSearchResults = false
+                                    searchText = ""
+                                    cameraPosition = .region(MKCoordinateRegion(
+                                        center: stop.coordinate,
+                                        span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                                    ))
+                                    viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type)
+                                }) {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: stop.type.systemImage)
+                                            .foregroundStyle(.white)
+                                            .font(.caption.bold())
+                                            .frame(width: 28, height: 28)
+                                            .background(Color(hex: stop.type.colorHex) ?? .blue)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(stop.name)
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.primary)
+                                            Text(stop.type.displayName)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "arrow.right.circle")
+                                            .foregroundStyle(Color(hex: stop.type.colorHex) ?? .blue)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 10)
+                                }
+                                Divider()
+                            }
+
+                            // Separator between transit and Apple Maps results
+                            if (!transitSearchResults.isEmpty || !routeSearchResults.isEmpty) && !searchResults.isEmpty {
+                                Text("Places")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.tertiary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Color.secondary.opacity(0.08))
+                            }
+
+                            // Apple Maps POI results
                             ForEach(searchResults, id: \.self) { item in
                                 Button(action: {
                                     viewModel.showPOI(item)
@@ -223,7 +307,7 @@ struct MapTabView: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 200)
+                    .frame(maxHeight: 280)
                     .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal)
@@ -735,7 +819,7 @@ struct MapTabView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Search places...", text: $searchText, onEditingChanged: { editing in
+                TextField("Search stops, routes, places...", text: $searchText, onEditingChanged: { editing in
                     isSearchFocused = editing
                 })
                     .textFieldStyle(.plain)
@@ -747,6 +831,8 @@ struct MapTabView: View {
                     Button(action: {
                         searchText = ""
                         searchResults = []
+                        transitSearchResults = []
+                        routeSearchResults = []
                         showSearchResults = false
                     }) {
                         Image(systemName: "xmark.circle.fill")
@@ -832,6 +918,33 @@ struct MapTabView: View {
 
     // MARK: - Stop Deduplication
 
+    /// Select a bus/tram/rail route from search results — loads shape and stop filter on map.
+    @MainActor
+    private func selectBusRoute(routeId: String, routeName: String) async {
+        selectedBusRouteName = routeName
+        async let shapeLoad = GTFSShapeService.shared.shapeCoordinates(forRouteId: routeId)
+        async let stopsLoad = GTFSScheduleService.shared.stopIdsForRoute(routeId: routeId)
+        let (coords, stopIds) = await (shapeLoad, stopsLoad)
+        if let coords {
+            selectedBusRouteCoords = coords
+            // Zoom to fit the route
+            if let first = coords.first {
+                let lats = coords.map(\.latitude)
+                let lons = coords.map(\.longitude)
+                let center = CLLocationCoordinate2D(
+                    latitude: (lats.min()! + lats.max()!) / 2,
+                    longitude: (lons.min()! + lons.max()!) / 2
+                )
+                let span = MKCoordinateSpan(
+                    latitudeDelta: (lats.max()! - lats.min()!) * 1.3,
+                    longitudeDelta: (lons.max()! - lons.min()!) * 1.3
+                )
+                cameraPosition = .region(MKCoordinateRegion(center: center, span: span))
+            }
+        }
+        selectedBusRouteStopIds = stopIds
+    }
+
     /// Check if a stop is within threshold meters of any existing stop (same type)
     private func isNearExistingStop(_ stop: TransitStop, in stops: [TransitStop], thresholdMeters: Double) -> Bool {
         let loc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
@@ -861,8 +974,26 @@ struct MapTabView: View {
     @MainActor
     private func performSearch() async {
         guard !searchText.isEmpty else { return }
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+
+        // Search transit stops by name (instant, in-memory)
+        let lowerQuery = query.lowercased()
+        transitSearchResults = transitStops
+            .filter { $0.name.lowercased().contains(lowerQuery) }
+            .sorted { a, b in
+                // Exact prefix matches first, then alphabetical
+                let aPrefix = a.name.lowercased().hasPrefix(lowerQuery)
+                let bPrefix = b.name.lowercased().hasPrefix(lowerQuery)
+                if aPrefix != bPrefix { return aPrefix }
+                return a.name < b.name
+            }
+
+        // Search GTFS routes by name/number (instant, from SQLite)
+        routeSearchResults = await GTFSScheduleService.shared.searchRoutes(query: query)
+
+        // Search Apple Maps POIs (network call)
         let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = searchText
+        request.naturalLanguageQuery = query
         if let userLocation = locationManager.userLocation {
             request.region = MKCoordinateRegion(
                 center: userLocation,
@@ -871,8 +1002,8 @@ struct MapTabView: View {
         }
         if let response = try? await MKLocalSearch(request: request).start() {
             searchResults = response.mapItems
-            showSearchResults = true
         }
+        showSearchResults = true
     }
 
     // MARK: - Routing
