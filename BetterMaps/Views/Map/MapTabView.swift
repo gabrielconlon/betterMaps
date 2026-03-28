@@ -876,44 +876,41 @@ struct MapTabView: View {
             }
 
             // Search field — floating style
-            // When not focused, an invisible overlay catches taps and explicitly
-            // sets focus. This prevents the map's gesture recognizer from stealing
-            // the first tap. Once focused, the overlay disappears so the TextField
-            // handles input normally.
-            ZStack {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search stops, routes, places...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .focused($isSearchFocused)
-                        .onSubmit {
-                            isSearchFocused = false
-                            Task { await performSearch() }
-                        }
-                    if !searchText.isEmpty {
-                        Button(action: {
-                            searchText = ""
-                            searchResults = []
-                            placeSearchResults = []
-                            transitSearchResults = []
-                            routeSearchResults = []
-                            showSearchResults = false
-                            isSearchFocused = false
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search stops, routes, places...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .focused($isSearchFocused)
+                    .onSubmit {
+                        isSearchFocused = false
+                        Task { await performSearch() }
+                    }
+                if !searchText.isEmpty {
+                    Button(action: {
+                        searchText = ""
+                        searchResults = []
+                        placeSearchResults = []
+                        transitSearchResults = []
+                        routeSearchResults = []
+                        showSearchResults = false
+                        isSearchFocused = false
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
-                .clipShape(Capsule())
-
-                // Tap catcher — only present when TextField is NOT focused
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+            .overlay {
+                // Tap catcher — only when TextField is NOT focused.
+                // Catches the first tap before the map's gesture recognizer can steal it.
                 if !isSearchFocused {
-                    Color.clear
+                    Capsule()
+                        .fill(Color.clear)
                         .contentShape(Capsule())
                         .onTapGesture {
                             isSearchFocused = true
