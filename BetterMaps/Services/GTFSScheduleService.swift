@@ -94,12 +94,18 @@ actor GTFSScheduleService {
 
     /// Compute active service IDs for a given date (OTP-style).
     /// Checks calendar.txt (weekday + date range) then applies calendar_dates.txt exceptions.
-    func activeServiceIds(for date: Date) -> Set<String> {
+    func activeServiceIds(for date: Date) async -> Set<String> {
         let cal = Self.irishCalendar
         let weekday = cal.component(.weekday, from: date)
         let weekdayCol = Self.weekdayColumns[weekday]
         let dateStr = formatGTFSDate(date)
 
+        let calendarCount = db.count(table: "calendars")
+        let calendarDatesCount = db.count(table: "calendar_dates")
+
+        var baseCount = 0
+        var addedCount = 0
+        var removedCount = 0
         var services = Set<String>()
 
         // 1. Base services: weekday=1 AND today within [start_date, end_date]
@@ -115,6 +121,7 @@ actor GTFSScheduleService {
             }
             db.finalize(stmt)
         }
+        baseCount = services.count
 
         // 2. Add services from calendar_dates (exception_type=1)
         let addSql = "SELECT service_id FROM calendar_dates WHERE date = ? AND exception_type = 1"
@@ -125,8 +132,10 @@ actor GTFSScheduleService {
             }
             db.finalize(stmt)
         }
+        addedCount = services.count - baseCount
 
         // 3. Remove services from calendar_dates (exception_type=2)
+        let beforeRemove = services.count
         let removeSql = "SELECT service_id FROM calendar_dates WHERE date = ? AND exception_type = 2"
         if let stmt = db.prepare(removeSql) {
             sqlite3_bind_text(stmt, 1, (dateStr as NSString).utf8String, -1, nil)
@@ -135,6 +144,13 @@ actor GTFSScheduleService {
             }
             db.finalize(stmt)
         }
+        removedCount = beforeRemove - services.count
+
+        await APILogger.shared.log(
+            service: "GTFS", endpoint: "activeServiceIds",
+            status: services.isEmpty ? .failure : .success, durationMs: 0,
+            detail: "date=\(dateStr) weekday=\(weekdayCol) | calendars:\(calendarCount) cal_dates:\(calendarDatesCount) | base:\(baseCount) +added:\(addedCount) -removed:\(removedCount) = \(services.count) active"
+        )
 
         return services
     }

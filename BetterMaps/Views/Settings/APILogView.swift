@@ -68,11 +68,22 @@ struct APILogView: View {
                                 Text(detail)
                                     .font(.caption2)
                                     .foregroundStyle(.red)
-                                    .lineLimit(2)
+                                    .lineLimit(3)
                             }
                             Text(entry.timestamp, style: .time)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            UIPasteboard.general.string = formatEntry(entry)
+                        }
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = formatEntry(entry)
+                            } label: {
+                                Label("Copy", systemImage: "doc.on.doc")
+                            }
                         }
                     }
                 }
@@ -81,9 +92,30 @@ struct APILogView: View {
         .navigationTitle("API Logs")
         .toolbar {
             if !logger.entries.isEmpty {
-                Button("Clear") { logger.clear() }
+                Menu {
+                    Button(action: { copyAllLogs() }) {
+                        Label("Copy All Logs", systemImage: "doc.on.doc")
+                    }
+                    Button(role: .destructive, action: { logger.clear() }) {
+                        Label("Clear", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
             }
         }
+    }
+
+    private func formatEntry(_ entry: APILogEntry) -> String {
+        let time = entry.timestamp.formatted(date: .omitted, time: .standard)
+        var text = "[\(time)] \(entry.service) | \(entry.endpoint) | \(entry.status) | \(entry.durationMs)ms"
+        if let detail = entry.detail { text += "\n\(detail)" }
+        return text
+    }
+
+    private func copyAllLogs() {
+        let text = logger.entries.map { formatEntry($0) }.joined(separator: "\n\n")
+        UIPasteboard.general.string = text
     }
 
     private func statusColor(_ status: APILogStatus) -> Color {
