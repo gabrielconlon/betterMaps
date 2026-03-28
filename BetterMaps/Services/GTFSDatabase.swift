@@ -3,7 +3,7 @@ import SQLite3
 
 /// Lightweight SQLite wrapper for GTFS schedule data.
 /// Replaces in-memory dictionaries (~875 MB) with on-disk database (~50 MB).
-final class GTFSDatabase {
+final class GTFSDatabase: @unchecked Sendable {
     private var db: OpaquePointer?
     private let path: String
 
@@ -140,6 +140,7 @@ final class GTFSDatabase {
         execute("CREATE INDEX IF NOT EXISTS idx_st_stop_dep ON stop_times(stop_id, departure_seconds)")
         execute("CREATE INDEX IF NOT EXISTS idx_st_trip_seq ON stop_times(trip_id, stop_sequence)")
         execute("CREATE INDEX IF NOT EXISTS idx_trips_route ON trips(route_id)")
+        execute("CREATE INDEX IF NOT EXISTS idx_trips_service ON trips(service_id)")
         execute("CREATE INDEX IF NOT EXISTS idx_shapes_id ON shapes(shape_id, sequence)")
         // Covering index: departuresFromStop() can be satisfied entirely from index
         execute("CREATE INDEX IF NOT EXISTS idx_st_stop_dep_trip ON stop_times(stop_id, departure_seconds, trip_id)")

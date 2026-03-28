@@ -85,6 +85,7 @@ struct TransitRouteOption: Identifiable, Sendable {
 /// Finds multi-modal transit routes (walk -> ride -> [transfer -> ride] -> walk)
 /// using GTFS schedule data. Runs off the main actor.
 actor TransitRoutePlanner {
+    static let shared = TransitRoutePlanner()
 
     // MARK: - Constants
 
@@ -100,6 +101,9 @@ actor TransitRoutePlanner {
     private let transferBufferSeconds: Int = 120
 
     private let raptorEngine = RaptorEngine()
+
+    /// Expose RAPTOR engine for pre-building at app startup
+    func getRaptorEngine() -> RaptorEngine { raptorEngine }
 
     // MARK: - Public API
 

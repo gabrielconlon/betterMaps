@@ -338,6 +338,19 @@ struct GTFSSetupView: View {
         let dartShapes = await GTFSScheduleService.shared.shapeCoordinatesForDART()
         let railShapes = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
 
+        // Pre-build RAPTOR route planner data structures
+        update(status: "Building route planner...",
+               detail: "Pre-computing transit connections for instant searches",
+               progress: 0.95)
+
+        let activeServices = await GTFSScheduleService.shared.activeServiceIds(for: Date())
+        let raptorEngine = await TransitRoutePlanner.shared.getRaptorEngine()
+        await raptorEngine.buildIfNeeded(
+            db: GTFSScheduleService.shared.database,
+            activeServices: activeServices,
+            allStops: stops
+        )
+
         // Done
         timerTask?.cancel()
         quipTask?.cancel()

@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import SQLite3
 
 // MARK: - RAPTOR Journey Result
 

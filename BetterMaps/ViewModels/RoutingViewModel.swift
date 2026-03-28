@@ -62,7 +62,7 @@ class RoutingViewModel {
     private let routingService = RoutingService()
     private let weatherService = WeatherDataService()
     private let bicycleService = BicycleRoutingService()
-    private let transitPlanner = TransitRoutePlanner()
+    private let transitPlanner = TransitRoutePlanner.shared
     private var routeCache: [RouteCacheKey: CachedRoute] = [:]
 
     func calculateRoutes(

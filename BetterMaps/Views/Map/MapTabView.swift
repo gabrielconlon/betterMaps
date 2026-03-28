@@ -485,6 +485,19 @@ struct MapTabView: View {
             luasGreenShapeLines = luasShapes.green
             dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForDART()
             railShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
+
+            // Pre-build RAPTOR data structures in background so route searches are instant.
+            // This runs while the user browses the map, completing before they search.
+            Task.detached(priority: .utility) {
+                let services = await GTFSScheduleService.shared.activeServiceIds(for: Date())
+                let stops = await GTFSStopLoader().loadStops()
+                let engine = await TransitRoutePlanner.shared.getRaptorEngine()
+                await engine.buildIfNeeded(
+                    db: GTFSScheduleService.shared.database,
+                    activeServices: services,
+                    allStops: stops
+                )
+            }
         }
         .task(id: showLiveTransit) {
             // Debounce: wait 1 second after last toggle change before making API calls
