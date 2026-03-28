@@ -45,43 +45,14 @@ struct HamburgerMenuView: View {
                     })) {
                         Label("All Saved Places", systemImage: "mappin.and.ellipse")
                     }
-                }
 
-                // MARK: - Place Layers
-                Section("Place Layers") {
-                    if layers.isEmpty {
-                        Text("No layers yet.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(layers) { layer in
-                            NavigationLink(destination: LayerDetailView(layer: layer)) {
-                                LayerToggleRow(layer: layer)
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    modelContext.delete(layer)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                    editingLayer = layer
-                                    showEditLayerForm = true
-                                } label: {
-                                    Label("Edit", systemImage: "pencil")
-                                }
-                                .tint(.blue)
-                                Button {
-                                    layer.isFavorite.toggle()
-                                } label: {
-                                    Label(
-                                        layer.isFavorite ? "Unpin" : "Pin to Layers",
-                                        systemImage: layer.isFavorite ? "star.slash" : "star.fill"
-                                    )
-                                }
-                                .tint(.yellow)
-                            }
+                    NavigationLink(destination: layerManagementView) {
+                        HStack {
+                            Label("Place Layers", systemImage: "square.3.layers.3d")
+                            Spacer()
+                            Text("\(layers.count)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -277,6 +248,48 @@ struct HamburgerMenuView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Layer Management View
+
+    private var layerManagementView: some View {
+        List {
+            ForEach(layers) { layer in
+                NavigationLink(destination: LayerDetailView(layer: layer)) {
+                    LayerToggleRow(layer: layer)
+                }
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) {
+                        modelContext.delete(layer)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                .swipeActions(edge: .leading) {
+                    Button {
+                        editingLayer = layer
+                        showEditLayerForm = true
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .tint(.blue)
+                    Button {
+                        layer.isFavorite.toggle()
+                    } label: {
+                        Label(
+                            layer.isFavorite ? "Unpin" : "Pin to Layers",
+                            systemImage: layer.isFavorite ? "star.slash" : "star.fill"
+                        )
+                    }
+                    .tint(.yellow)
+                }
+            }
+
+            Button(action: { showLayerForm = true }) {
+                Label("New Layer", systemImage: "plus.circle")
+            }
+        }
+        .navigationTitle("Place Layers")
     }
 
     // MARK: - Transit Pinnable Row
