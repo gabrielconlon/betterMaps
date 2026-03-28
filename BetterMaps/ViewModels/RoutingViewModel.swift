@@ -60,7 +60,7 @@ class RoutingViewModel {
     var transitStatusMessage: String?  // Shows progress/errors for transit search
 
     // Stored context for refreshes (so RoutingPanelView doesn't need to pass layers)
-    private var lastActiveTransitLayers: Set<TransitStop.TransitStopType> = []
+    private(set) var lastActiveTransitLayers: Set<TransitStop.TransitStopType> = []
     private var lastUserProfile: UserProfile?
 
     private let routingService = RoutingService()
@@ -93,6 +93,7 @@ class RoutingViewModel {
         // Store context for refreshes and multi-stop routing
         lastUserProfile = userProfile
         lastActiveTransitLayers = activeTransitLayers
+        print("[ROUTING DEBUG] activeTransitLayers received: \(activeTransitLayers.map { $0.rawValue })")
 
         // 1. Check persistent saved routes first (instant, no API calls)
         if let context {
@@ -166,6 +167,7 @@ class RoutingViewModel {
                 let transitPref = determineTransitPreference(
                     userProfile: userProfile, layers: activeTransitLayers
                 )
+                print("[ROUTING DEBUG] transitPref=\(transitPref) | layers=\(activeTransitLayers.map { $0.rawValue })")
 
                 // Stream results as they're found — Luas/DART arrive first (fewer stops),
                 // bus fills in after. No hard timeout needed since results appear incrementally.
@@ -177,9 +179,18 @@ class RoutingViewModel {
                     departureTime: departureTime,
                     onRouteFound: { @Sendable route in
                         await MainActor.run {
-                            // Add to displayed options immediately, keep sorted
+                            // Add to displayed options immediately, sorted by preference
                             self.transitOptions.append(route)
-                            self.transitOptions.sort { $0.totalDuration < $1.totalDuration }
+                            let pref = transitPref
+                            self.transitOptions.sort { a, b in
+                                // Non-bus first when preferring tram/rail
+                                if pref == "preferTramRail" {
+                                    let aIsRail = a.primaryMode == .luas || a.primaryMode == .dart || a.primaryMode == .rail
+                                    let bIsRail = b.primaryMode == .luas || b.primaryMode == .dart || b.primaryMode == .rail
+                                    if aIsRail != bIsRail { return aIsRail }
+                                }
+                                return a.totalDuration < b.totalDuration
+                            }
                             // Cap at 5 displayed
                             if self.transitOptions.count > 5 {
                                 self.transitOptions = Array(self.transitOptions.prefix(5))
@@ -190,11 +201,19 @@ class RoutingViewModel {
                 )
 
                 // Final pass: apply best-per-mode selection with favorites boost
+                print("[ROUTING DEBUG] selectBestPerMode input: \(allResults.count) options, pref=\(transitPref)")
+                for opt in allResults {
+                    print("[ROUTING DEBUG]   \(opt.primaryMode?.rawValue ?? "?") | \(opt.summary) | \(Int(opt.totalDuration))s | transfers=\(opt.transfers)")
+                }
                 transitOptions = selectBestPerMode(
                     from: allResults, preference: transitPref,
                     favoriteRouteNames: userProfile?.favoriteRouteNames ?? [],
                     favoriteStopIds: userProfile?.favoriteStopIds ?? []
                 )
+                print("[ROUTING DEBUG] selectBestPerMode output: \(transitOptions.count) options")
+                for opt in transitOptions {
+                    print("[ROUTING DEBUG]   → \(opt.primaryMode?.rawValue ?? "?") | \(opt.summary) | \(Int(opt.totalDuration))s")
+                }
 
                 if transitOptions.isEmpty {
                     transitStatusMessage = "No transit routes found for this time."
@@ -444,20 +463,20 @@ class RoutingViewModel {
         layers: Set<TransitStop.TransitStopType>
     ) -> String {
         let hasTramRailLayers = layers.contains(.luas) || layers.contains(.dart) || layers.contains(.rail)
-        let hasBusLayer = layers.contains(.bus)
         let hasFavorites = !(userProfile?.favoriteRouteNames ?? []).isEmpty
 
-        // Explicit layer selection: tram/rail on, bus off → strong preference
-        if hasTramRailLayers && !hasBusLayer { return "preferTramRail" }
+        // If user has ANY tram/rail layers on → prefer tram/rail in results.
+        // This is the primary UX: toggling Luas/DART layers means "show me these options."
+        if hasTramRailLayers { return "preferTramRail" }
         // User has favorited tram/rail routes → prefer tram/rail
         if hasFavorites { return "preferTramRail" }
-        // Respect stored preference as fallback (for users who set it before removal)
+        // Respect stored preference as fallback
         return userProfile?.transitModePreference ?? "fastest"
     }
 
-    /// Select best route per mode, then fill remaining slots.
-    /// Ensures mode diversity: one Luas, one DART, one bus if available.
-    /// Applies favorites boost so starred routes/stops rank higher.
+    /// Select best routes with mode diversity.
+    /// When preferTramRail: non-bus routes ALWAYS appear first, then bus fills remaining slots.
+    /// This matches the user's intent: toggling Luas/DART layers means "show me these first."
     private func selectBestPerMode(
         from options: [TransitRouteOption],
         preference: String,
@@ -466,33 +485,7 @@ class RoutingViewModel {
     ) -> [TransitRouteOption] {
         guard !options.isEmpty else { return [] }
 
-        let sortScore: (TransitRouteOption) -> Double = { option in
-            var score = option.totalDuration
-
-            // Mode preference boost (15 min — enough to prefer a 25-min Luas over a 12-min bus)
-            if let mode = option.primaryMode {
-                switch preference {
-                case "preferTramRail":
-                    if mode == .luas || mode == .dart || mode == .rail { score -= 900 }
-                case "preferBus":
-                    if mode == .bus { score -= 900 }
-                default:
-                    break
-                }
-            }
-
-            // Favorite route name boost (same weight as mode preference)
-            if !favoriteRouteNames.isEmpty {
-                let summary = option.summary.lowercased()
-                if favoriteRouteNames.contains(where: { summary.contains($0.lowercased()) }) {
-                    score -= 900
-                }
-            }
-
-            return score
-        }
-
-        // Deduplicate
+        // Deduplicate by summary + transfer count
         var seen = Set<String>()
         let unique = options.filter { seen.insert("\($0.summary)|\($0.transfers)").inserted }
 
@@ -500,19 +493,46 @@ class RoutingViewModel {
         var bestByRoute: [String: TransitRouteOption] = [:]
         for option in unique {
             let key = "\(option.primaryMode?.rawValue ?? "unknown")-\(option.summary)"
-            if let existing = bestByRoute[key] {
-                if sortScore(option) < sortScore(existing) { bestByRoute[key] = option }
-            } else {
+            if bestByRoute[key] == nil {
                 bestByRoute[key] = option
             }
         }
 
-        var results = Array(bestByRoute.values).sorted { sortScore($0) < sortScore($1) }
+        let all = Array(bestByRoute.values)
+        let isPreferRail = preference == "preferTramRail"
 
-        // Guarantee at least one non-bus option (matches HeadwayRouter guarantee)
-        let hasNonBus = results.contains { $0.primaryMode != .bus }
-        if !hasNonBus, let bestNonBus = unique.first(where: { $0.primaryMode != .bus }) {
-            results.insert(bestNonBus, at: 0)
+        func isPreferred(_ option: TransitRouteOption) -> Bool {
+            guard let mode = option.primaryMode else { return false }
+            if isPreferRail { return mode == .luas || mode == .dart || mode == .rail }
+            if preference == "preferBus" { return mode == .bus }
+            return false
+        }
+
+        // Split into preferred and other, each sorted by duration
+        let preferred = all.filter { isPreferred($0) }.sorted { $0.totalDuration < $1.totalDuration }
+        let other = all.filter { !isPreferred($0) }.sorted { $0.totalDuration < $1.totalDuration }
+
+        // Preferred routes ALWAYS come first, then fill with others
+        var results: [TransitRouteOption] = []
+        results.append(contentsOf: preferred)
+        for option in other where results.count < 5 {
+            results.append(option)
+        }
+
+        // Apply favorite boost within each group (re-sort preferred by favorites)
+        if !favoriteRouteNames.isEmpty {
+            results.sort { a, b in
+                let aPreferred = isPreferred(a)
+                let bPreferred = isPreferred(b)
+                if aPreferred != bPreferred { return aPreferred }
+                // Within same group, boost favorites
+                let aSummary = a.summary.lowercased()
+                let bSummary = b.summary.lowercased()
+                let aFav = favoriteRouteNames.contains(where: { aSummary.contains($0.lowercased()) })
+                let bFav = favoriteRouteNames.contains(where: { bSummary.contains($0.lowercased()) })
+                if aFav != bFav { return aFav }
+                return a.totalDuration < b.totalDuration
+            }
         }
 
         return Array(results.prefix(5))

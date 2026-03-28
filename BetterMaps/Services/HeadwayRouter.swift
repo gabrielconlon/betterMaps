@@ -202,16 +202,13 @@ actor HeadwayRouter {
         if !failSummary.isEmpty { debugLog += " | unmatched: \(failSummary)" }
 
         // --- Phase 2: Transfer routes (ride A → walk → ride B) ---
+        // Only search non-bus route A — the point is to find Luas→DART, Luas→Bus, etc.
+        // Bus→Bus transfers are rarely useful and expensive to compute.
+        var transferCount = 0
         if maxTransfers > 0 {
-            // Prioritize tram/rail as route A so Luas→DART transfers are found
-            // before bus→bus fills the cap
-            let sortedRoutes = graph.routes.sorted { a, b in
-                let aIsRail = a.routeType == 0 || a.routeType == 2
-                let bIsRail = b.routeType == 0 || b.routeType == 2
-                if aIsRail != bIsRail { return aIsRail }
-                return false
-            }
-            for routeA in sortedRoutes {
+            let nonBusGraphRoutes = graph.routes.filter { $0.routeType == 0 || $0.routeType == 2 }
+
+            for routeA in nonBusGraphRoutes {
                 let bucketA = min(timeBucket, routeA.cumulativeSeconds.count - 1)
                 guard bucketA >= 0 else { continue }
                 let cumA = routeA.cumulativeSeconds[bucketA]
@@ -227,15 +224,14 @@ actor HeadwayRouter {
                 guard let bA = boardA else { continue }
 
                 // For each stop on route A, check if it's a transfer point.
-                // No direction constraint — tram/rail run both ways.
                 for (posA, stopIdA) in routeA.stopIds.enumerated() where posA != bA.pos {
                     guard let transferIdx = graph.stopIdToIndex[stopIdA],
                           posA < cumA.count else { continue }
                     let transferLat = Double(graph.stopLats[transferIdx])
                     let transferLon = Double(graph.stopLons[transferIdx])
 
-                    // Check routes near this transfer point (rail/tram first)
-                    for routeB in sortedRoutes {
+                    // Check ALL routes for route B (including bus — Luas→Bus is useful)
+                    for routeB in graph.routes {
                         if routeB.routeId == routeA.routeId && routeB.directionId == routeA.directionId { continue }
 
                         let bucketB = min(timeBucket, routeB.cumulativeSeconds.count - 1)
@@ -259,23 +255,23 @@ actor HeadwayRouter {
                         }
                         guard let bB = boardB else { continue }
 
-                        // Find alighting on route B near destination (any position — bidirectional)
+                        // Find alighting on route B near destination (bidirectional)
                         var alightB: (idx: Int, pos: Int, walkSec: Int)?
                         for (posB, stopIdB) in routeB.stopIds.enumerated() where posB != bB.pos {
                             guard let aIdx = graph.stopIdToIndex[stopIdB], let dist = dstDist[aIdx] else { continue }
                             let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
                             if alightB == nil || walkSec < alightB!.walkSec { alightB = (aIdx, posB, walkSec) }
                         }
-                        guard let aB = alightB, bB.pos < cumB.count, aB.pos < cumB.count else { continue }
+                        guard let aB = alightB, bB.pos < cumB.count, aB.pos < cumB.count,
+                              bA.pos < cumA.count else { continue }
 
                         // Use absolute ride times — routes run both directions
                         let rideA = abs(Int(cumA[posA]) - Int(cumA[bA.pos]))
                         let rideB = abs(Int(cumB[aB.pos]) - Int(cumB[bB.pos]))
                         let totalSec = bA.walkSec + (headwayA / 2) + rideA + bB.walkSec + (headwayB / 2) + rideB + aB.walkSec
 
-                        // Only include if competitive (not much worse than best direct)
-                        let bestDirect = journeys.min(by: { $0.totalSeconds < $1.totalSeconds })?.totalSeconds ?? Int.max
-                        if totalSec > bestDirect + 1200 { continue }  // Skip if >20 min slower
+                        // No competitive filter — user explicitly wants multi-modal options
+                        // even if they're slower than direct bus
 
                         journeys.append(HeadwayJourney(
                             rideLegs: [
@@ -293,14 +289,16 @@ actor HeadwayRouter {
                             destWalkSeconds: aB.walkSec,
                             totalSeconds: totalSec
                         ))
+                        transferCount += 1
 
-                        if journeys.count >= 20 { break }  // Cap total results
+                        if transferCount >= 10 { break }  // Cap transfer results
                     }
-                    if journeys.count >= 20 { break }
+                    if transferCount >= 10 { break }
                 }
-                if journeys.count >= 20 { break }
+                if transferCount >= 10 { break }
             }
         }
+        debugLog += " | \(transferCount) transfers"
 
         // --- Select best per route (not just per mode) ---
         // Groups by mode + route name so Red Luas and Green Luas are separate slots.

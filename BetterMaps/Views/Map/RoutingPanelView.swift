@@ -244,7 +244,8 @@ struct RoutingPanelView: View {
             await viewModel.calculateRoutes(
                 from: source, to: destination,
                 weatherRules: rules, context: modelContext,
-                departureTime: departureTime
+                departureTime: departureTime,
+                activeTransitLayers: viewModel.lastActiveTransitLayers
             )
         }
     }
