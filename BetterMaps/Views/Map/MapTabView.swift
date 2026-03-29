@@ -74,9 +74,13 @@ struct MapTabView: View {
                             Image(systemName: "square.3.layers.3d")
                                 .font(.body)
                                 .padding(10)
-                                .background(showFavoritesPanel
-                                    ? AnyShapeStyle(Color.blue.opacity(0.2))
-                                    : AnyShapeStyle(.ultraThinMaterial))
+                                .background {
+                                    if showFavoritesPanel {
+                                        Circle().fill(Color.blue.opacity(0.2))
+                                    } else {
+                                        Circle().fill(.ultraThinMaterial)
+                                    }
+                                }
                                 .foregroundStyle(showFavoritesPanel ? .blue : .primary)
                                 .clipShape(Circle())
                                 .shadow(color: .black.opacity(0.1), radius: 2)
@@ -853,7 +857,7 @@ struct MapTabView: View {
                     .textFieldStyle(.plain)
                     .focused($isSearchFocused)
                     .onSubmit {
-                        searchState.isSearchFocused = false
+                        isSearchFocused = false
                         Task { await searchState.performSearch(places: places, transitStops: transitState.transitStops, userLocation: locationManager.userLocation) }
                     }
                 if !searchState.searchText.isEmpty {
@@ -966,13 +970,13 @@ struct MapTabView: View {
     private func calculateRouteToMapItem(_ mapItem: MKMapItem) async {
         guard let userLocation = locationManager.userLocation else { return }
         let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
-        await routingVM.calculateRoutes(from: userLocation, to: mapItem.placemark.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: showTransitStops)
+        await routingVM.calculateRoutes(from: userLocation, to: mapItem.placemark.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: transitState.showTransitStops)
     }
 
     @MainActor
     private func calculateRoute(to destination: Place) async {
         guard let userLocation = locationManager.userLocation else { return }
         let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
-        await routingVM.calculateRoutes(from: userLocation, to: destination.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: showTransitStops)
+        await routingVM.calculateRoutes(from: userLocation, to: destination.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: transitState.showTransitStops)
     }
 }
