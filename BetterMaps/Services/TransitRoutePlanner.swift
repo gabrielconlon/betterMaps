@@ -166,7 +166,7 @@ actor TransitRoutePlanner {
 
             let currentGraph = await headwayRouter.graph
             for journey in headwayJourneys {
-                let option = convertHeadwayJourney(journey, source: source, destination: destination,
+                let option = await convertHeadwayJourney(journey, source: source, destination: destination,
                                                     departureDate: departureTime, graph: currentGraph, stopById: stopById)
                 options.append(option)
                 await onRouteFound?(option)
@@ -207,7 +207,7 @@ actor TransitRoutePlanner {
         departureDate: Date,
         graph: TransitGraph?,
         stopById: [String: TransitStop]
-    ) -> TransitRouteOption {
+    ) async -> TransitRouteOption {
         var transitLegs: [TransitLeg] = []
 
         // Walk to first board stop
@@ -254,31 +254,31 @@ actor TransitRoutePlanner {
             let boardCoord = LegCoordinate(boardStop?.coordinate ?? source)
             let alightCoord = LegCoordinate(alightStop?.coordinate ?? destination)
 
-            // Build path through intermediate stops on this route for map polyline
-            var ridePath: [LegCoordinate] = [boardCoord]
-            if let g = graph {
-                // Find the route in the graph that matches this leg
-                if let graphRoute = g.routes.first(where: { $0.routeName == leg.routeName && $0.routeType == leg.routeType }) {
-                    // Find positions of board and alight stops within the route's stop sequence
-                    let boardPos = graphRoute.stopIds.firstIndex(where: { g.stopIdToIndex[$0] == leg.boardStopIndex })
-                    let alightPos = graphRoute.stopIds.firstIndex(where: { g.stopIdToIndex[$0] == leg.alightStopIndex })
-                    if let bp = boardPos, let ap = alightPos {
-                        let lo = min(bp, ap)
-                        let hi = max(bp, ap)
-                        // Add all intermediate stop coordinates
-                        for pos in (lo + 1)..<hi {
-                            let sid = graphRoute.stopIds[pos]
-                            if let idx = g.stopIdToIndex[sid] {
-                                ridePath.append(LegCoordinate(
-                                    latitude: Double(g.stopLats[idx]),
-                                    longitude: Double(g.stopLons[idx])
-                                ))
-                            }
-                        }
-                    }
+            // Get GTFS shape coordinates for this ride leg's route, clipped to the
+            // board→alight segment. Falls back to straight line if shape unavailable.
+            var ridePath: [LegCoordinate] = [boardCoord, alightCoord]
+            if let g = graph,
+               let graphRoute = g.routes.first(where: { $0.routeName == leg.routeName && $0.routeType == leg.routeType }),
+               let shapeCoords = await GTFSShapeService.shared.shapeCoordinates(forRouteId: graphRoute.routeId),
+               shapeCoords.count >= 2 {
+                // Clip shape to the segment between board and alight stops.
+                // Find the shape points closest to each stop, then extract that sub-path.
+                let boardCL = boardStop?.coordinate ?? source
+                let alightCL = alightStop?.coordinate ?? destination
+
+                let boardIdx = shapeCoords.enumerated().min(by: {
+                    fastDist($0.element, boardCL) < fastDist($1.element, boardCL)
+                })?.offset ?? 0
+                let alightIdx = shapeCoords.enumerated().min(by: {
+                    fastDist($0.element, alightCL) < fastDist($1.element, alightCL)
+                })?.offset ?? (shapeCoords.count - 1)
+
+                let lo = min(boardIdx, alightIdx)
+                let hi = max(boardIdx, alightIdx)
+                if hi > lo {
+                    ridePath = shapeCoords[lo...hi].map { LegCoordinate($0) }
                 }
             }
-            ridePath.append(alightCoord)
 
             // Look up long name from graph for display (e.g. "Dublin - Maynooth")
             let longName: String = {
@@ -425,6 +425,13 @@ actor TransitRoutePlanner {
     }
 
     // MARK: - Helpers
+
+    /// Fast squared distance for finding closest shape point (no sqrt needed for comparison)
+    private func fastDist(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let dLat = (a.latitude - b.latitude) * 111_320
+        let dLon = (a.longitude - b.longitude) * 67_000
+        return dLat * dLat + dLon * dLon
+    }
 
     /// Build an array of coordinates for all stops on a trip between two sequences (inclusive).
     /// Used to draw multi-segment polylines on the map that follow the actual route path.

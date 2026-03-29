@@ -58,6 +58,7 @@ class RoutingViewModel {
     var transitOptions: [TransitRouteOption] = []
     var isLoadingTransit = false
     var transitStatusMessage: String?  // Shows progress/errors for transit search
+    var customDepartureTime: Date?  // nil = "now", set = future departure
 
     // Stored context for refreshes (so RoutingPanelView doesn't need to pass layers)
     private(set) var lastActiveTransitLayers: Set<TransitStop.TransitStopType> = []
@@ -442,6 +443,7 @@ class RoutingViewModel {
         transitOptions = []
         errorMessage = nil
         failedModes = [:]
+        customDepartureTime = nil
     }
 
     // MARK: - Transit Preference

@@ -14,9 +14,10 @@ struct RoutingPanelView: View {
     @Binding var selectedTransitOption: TransitRouteOption?
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
-    @State private var departureTime: Date = Date()
-    @State private var isCustomDeparture = false
     @State private var showTimePicker = false
+
+    private var isCustomDeparture: Bool { viewModel.customDepartureTime != nil }
+    private var departureTime: Date { viewModel.customDepartureTime ?? Date() }
 
     var body: some View {
         NavigationStack {
@@ -116,12 +117,14 @@ struct RoutingPanelView: View {
                         .sheet(isPresented: $showTimePicker) {
                             NavigationStack {
                                 VStack(spacing: 16) {
-                                    DatePicker("Depart at", selection: $departureTime, in: Date()..., displayedComponents: [.date, .hourAndMinute])
+                                    DatePicker("Depart at", selection: Binding(
+                                        get: { viewModel.customDepartureTime ?? Date() },
+                                        set: { viewModel.customDepartureTime = $0 }
+                                    ), in: Date()..., displayedComponents: [.date, .hourAndMinute])
                                         .datePickerStyle(.graphical)
                                         .padding()
                                     Button("Leave Now") {
-                                        departureTime = Date()
-                                        isCustomDeparture = false
+                                        viewModel.customDepartureTime = nil
                                         showTimePicker = false
                                         refreshTransit()
                                     }
@@ -132,7 +135,6 @@ struct RoutingPanelView: View {
                                 .toolbar {
                                     ToolbarItem(placement: .confirmationAction) {
                                         Button("Done") {
-                                            isCustomDeparture = true
                                             showTimePicker = false
                                             refreshTransit()
                                         }
