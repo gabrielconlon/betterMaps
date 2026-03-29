@@ -136,13 +136,13 @@ struct MapTabView: View {
                 hasSeenCoachMarks = true
             }
         }
-        .onChange(of: viewModel.activeSheet) { old, new in
+        .onChange(of: viewModel.activeSheet?.id) { old, new in
             // Reset detent when routing sheet opens
-            if let new, case .routing = new {
+            if new?.hasPrefix("routing") == true {
                 routingDetent = .fraction(0.35)
             }
             // Clear routes when routing sheet is dismissed
-            if let old, case .routing = old, new == nil {
+            if old?.hasPrefix("routing") == true && new == nil {
                 routingVM.clearRoutes()
                 selectedRouteId = nil
                 selectedTransitOption = nil
