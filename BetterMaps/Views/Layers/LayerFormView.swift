@@ -10,6 +10,7 @@ struct LayerFormView: View {
     @State private var name: String = ""
     @State private var selectedColorHex: String = "#FF3B30"
     @State private var selectedSymbol: String = "mappin"
+    @State private var showSaveToast = false
 
     var isEditing: Bool { layer != nil }
 
@@ -84,6 +85,8 @@ struct LayerFormView: View {
                     selectedSymbol = layer.symbolName
                 }
             }
+            .toast(isPresented: $showSaveToast, message: layer != nil ? "Layer updated!" : "Layer created!")
+            .sensoryFeedback(.success, trigger: showSaveToast)
         }
     }
 
@@ -100,6 +103,7 @@ struct LayerFormView: View {
             )
             modelContext.insert(newLayer)
         }
-        dismiss()
+        showSaveToast = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { dismiss() }
     }
 }

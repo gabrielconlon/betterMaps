@@ -16,6 +16,7 @@ struct GTFSSetupView: View {
     @State private var elapsedSeconds = 0
     @State private var timerTask: Task<Void, Never>?
     @State private var quipTask: Task<Void, Never>?
+    @AppStorage("gtfsSetupStep") private var completedStep: Int = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,6 +75,9 @@ struct GTFSSetupView: View {
             // Progress section
             if isWorking || isDone || hasFailed {
                 VStack(spacing: 10) {
+                    steppedProgressBar
+                        .padding(.bottom, 4)
+
                     ProgressView(value: progress, total: 1.0)
                         .progressViewStyle(.linear)
                         .tint(hasFailed ? .red : (isDone ? .green : .blue))
@@ -195,6 +199,49 @@ struct GTFSSetupView: View {
             .padding(.top, 16)
             .padding(.bottom, 30)
         }
+        .onAppear {
+            if completedStep > 0 && !isWorking && !isDone {
+                progress = Double(completedStep) * 0.25
+            }
+        }
+    }
+
+    // MARK: - Stepped Progress
+
+    private var steppedProgressBar: some View {
+        HStack(spacing: 12) {
+            ForEach(1...4, id: \.self) { step in
+                VStack(spacing: 4) {
+                    Circle()
+                        .fill(step <= completedStep ? .green : (step == completedStep + 1 && isWorking ? .blue : Color(.systemGray4)))
+                        .frame(width: 28, height: 28)
+                        .overlay {
+                            if step <= completedStep {
+                                Image(systemName: "checkmark")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.white)
+                            } else {
+                                Text("\(step)")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(step == completedStep + 1 && isWorking ? .white : .secondary)
+                            }
+                        }
+                    Text(stepLabel(step))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func stepLabel(_ step: Int) -> String {
+        switch step {
+        case 1: return "Download"
+        case 2: return "Database"
+        case 3: return "Classify"
+        case 4: return "Shapes"
+        default: return ""
+        }
     }
 
     // MARK: - Quips
@@ -279,6 +326,21 @@ struct GTFSSetupView: View {
         errorMessage = nil
         elapsedSeconds = 0
 
+        // Detect what's already done from cached artifacts
+        var startStep = 0
+        if GTFSStopLoader.hasCachedZip {
+            startStep = max(startStep, 1)
+        }
+        if GTFSDatabase.isFresh {
+            startStep = max(startStep, 2)
+        }
+
+        // Set initial progress based on completed work
+        if startStep > 0 {
+            completedStep = startStep
+            progress = Double(startStep) * 0.25
+        }
+
         // Start elapsed time counter
         timerTask?.cancel()
         timerTask = Task { @MainActor in
@@ -290,53 +352,81 @@ struct GTFSSetupView: View {
         }
 
         // Step 1: Download GTFS ZIP and extract stops (~65 MB, slowest part)
-        update(status: "Downloading transit data...",
-               detail: "~65 MB from transportforireland.ie",
-               progress: 0.05)
-        startQuipRotation(quips: Self.downloadQuips)
+        var stops: [TransitStop] = []
+        if startStep < 1 {
+            update(status: "Downloading transit data...",
+                   detail: "~65 MB from transportforireland.ie",
+                   progress: 0.05)
+            startQuipRotation(quips: Self.downloadQuips)
 
-        let stops = await GTFSStopLoader().loadStops()
-        if stops.isEmpty {
-            quipTask?.cancel()
-            fail("Could not download transit data.\nCheck your internet connection and try again.")
-            return
+            stops = await GTFSStopLoader().loadStops()
+            if stops.isEmpty {
+                quipTask?.cancel()
+                fail("Could not download transit data.\nCheck your internet connection and try again.")
+                return
+            }
+            completedStep = 1
+            update(status: "Downloaded \(stops.count.formatted()) stops",
+                   detail: "ZIP cached locally",
+                   progress: 0.35)
+        } else {
+            stops = await GTFSStopLoader().loadStops()
+            update(status: "Using cached download",
+                   detail: "\(stops.count.formatted()) stops",
+                   progress: 0.35)
         }
-        update(status: "Downloaded \(stops.count.formatted()) stops",
-               detail: "ZIP cached locally",
-               progress: 0.35)
 
         // Step 2: Build SQLite database from cached ZIP (no second download!)
-        update(status: "Building schedule database...",
-               detail: "Parsing ~1,400 routes and millions of timetable entries",
-               progress: 0.40)
-        startQuipRotation(quips: Self.buildQuips)
+        if startStep < 2 {
+            update(status: "Building schedule database...",
+                   detail: "Parsing ~1,400 routes and millions of timetable entries",
+                   progress: 0.40)
+            startQuipRotation(quips: Self.buildQuips)
 
-        await GTFSScheduleService.shared.loadIfNeeded()
+            await GTFSScheduleService.shared.loadIfNeeded()
 
-        let tripCount = await GTFSScheduleService.shared.tripCount
-        if tripCount == 0 {
-            quipTask?.cancel()
-            fail("Schedule database could not be built.\nThe transit data may have changed format.\nTap Retry or Skip to use the app without transit.")
-            return
+            let tripCount = await GTFSScheduleService.shared.tripCount
+            if tripCount == 0 {
+                quipTask?.cancel()
+                fail("Schedule database could not be built.\nThe transit data may have changed format.\nTap Retry or Skip to use the app without transit.")
+                return
+            }
+            completedStep = 2
+            update(status: "Loaded \(tripCount.formatted()) trips",
+                   detail: "Schedule database ready",
+                   progress: 0.75)
+        } else {
+            await GTFSScheduleService.shared.loadIfNeeded()
+            let tripCount = await GTFSScheduleService.shared.tripCount
+            update(status: "Database ready",
+                   detail: "\(tripCount.formatted()) trips",
+                   progress: 0.75)
         }
-        update(status: "Loaded \(tripCount.formatted()) trips",
-               detail: "Schedule database ready",
-               progress: 0.75)
 
         // Step 3: Pre-compute stop classifications
-        update(status: "Classifying stops by transit type...",
-               detail: "Identifying Luas, DART, and rail stops from route data",
-               progress: 0.85)
-        startQuipRotation(quips: Self.classifyQuips)
+        if startStep < 3 {
+            update(status: "Classifying stops by transit type...",
+                   detail: "Identifying Luas, DART, and rail stops from route data",
+                   progress: 0.85)
+            startQuipRotation(quips: Self.classifyQuips)
 
-        let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
+            let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
+            completedStep = 3
 
-        update(status: "Loading route shapes...",
-               detail: "\(classification.count) rail/tram stops identified",
-               progress: 0.92)
+            update(status: "Loading route shapes...",
+                   detail: "\(classification.count) rail/tram stops identified",
+                   progress: 0.92)
+        } else {
+            let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
+            update(status: "Stops classified",
+                   detail: "\(classification.count) rail/tram stops",
+                   progress: 0.92)
+        }
 
+        // Step 4: Load route shapes (always runs, it's fast)
         let dartShapes = await GTFSScheduleService.shared.shapeCoordinatesForDART()
         let railShapes = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
+        completedStep = 4
 
         // Build transit graph for instant route planning
         update(status: "Computing travel times...",
@@ -365,6 +455,7 @@ struct GTFSSetupView: View {
         )
 
         // Done
+        let tripCount = await GTFSScheduleService.shared.tripCount
         timerTask?.cancel()
         quipTask?.cancel()
         withAnimation(.easeInOut(duration: 0.3)) { quipText = "" }
@@ -377,7 +468,7 @@ struct GTFSSetupView: View {
         await APILogger.shared.log(
             service: "Setup", endpoint: "First-time install",
             status: .success, durationMs: elapsedSeconds * 1000,
-            detail: "\(stops.count) stops, \(tripCount) trips, \(dartShapes.count + railShapes.count) shapes, \(classification.count) rail/tram classified in \(elapsedSeconds)s"
+            detail: "\(stops.count) stops, \(tripCount) trips, \(dartShapes.count + railShapes.count) shapes in \(elapsedSeconds)s"
         )
     }
 

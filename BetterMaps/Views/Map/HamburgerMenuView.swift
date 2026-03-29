@@ -9,6 +9,7 @@ struct HamburgerMenuView: View {
     @Binding var bicyclePreference: BicycleRoutePreference
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
     @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
+    @Binding var mapStyleOption: MapStyleOption
     var onSelectPlace: ((Place) -> Void)?
     @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("orsAPIKey") private var orsAPIKey = ""
@@ -16,6 +17,10 @@ struct HamburgerMenuView: View {
     @AppStorage("favTransitLuas") private var favLuas = true
     @AppStorage("favTransitDart") private var favDart = true
     @AppStorage("favTransitRail") private var favRail = true
+    @AppStorage("favMapStandard") private var favMapStandard = true
+    @AppStorage("favMapMuted") private var favMapMuted = true
+    @AppStorage("favMapSatellite") private var favMapSatellite = true
+    @AppStorage("favMapHybrid") private var favMapHybrid = true
 
     @Environment(\.modelContext) private var modelContext
     @State private var showLayerForm = false
@@ -27,7 +32,7 @@ struct HamburgerMenuView: View {
     var body: some View {
         NavigationStack {
             List {
-                // MARK: - My Preferences
+                // MARK: - My Preferences (top-level for quick access)
                 Section("My Preferences") {
                     NavigationLink(destination: UserPreferencesView()) {
                         Label("Transport & Routing", systemImage: "person.fill")
@@ -35,17 +40,17 @@ struct HamburgerMenuView: View {
                     NavigationLink(destination: WeatherRulesView()) {
                         Label("Weather Rules", systemImage: "cloud.sun")
                     }
-                }
-
-                // MARK: - My Places
-                Section("My Places") {
                     NavigationLink(destination: PlaceSearchView(onSelectPlace: { place in
                         dismiss()
                         onSelectPlace?(place)
                     })) {
                         Label("All Saved Places", systemImage: "mappin.and.ellipse")
                     }
+                }
 
+                // MARK: - Map (layers, transit, weather — nested)
+                Section("Map") {
+                    // Place Layers
                     NavigationLink(destination: layerManagementView) {
                         HStack {
                             Label("Place Layers", systemImage: "square.3.layers.3d")
@@ -73,27 +78,8 @@ struct HamburgerMenuView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                }
 
-                // MARK: - Data Layers (Weather)
-                Section("Weather Layers") {
-                    ForEach(WeatherOverlay.allCases) { overlay in
-                        HStack {
-                            Label(overlay.displayName, systemImage: overlay.systemImage)
-                            Spacer()
-                            Text("Planned")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Text("Weather radar overlays require a map engine upgrade (SwiftUI Map → MKMapView). Weather-based routing rules are active now — configure them in Settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // MARK: - Transit Layers
-                Section("Transit") {
+                    // Transit
                     transitPinnableRow(.bus, liveDisabled: !NTATransitService.isConfigured)
                     transitPinnableRow(.luas)
                     transitPinnableRow(.dart)
@@ -110,11 +96,62 @@ struct HamburgerMenuView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
+                    // Map Style
+                    ForEach(MapStyleOption.allCases, id: \.self) { style in
+                        HStack {
+                            Image(systemName: style.icon)
+                                .foregroundStyle(.primary)
+                                .frame(width: 22)
+                            Text(style.rawValue)
+                                .font(.subheadline)
+                            Spacer()
+                            if mapStyleOption == style {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.blue)
+                                    .font(.caption)
+                            }
+                            if isMapStyleFav(style) {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.yellow)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { mapStyleOption = style }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                toggleMapStyleFav(style)
+                            } label: {
+                                Label(
+                                    isMapStyleFav(style) ? "Unpin" : "Pin to Layers",
+                                    systemImage: isMapStyleFav(style) ? "star.slash" : "star.fill"
+                                )
+                            }
+                            .tint(.yellow)
+                        }
+                    }
+
+                    // Weather Layers
+                    ForEach(WeatherOverlay.allCases) { overlay in
+                        HStack {
+                            Label(overlay.displayName, systemImage: overlay.systemImage)
+                            Spacer()
+                            Text("Planned")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Text("Weather radar overlays require a map engine upgrade (SwiftUI Map → MKMapView). Weather-based routing rules are active now — configure them above.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
-                // MARK: - Cycling
-                Section("Cycling Routes") {
-                    Picker("Route Preference", selection: $bicyclePreference) {
+                // MARK: - Services (cycling, saved routes, API keys — nested)
+                Section("Services") {
+                    // Cycling Routes
+                    Picker("Cycling Preference", selection: $bicyclePreference) {
                         ForEach(BicycleRoutePreference.allCases) { pref in
                             Label(pref.displayName, systemImage: pref.systemImage)
                                 .tag(pref)
@@ -130,10 +167,6 @@ struct HamburgerMenuView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                }
-
-                // MARK: - Settings
-                Section("Services") {
 
                     NavigationLink(destination: SavedRoutesView()) {
                         Label("Saved Routes (Offline)", systemImage: "arrow.down.circle")
@@ -166,7 +199,7 @@ struct HamburgerMenuView: View {
                         .buttonStyle(.bordered)
                     }
 
-                    // Yelp API key
+                    // API Keys
                     NavigationLink(destination: YelpKeySettingsView()) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -184,7 +217,6 @@ struct HamburgerMenuView: View {
                         }
                     }
 
-                    // NTA Transit API key
                     NavigationLink(destination: NTAKeySettingsView()) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -202,7 +234,6 @@ struct HamburgerMenuView: View {
                         }
                     }
 
-                    // Cycling API key
                     NavigationLink(destination: ORSKeySettingsView()) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -220,7 +251,6 @@ struct HamburgerMenuView: View {
                         }
                     }
 
-                    // OpenWeatherMap API key
                     NavigationLink(destination: OpenWeatherKeySettingsView()) {
                         HStack {
                             Label("Weather Layers", systemImage: "cloud.rain")
@@ -327,6 +357,26 @@ struct HamburgerMenuView: View {
                         .offset(x: -4, y: 4)
                 }
             }
+    }
+
+    // MARK: - Map Style Favorites
+
+    private func isMapStyleFav(_ style: MapStyleOption) -> Bool {
+        switch style {
+        case .standard: return favMapStandard
+        case .muted: return favMapMuted
+        case .satellite: return favMapSatellite
+        case .hybrid: return favMapHybrid
+        }
+    }
+
+    private func toggleMapStyleFav(_ style: MapStyleOption) {
+        switch style {
+        case .standard: favMapStandard.toggle()
+        case .muted: favMapMuted.toggle()
+        case .satellite: favMapSatellite.toggle()
+        case .hybrid: favMapHybrid.toggle()
+        }
     }
 }
 

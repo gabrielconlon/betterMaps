@@ -2,13 +2,13 @@ import SwiftUI
 import Observation
 
 enum FilterMode: String, CaseIterable {
-    case union = "Combined"
-    case intersection = "Overlap Only"
+    case union = "Any Layer"
+    case intersection = "All Layers"
 
     var description: String {
         switch self {
-        case .union: return "Show places from any active layer"
-        case .intersection: return "Show only places in all active layers"
+        case .union: return "Show places in any active layer"
+        case .intersection: return "Show only places shared by all active layers"
         }
     }
 
