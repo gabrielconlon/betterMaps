@@ -204,17 +204,19 @@ struct MapTabView: View {
             }
         }
         .task {
-            // GTFS is the single source of truth for all transit stops.
-            // No hardcoded stops — GTFS IDs match stop_times for timetable queries,
-            // and GTFS coordinates sit on the GTFS shape lines (no offset pins).
-            let loader = GTFSStopLoader()
-            transitState.transitStops = await loader.loadStops()
+            // All work happens in local variables — no @State/@Observable mutations
+            // until the very end. This prevents 7+ intermediate body recomputes that
+            // stall the main thread rendering MapPolylines and block touch events.
 
-            // Load schedule database and reclassify stops by actual GTFS route data
+            // Step 1: Load stops into local var
+            let loader = GTFSStopLoader()
+            var allStops = await loader.loadStops()
+
+            // Step 2: Load schedule database and reclassify
             await GTFSScheduleService.shared.loadIfNeeded()
             let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
             if !classification.isEmpty {
-                transitState.transitStops = transitState.transitStops.map { stop in
+                allStops = allStops.map { stop in
                     guard let typeStr = classification[stop.id],
                           let newType = TransitStop.TransitStopType(rawValue: typeStr),
                           stop.type != newType else { return stop }
@@ -224,40 +226,38 @@ struct MapTabView: View {
                 }
             }
 
-            // Deduplicate Luas stops — GTFS has multiple entries per station with
-            // different names ("Red Cow" vs "Red Cow Luas") and coordinates up to 400m apart.
-            // Dedup by proximity (250m) OR by name similarity (handles large interchanges).
-            // Sort so stops WITH timetable data come first to win the dedup.
+            // Step 3: Luas dedup (on local var — no state mutation)
             let classifiedIds = Set(classification.keys)
-            let luasStops = transitState.transitStops.filter { $0.type == .luas }
+            let luasStops = allStops.filter { $0.type == .luas }
                 .sorted { classifiedIds.contains($0.id) && !classifiedIds.contains($1.id) }
-            let nonLuas = transitState.transitStops.filter { $0.type != .luas }
+            let nonLuas = allStops.filter { $0.type != .luas }
             var keptLuas: [TransitStop] = []
             for stop in luasStops {
                 let isDuplicate = keptLuas.contains { kept in
-                    // Proximity check (250m)
                     let loc1 = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
                     let loc2 = CLLocation(latitude: kept.latitude, longitude: kept.longitude)
                     if loc1.distance(from: loc2) < 250 { return true }
-                    // Name similarity: if one name contains the other (e.g. "Red Cow" in "Red Cow Luas")
                     let a = stop.name.lowercased().replacingOccurrences(of: " luas", with: "")
                         .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
                     let b = kept.name.lowercased().replacingOccurrences(of: " luas", with: "")
                         .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
                     return a == b || a.contains(b) || b.contains(a)
                 }
-                if !isDuplicate {
-                    keptLuas.append(stop)
-                }
+                if !isDuplicate { keptLuas.append(stop) }
             }
-            transitState.transitStops = nonLuas + keptLuas
+            allStops = nonLuas + keptLuas
 
-            // Load shapes from GTFS for all transit types
+            // Step 4: Load ALL shapes into locals
             let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
+            let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()
+            let rail = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
+
+            // Step 5: Single batch state update — ONE re-render instead of 7
+            transitState.transitStops = allStops
             transitState.luasRedShapeLines = luasShapes.red
             transitState.luasGreenShapeLines = luasShapes.green
-            transitState.dartShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForDART()
-            transitState.railShapeLines = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
+            transitState.dartShapeLines = dart
+            transitState.railShapeLines = rail
 
             // Load cached transit graph for instant route planning (~50ms).
             // If no cache (first launch after install), build it.
