@@ -55,67 +55,8 @@ struct MapTabView: View {
 
     var body: some View {
         ZStack {
-            // Map
             mapView
-
-            // NOTE: Weather tile overlays require MKMapView (not SwiftUI Map).
-            // Visual radar is blocked until the map layer is refactored.
-            // Weather-based routing rules still work via WeatherKit.
-
-            // Top-left layers button + panel
-            VStack {
-                HStack {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                showFavoritesPanel.toggle()
-                            }
-                        }) {
-                            Image(systemName: "square.3.layers.3d")
-                                .font(.body)
-                                .padding(10)
-                                .background {
-                                    if showFavoritesPanel {
-                                        Circle().fill(Color.blue.opacity(0.2))
-                                    } else {
-                                        Circle().fill(.ultraThinMaterial)
-                                    }
-                                }
-                                .foregroundStyle(showFavoritesPanel ? .blue : .primary)
-                                .clipShape(Circle())
-                                .shadow(color: .black.opacity(0.1), radius: 2)
-                        }
-
-                        if showFavoritesPanel {
-                            FavoritesPanel(
-                                showTransitStops: $transitState.showTransitStops,
-                                showLiveTransit: $transitState.showLiveTransit,
-                                isPresented: $showFavoritesPanel,
-                                mapStyle: $mapStyleOption
-                            )
-                            .transition(.move(edge: .leading).combined(with: .opacity))
-                        }
-                    }
-                    .padding(.leading, 12)
-                    .padding(.top, 10)
-                    Spacer()
-                }
-                Spacer()
-            }
-            .zIndex(10)
-            // Tap-outside dismiss for layers panel
-            .background(
-                showFavoritesPanel ?
-                    Color.black.opacity(0.001) // Nearly invisible but tappable
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                showFavoritesPanel = false
-                            }
-                        }
-                    : nil
-            )
-
+            layersPanelOverlay
             // UI overlays
             VStack(spacing: 0) {
                 Spacer()
@@ -429,6 +370,62 @@ struct MapTabView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.3)))
         }
+    }
+
+    // MARK: - Layers Panel Overlay
+
+    private var layersPanelOverlay: some View {
+        VStack {
+            HStack {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            showFavoritesPanel.toggle()
+                        }
+                    }) {
+                        Image(systemName: "square.3.layers.3d")
+                            .font(.body)
+                            .padding(10)
+                            .background {
+                                if showFavoritesPanel {
+                                    Circle().fill(Color.blue.opacity(0.2))
+                                } else {
+                                    Circle().fill(.ultraThinMaterial)
+                                }
+                            }
+                            .foregroundStyle(showFavoritesPanel ? .blue : .primary)
+                            .clipShape(Circle())
+                            .shadow(color: .black.opacity(0.1), radius: 2)
+                    }
+
+                    if showFavoritesPanel {
+                        FavoritesPanel(
+                            showTransitStops: $transitState.showTransitStops,
+                            showLiveTransit: $transitState.showLiveTransit,
+                            isPresented: $showFavoritesPanel,
+                            mapStyle: $mapStyleOption
+                        )
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                    }
+                }
+                .padding(.leading, 12)
+                .padding(.top, 10)
+                Spacer()
+            }
+            Spacer()
+        }
+        .zIndex(10)
+        .background(
+            showFavoritesPanel ?
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            showFavoritesPanel = false
+                        }
+                    }
+                : nil
+        )
     }
 
     // MARK: - Map
