@@ -13,6 +13,7 @@ struct RoutingPanelView: View {
     @Binding var selectedRouteId: UUID?
     @Binding var selectedTransitOption: TransitRouteOption?
     @Binding var currentDetent: PresentationDetent
+    var dismissAction: (() -> Void)?
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
     @State private var showTimePicker = false
@@ -75,6 +76,14 @@ struct RoutingPanelView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                viewModel.clearRoutes()
+                dismissAction?()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
             Image(systemName: "chevron.up")
                 .font(.caption)
                 .foregroundStyle(.secondary)

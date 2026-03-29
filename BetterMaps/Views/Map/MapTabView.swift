@@ -324,10 +324,12 @@ struct MapTabView: View {
                 destination: context?.coordinate,
                 selectedRouteId: $selectedRouteId,
                 selectedTransitOption: $selectedTransitOption,
-                currentDetent: $routingDetent
+                currentDetent: $routingDetent,
+                dismissAction: { viewModel.activeSheet = nil }
             )
             .presentationDetents([.fraction(0.08), .fraction(0.35), .medium, .large], selection: $routingDetent)
             .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            .interactiveDismissDisabled()  // Prevent glitchy drag-to-dismiss; use Close button instead
 
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
