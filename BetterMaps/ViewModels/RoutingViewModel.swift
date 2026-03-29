@@ -93,7 +93,6 @@ class RoutingViewModel {
         // Store context for refreshes and multi-stop routing
         lastUserProfile = userProfile
         lastActiveTransitLayers = activeTransitLayers
-        print("[ROUTING DEBUG] activeTransitLayers received: \(activeTransitLayers.map { $0.rawValue })")
 
         // 1. Check persistent saved routes first (instant, no API calls)
         if let context {
@@ -167,7 +166,6 @@ class RoutingViewModel {
                 let transitPref = determineTransitPreference(
                     userProfile: userProfile, layers: activeTransitLayers
                 )
-                print("[ROUTING DEBUG] transitPref=\(transitPref) | layers=\(activeTransitLayers.map { $0.rawValue })")
 
                 // Stream results as they're found — Luas/DART arrive first (fewer stops),
                 // bus fills in after. No hard timeout needed since results appear incrementally.
@@ -201,19 +199,11 @@ class RoutingViewModel {
                 )
 
                 // Final pass: apply best-per-mode selection with favorites boost
-                print("[ROUTING DEBUG] selectBestPerMode input: \(allResults.count) options, pref=\(transitPref)")
-                for opt in allResults {
-                    print("[ROUTING DEBUG]   \(opt.primaryMode?.rawValue ?? "?") | \(opt.summary) | \(Int(opt.totalDuration))s | transfers=\(opt.transfers)")
-                }
                 transitOptions = selectBestPerMode(
                     from: allResults, preference: transitPref,
                     favoriteRouteNames: userProfile?.favoriteRouteNames ?? [],
                     favoriteStopIds: userProfile?.favoriteStopIds ?? []
                 )
-                print("[ROUTING DEBUG] selectBestPerMode output: \(transitOptions.count) options")
-                for opt in transitOptions {
-                    print("[ROUTING DEBUG]   → \(opt.primaryMode?.rawValue ?? "?") | \(opt.summary) | \(Int(opt.totalDuration))s")
-                }
 
                 if transitOptions.isEmpty {
                     transitStatusMessage = "No transit routes found for this time."

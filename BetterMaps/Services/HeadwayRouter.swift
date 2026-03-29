@@ -269,15 +269,7 @@ actor HeadwayRouter {
                                 }
                             }
                         }
-                        // Log DART-specific diagnostics
-                        let isDart = routeB.routeName.uppercased() == "DART"
-                        if isDart && boardB == nil && routeA.routeType == 0 {
-                            print("[DART-DEBUG] \(routeA.routeName) transfer@\(graph.stopIds[transferIdx]) → DART: no DART stop within 400m")
-                        }
                         guard let bB = boardB else { continue }
-                        if isDart && routeA.routeType == 0 {
-                            print("[DART-DEBUG] \(routeA.routeName) transfer@\(graph.stopIds[transferIdx]) → DART boardB found at \(graph.stopIds[bB.idx]), walk \(bB.walkSec/60)m")
-                        }
 
                         // Find alighting on route B near destination (bidirectional)
                         var alightB: (idx: Int, pos: Int, walkSec: Int)?
@@ -285,12 +277,6 @@ actor HeadwayRouter {
                             guard let aIdx = graph.stopIdToIndex[stopIdB], let dist = dstDist[aIdx] else { continue }
                             let walkSec = Int(dist * 1.4 / 80.0 * 60.0)
                             if alightB == nil || walkSec < alightB!.walkSec { alightB = (aIdx, posB, walkSec) }
-                        }
-                        if isDart && alightB == nil && routeA.routeType == 0 {
-                            print("[DART-DEBUG] \(routeA.routeName)→DART: board found but NO alight stop near dest (dstDist has \(dstDist.count) stops)")
-                        }
-                        if isDart && alightB != nil && routeA.routeType == 0 {
-                            print("[DART-DEBUG] \(routeA.routeName)→DART: alightB at \(graph.stopIds[alightB!.idx]), walk \(alightB!.walkSec/60)m, bB.pos=\(bB.pos) cumB.count=\(cumB.count) aB.pos=\(alightB!.pos)")
                         }
                         guard let aB = alightB, bB.pos < cumB.count, aB.pos < cumB.count,
                               bA.pos < cumA.count else { continue }
@@ -317,7 +303,6 @@ actor HeadwayRouter {
                         ))
                         transferCount += 1
                         if routeB.routeType == 3 { busTransfersAtThisStop += 1 }
-                        print("[TRANSFER] \(routeA.routeName)→\(routeB.routeName) | walk \(bA.walkSec/60)m, ride \(rideA/60)m, xfer \(bB.walkSec/60)m, ride \(rideB/60)m, walk \(aB.walkSec/60)m = \(totalSec/60)m total")
 
                         // Cap bus transfers per stop (1 is enough), but always check rail/dart
                         if routeB.routeType == 3 && busTransfersAtThisStop >= 1 { break }
@@ -371,10 +356,6 @@ actor HeadwayRouter {
             return a.totalSeconds < b.totalSeconds
         }
 
-        let final = Array(results.prefix(8))
-        let transferResults = final.filter { $0.transfers > 0 }
-        let directResults = final.filter { $0.transfers == 0 }
-        print("[RESULTS] \(directResults.count) direct + \(transferResults.count) transfer | keys: \(final.map { routeKey($0) }.joined(separator: ", "))")
-        return final
+        return Array(results.prefix(8))
     }
 }
