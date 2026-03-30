@@ -46,14 +46,15 @@ enum TransitLeg: Identifiable, Sendable {
     case ride(id: UUID, routeName: String, routeId: String, boardStop: String,
               alightStop: String, departureTime: String, arrivalTime: String,
               numStops: Int, mode: TransitLegMode,
-              boardCoord: LegCoordinate, alightCoord: LegCoordinate, pathCoords: [LegCoordinate])
+              boardCoord: LegCoordinate, alightCoord: LegCoordinate, pathCoords: [LegCoordinate],
+              boardStopId: String, alightStopId: String)
     case transfer(id: UUID, walkMinutes: Int, fromStop: String, toStop: String,
                   fromCoord: LegCoordinate, toCoord: LegCoordinate)
 
     var id: UUID {
         switch self {
         case .walk(let id, _, _, _, _, _, _):              return id
-        case .ride(let id, _, _, _, _, _, _, _, _, _, _, _): return id
+        case .ride(let id, _, _, _, _, _, _, _, _, _, _, _, _, _): return id
         case .transfer(let id, _, _, _, _, _):             return id
         }
     }
@@ -74,7 +75,7 @@ struct TransitRouteOption: Identifiable, Sendable {
     /// The mode of the first ride leg (bus, luas, dart, rail)
     var primaryMode: TransitLegMode? {
         for leg in legs {
-            if case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _) = leg { return mode }
+            if case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _, _, _) = leg { return mode }
         }
         return nil
     }
@@ -210,6 +211,14 @@ actor TransitRoutePlanner {
     ) async -> TransitRouteOption {
         var transitLegs: [TransitLeg] = []
 
+        // Dublin timezone formatter for realistic clock times
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+        timeFmt.timeZone = TimeZone(identifier: "Europe/Dublin")
+
+        // Running clock: tracks the current point in time as we build legs
+        var clock = departureDate
+
         // Walk to first board stop
         if journey.originWalkSeconds > 0, let first = journey.rideLegs.first {
             let stopId = graph?.stopIds[first.boardStopIndex] ?? ""
@@ -221,6 +230,7 @@ actor TransitRoutePlanner {
                 fromCoord: LegCoordinate(source),
                 toCoord: LegCoordinate(stop?.coordinate ?? source)
             ))
+            clock = clock.addingTimeInterval(Double(journey.originWalkSeconds))
         }
 
         for (i, leg) in journey.rideLegs.enumerated() {
@@ -242,12 +252,14 @@ actor TransitRoutePlanner {
                 if let wl = journey.walkLegs.first(where: { $0.toStopIndex == leg.boardStopIndex }) {
                     let fromId = graph?.stopIds[wl.fromStopIndex] ?? ""
                     let fromStop = stopById[fromId]
+                    let transferSec = max(wl.walkSeconds, 120) // min 2 min transfer
                     transitLegs.append(.transfer(
                         id: UUID(), walkMinutes: max(wl.walkSeconds / 60, 2),
                         fromStop: fromStop?.name ?? "Stop", toStop: boardStop?.name ?? "Stop",
                         fromCoord: LegCoordinate(fromStop?.coordinate ?? source),
                         toCoord: LegCoordinate(boardStop?.coordinate ?? destination)
                     ))
+                    clock = clock.addingTimeInterval(Double(transferSec))
                 }
             }
 
@@ -286,17 +298,26 @@ actor TransitRoutePlanner {
                 return g.routes.first(where: { $0.routeName == leg.routeName && $0.routeType == leg.routeType })?.routeLongName ?? ""
             }()
 
+            // Compute realistic clock times for this ride leg
+            let boardDate = clock.addingTimeInterval(Double(leg.waitSeconds))
+            let arriveDate = boardDate.addingTimeInterval(Double(leg.travelSeconds))
+
             transitLegs.append(.ride(
                 id: UUID(), routeName: leg.routeName, routeId: longName,
                 boardStop: boardStop?.name ?? boardId,
                 alightStop: alightStop?.name ?? alightId,
-                departureTime: "~\(leg.waitSeconds / 60) min wait",
-                arrivalTime: "~\(leg.travelSeconds / 60) min ride",
+                departureTime: "Departs ~\(timeFmt.string(from: boardDate))",
+                arrivalTime: "Arrives ~\(timeFmt.string(from: arriveDate))",
                 numStops: max(0, ridePath.count - 1), mode: mode,
                 boardCoord: boardCoord,
                 alightCoord: alightCoord,
-                pathCoords: ridePath
+                pathCoords: ridePath,
+                boardStopId: boardId,
+                alightStopId: alightId
             ))
+
+            // Advance clock past this ride
+            clock = arriveDate
         }
 
         // Walk from last alight to destination
@@ -315,11 +336,14 @@ actor TransitRoutePlanner {
         // Build summary: short name for card title, long name available in ride leg details
         let summary = journey.rideLegs.map { $0.routeName }.joined(separator: " → ")
 
+        // Realistic earliest departure: user leaves now, arrives at stop after walking
+        let walkArrivalDate = departureDate.addingTimeInterval(Double(journey.originWalkSeconds))
+
         return TransitRouteOption(
             id: UUID(), legs: transitLegs,
             totalDuration: Double(journey.totalSeconds),
             totalWalkingMinutes: (journey.originWalkSeconds + journey.destWalkSeconds) / 60,
-            departureTime: departureDate,
+            departureTime: walkArrivalDate,
             arrivalTime: departureDate.addingTimeInterval(Double(journey.totalSeconds)),
             transfers: journey.transfers,
             summary: summary.isEmpty ? "Transit" : summary
@@ -382,7 +406,9 @@ actor TransitRoutePlanner {
                 numStops: 0, mode: mode,
                 boardCoord: LegCoordinate(boardStop?.coordinate ?? source),
                 alightCoord: LegCoordinate(alightStop?.coordinate ?? destination),
-                pathCoords: []  // RAPTOR doesn't produce path coords (use shape data if needed)
+                pathCoords: [],  // RAPTOR doesn't produce path coords (use shape data if needed)
+                boardStopId: leg.boardStopId,
+                alightStopId: leg.alightStopId
             ))
         }
 

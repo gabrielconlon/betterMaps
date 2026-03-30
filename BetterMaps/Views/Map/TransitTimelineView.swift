@@ -97,7 +97,7 @@ struct TransitOptionCard: View {
             switch leg {
             case .walk:
                 key = "walk"
-            case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
+            case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _, _, _):
                 key = mode.rawValue
             case .transfer:
                 continue
@@ -132,6 +132,8 @@ struct TransitTimelineView: View {
     let option: TransitRouteOption
     var destinationCoordinate: CLLocationCoordinate2D?
     var destinationName: String?
+    /// Callback when user taps a ride leg: (stopName, stopId, coordinate, mode)
+    var onTapRideLeg: ((String, String, CLLocationCoordinate2D, TransitLegMode) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -260,7 +262,8 @@ struct TransitTimelineView: View {
             )
 
         case .ride(_, let routeName, let routeLongName, let boardStop, let alightStop,
-                   let departureTime, let arrivalTime, let numStops, let mode, _, _, _):
+                   let departureTime, let arrivalTime, let numStops, let mode,
+                   let boardCoord, _, _, let boardStopId, _):
             rideLegContent(
                 routeName: routeName,
                 routeLongName: routeLongName,
@@ -271,6 +274,10 @@ struct TransitTimelineView: View {
                 numStops: numStops,
                 mode: mode
             )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onTapRideLeg?(boardStop, boardStopId, boardCoord.clCoordinate, mode)
+            }
 
         case .transfer(_, let walkMinutes, let fromStop, let toStop, _, _):
             transferLegContent(
@@ -383,6 +390,16 @@ struct TransitTimelineView: View {
             Text(boardStop)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            HStack(spacing: 4) {
+                Image(systemName: "clock.badge")
+                    .font(.caption2)
+                Text("Tap for departures")
+                    .font(.caption2)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -501,11 +518,11 @@ struct TransitTimelineView: View {
 private func legColor(for leg: TransitLeg) -> Color {
     switch leg {
     case .walk:
-        return .green
-    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
-        return color(for: mode.rawValue)
+        return TransitColors.walkColor
+    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _, _, _):
+        return TransitColors.route(mode)
     case .transfer:
-        return .green
+        return TransitColors.walkColor
     }
 }
 
@@ -513,7 +530,7 @@ private func legIcon(for leg: TransitLeg) -> String {
     switch leg {
     case .walk:
         return "figure.walk"
-    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
+    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _, _, _):
         return iconName(for: mode.rawValue)
     case .transfer:
         return "figure.walk"
@@ -523,11 +540,11 @@ private func legIcon(for leg: TransitLeg) -> String {
 private func connectorColor(for leg: TransitLeg) -> Color {
     switch leg {
     case .walk:
-        return .green
-    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _):
-        return color(for: mode.rawValue)
+        return TransitColors.walkColor
+    case .ride(_, _, _, _, _, _, _, _, let mode, _, _, _, _, _):
+        return TransitColors.route(mode)
     case .transfer:
-        return .gray
+        return TransitColors.walkColor
     }
 }
 
@@ -549,20 +566,7 @@ private func iconName(for modeKey: String) -> String {
 }
 
 private func color(for modeKey: String) -> Color {
-    switch modeKey {
-    case "bus":
-        return .blue
-    case "luas":
-        return .green
-    case "dart":
-        return .orange
-    case "rail":
-        return .purple
-    case "walk":
-        return .green
-    default:
-        return .gray
-    }
+    TransitColors.route(for: modeKey)
 }
 
 // MARK: - Preview
@@ -579,13 +583,15 @@ private func color(for modeKey: String) -> Color {
                     .ride(id: UUID(), routeName: "39A", routeId: "39A", boardStop: "Cabra Stop",
                           alightStop: "City Centre", departureTime: "12:05",
                           arrivalTime: "12:23", numStops: 12, mode: .bus,
-                          boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
+                          boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin],
+                          boardStopId: "8220DB000039", alightStopId: "8220DB000100"),
                     .transfer(id: UUID(), walkMinutes: 2, fromStop: "Abbey St", toStop: "Abbey St Luas",
                               fromCoord: dublin, toCoord: dublin),
                     .ride(id: UUID(), routeName: "Luas Green", routeId: "LUAS_GREEN",
                           boardStop: "Abbey St", alightStop: "Bride's Glen",
                           departureTime: "12:28", arrivalTime: "12:42", numStops: 8, mode: .luas,
-                          boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
+                          boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin],
+                          boardStopId: "LUAS_ABB", alightStopId: "LUAS_BRG"),
                     .walk(id: UUID(), durationMinutes: 3, distance: 200, from: "Bride's Glen", to: "Destination",
                           fromCoord: dublin, toCoord: dublin),
                 ],
@@ -611,11 +617,13 @@ private func color(for modeKey: String) -> Color {
                 .ride(id: UUID(), routeName: "39A", routeId: "39A", boardStop: "Cabra Stop",
                       alightStop: "City Centre", departureTime: "12:05",
                       arrivalTime: "12:23", numStops: 12, mode: .bus,
-                      boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
+                      boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin],
+                      boardStopId: "8220DB000039", alightStopId: "8220DB000100"),
                 .ride(id: UUID(), routeName: "Luas Green", routeId: "LUAS_GREEN",
                       boardStop: "Abbey St", alightStop: "Bride's Glen",
                       departureTime: "12:28", arrivalTime: "12:42", numStops: 8, mode: .luas,
-                      boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin]),
+                      boardCoord: dublin, alightCoord: dublin, pathCoords: [dublin],
+                      boardStopId: "LUAS_ABB", alightStopId: "LUAS_BRG"),
             ],
             totalDuration: 2520,
             totalWalkingMinutes: 10,

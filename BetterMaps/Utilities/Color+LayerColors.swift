@@ -108,3 +108,45 @@ extension Color {
         ("Globe", "globe.americas.fill"),
     ]
 }
+
+// MARK: - Centralized Transit Colors
+
+enum TransitColors {
+    /// Muted colors for background map layer lines (Luas/DART/Rail network)
+    static func layer(_ mode: TransitLegMode) -> Color {
+        switch mode {
+        case .bus:  return .blue.opacity(0.5)
+        case .luas: return .green.opacity(0.5)
+        case .dart: return .orange.opacity(0.5)
+        case .rail: return .purple.opacity(0.5)
+        }
+    }
+
+    /// Saturated colors for active route polylines (so they pop over layer lines)
+    static func route(_ mode: TransitLegMode) -> Color {
+        switch mode {
+        case .bus:  return .blue
+        case .luas: return Color(red: 0.1, green: 0.85, blue: 0.35)
+        case .dart: return Color(red: 1.0, green: 0.6, blue: 0.0)
+        case .rail: return Color(red: 0.65, green: 0.25, blue: 0.95)
+        }
+    }
+
+    /// Route color from a string key (for views using raw mode strings)
+    static func route(for modeKey: String) -> Color {
+        if let mode = TransitLegMode(rawValue: modeKey) {
+            return route(mode)
+        }
+        if modeKey == "walk" { return walkColor }
+        return .gray
+    }
+
+    /// Luas Red line — distinct from Luas Green for layer display
+    static let luasRedLayer = Color.red.opacity(0.5)
+    static let luasRedRoute = Color(red: 1.0, green: 0.25, blue: 0.25)
+
+    // Walk & transfer styling
+    static let walkColor = Color.gray
+    static let walkDash = StrokeStyle(lineWidth: 3, dash: [6, 4])
+    static let transferDash = StrokeStyle(lineWidth: 2, dash: [4, 4])
+}

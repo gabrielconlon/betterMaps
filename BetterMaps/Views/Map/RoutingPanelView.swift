@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import CoreLocation
+import MapKit
 
 struct RoutingPanelView: View {
     @Environment(\.modelContext) private var modelContext
@@ -17,6 +18,22 @@ struct RoutingPanelView: View {
     @State private var saved = false
     @State private var selectedRoute: RouteResult?
     @State private var showTimePicker = false
+    @State private var showDeparturesSheet = false
+    @State private var departuresStopName: String = ""
+    @State private var departuresStopId: String = ""
+    @State private var departuresCoordinate: CLLocationCoordinate2D = .init()
+    @State private var departuresStopType: TransitStop.TransitStopType?
+
+    // Custom origin
+    @State private var customOrigin: CLLocationCoordinate2D?
+    @State private var customOriginName: String?
+    @State private var isEditingOrigin = false
+    @State private var originSearchText = ""
+    @State private var originSearchResults: [MKLocalSearchCompletion] = []
+    @StateObject private var originCompleter = SearchCompleterDelegate()
+
+    private var effectiveSource: CLLocationCoordinate2D? { customOrigin ?? source }
+    private var effectiveOriginName: String { customOriginName ?? originName }
 
     private var isCustomDeparture: Bool { viewModel.customDepartureTime != nil }
     private var departureTime: Date { viewModel.customDepartureTime ?? Date() }
@@ -28,7 +45,26 @@ struct RoutingPanelView: View {
             NavigationStack {
                 Group {
                     if let transitOption = selectedTransitOption {
-                        TransitTimelineView(option: transitOption)
+                        TransitTimelineView(
+                            option: transitOption,
+                            onTapRideLeg: { stopName, stopId, coordinate, mode in
+                                departuresStopName = stopName
+                                departuresStopId = stopId
+                                departuresCoordinate = coordinate
+                                departuresStopType = stopTypeFromLegMode(mode)
+                                showDeparturesSheet = true
+                            }
+                        )
+                            .sheet(isPresented: $showDeparturesSheet) {
+                                TransitArrivalsView(
+                                    stationName: departuresStopName,
+                                    coordinate: departuresCoordinate,
+                                    stopType: departuresStopType,
+                                    stopCode: nil,
+                                    stopId: departuresStopId
+                                )
+                                .presentationDetents([.medium, .large])
+                            }
                             .toolbar {
                                 ToolbarItem(placement: .topBarLeading) {
                                     Button(action: { selectedTransitOption = nil }) {
@@ -96,9 +132,171 @@ struct RoutingPanelView: View {
         }
     }
 
+    // MARK: - Origin Picker
+
+    private var originRow: some View {
+        VStack(spacing: 6) {
+            if isEditingOrigin {
+                VStack(spacing: 4) {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                        TextField("Search start location...", text: $originSearchText)
+                            .font(.subheadline)
+                            .textFieldStyle(.plain)
+                            .autocorrectionDisabled()
+                            .onSubmit { searchOrigin() }
+                            .onChange(of: originSearchText) { _, _ in
+                                originCompleter.completer.queryFragment = originSearchText
+                            }
+                        Button(action: {
+                            isEditingOrigin = false
+                            originSearchText = ""
+                            originSearchResults = []
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    // Search results
+                    if !originCompleter.results.isEmpty {
+                        VStack(spacing: 0) {
+                            ForEach(originCompleter.results.prefix(5), id: \.self) { completion in
+                                Button(action: { selectOriginCompletion(completion) }) {
+                                    HStack {
+                                        Image(systemName: "mappin.circle.fill")
+                                            .foregroundStyle(.blue)
+                                            .font(.caption)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(completion.title)
+                                                .font(.caption)
+                                                .foregroundStyle(.primary)
+                                            if !completion.subtitle.isEmpty {
+                                                Text(completion.subtitle)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 8)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                Divider()
+                            }
+                        }
+                        .background(Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    // Reset to current location
+                    if customOrigin != nil {
+                        Button(action: resetOrigin) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "location.fill")
+                                Text("Use Current Location")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                        }
+                    }
+                }
+            } else {
+                Button(action: { isEditingOrigin = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: customOrigin != nil ? "mappin.circle.fill" : "location.fill")
+                            .foregroundStyle(customOrigin != nil ? .blue : .green)
+                            .font(.caption)
+                        Text("From: \(effectiveOriginName)")
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Image(systemName: "pencil")
+                            .foregroundStyle(.secondary)
+                            .font(.caption2)
+                    }
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func searchOrigin() {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = originSearchText
+        if let src = source {
+            request.region = MKCoordinateRegion(center: src, latitudinalMeters: 20000, longitudinalMeters: 20000)
+        }
+        Task {
+            let search = MKLocalSearch(request: request)
+            if let response = try? await search.start(), let item = response.mapItems.first {
+                customOrigin = item.placemark.coordinate
+                customOriginName = item.name ?? item.placemark.title ?? "Selected Location"
+                isEditingOrigin = false
+                originSearchText = ""
+                originSearchResults = []
+                recalculateRoutes()
+            }
+        }
+    }
+
+    private func selectOriginCompletion(_ completion: MKLocalSearchCompletion) {
+        let request = MKLocalSearch.Request(completion: completion)
+        Task {
+            let search = MKLocalSearch(request: request)
+            if let response = try? await search.start(), let item = response.mapItems.first {
+                customOrigin = item.placemark.coordinate
+                customOriginName = completion.title
+                isEditingOrigin = false
+                originSearchText = ""
+                originCompleter.results = []
+                recalculateRoutes()
+            }
+        }
+    }
+
+    private func resetOrigin() {
+        customOrigin = nil
+        customOriginName = nil
+        isEditingOrigin = false
+        originSearchText = ""
+        originCompleter.results = []
+        recalculateRoutes()
+    }
+
+    private func recalculateRoutes() {
+        guard let src = effectiveSource, let dest = destination else { return }
+        let rules = (try? modelContext.fetch(FetchDescriptor<WeatherRule>())) ?? []
+        viewModel.clearRoutes()
+        selectedRouteId = nil
+        selectedTransitOption = nil
+        Task {
+            await viewModel.calculateRoutes(
+                from: src, to: dest,
+                weatherRules: rules, context: modelContext,
+                departureTime: departureTime,
+                activeTransitLayers: viewModel.lastActiveTransitLayers
+            )
+        }
+    }
+
     private var routeListView: some View {
         ScrollView {
             VStack(spacing: 8) {
+                originRow
+
                 if viewModel.isLoading && viewModel.activeRoutes.isEmpty {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -268,27 +466,62 @@ struct RoutingPanelView: View {
     }
 
     private func saveOffline() {
-        guard let source, let destination else { return }
+        guard let src = effectiveSource, let destination else { return }
         viewModel.saveCurrentRoutes(
             context: modelContext,
-            originName: originName,
+            originName: effectiveOriginName,
             destinationName: destinationName,
-            source: source,
+            source: src,
             destination: destination
         )
         saved = true
     }
 
     private func refreshTransit() {
-        guard let source, let destination else { return }
+        guard let src = effectiveSource, let destination else { return }
         let rules = (try? modelContext.fetch(FetchDescriptor<WeatherRule>())) ?? []
         Task {
             await viewModel.calculateRoutes(
-                from: source, to: destination,
+                from: src, to: destination,
                 weatherRules: rules, context: modelContext,
                 departureTime: departureTime,
                 activeTransitLayers: viewModel.lastActiveTransitLayers
             )
         }
+    }
+
+    private func stopTypeFromLegMode(_ mode: TransitLegMode) -> TransitStop.TransitStopType {
+        switch mode {
+        case .bus:  return .bus
+        case .luas: return .luas
+        case .dart: return .dart
+        case .rail: return .rail
+        }
+    }
+}
+
+// MARK: - MKLocalSearchCompleter Delegate
+
+private class SearchCompleterDelegate: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    let completer = MKLocalSearchCompleter()
+    @Published var results: [MKLocalSearchCompletion] = []
+
+    override init() {
+        super.init()
+        completer.delegate = self
+        completer.resultTypes = [.address, .pointOfInterest]
+        // Bias results toward Dublin area
+        completer.region = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 53.35, longitude: -6.26),
+            latitudinalMeters: 50000, longitudinalMeters: 50000
+        )
+    }
+
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        results = completer.results
+    }
+
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        results = []
     }
 }

@@ -314,6 +314,13 @@ actor HeadwayRouter {
         }
         debugLog += " | \(transferCount) transfers"
 
+        // --- Filter infeasible journeys ---
+        // Drop routes with unreasonably long walks (>30 min to board stop).
+        // The realistic departure times already account for walk time in the display,
+        // so this is just a sanity cap — not headway-based, which was too aggressive
+        // for Luas/rail stops that are intentionally spaced farther apart.
+        journeys = journeys.filter { $0.originWalkSeconds <= 1800 }
+
         // --- Select best per route (not just per mode) ---
         // Groups by mode + route name so Red Luas and Green Luas are separate slots.
         // Also ensures at least one non-bus option if any exists.

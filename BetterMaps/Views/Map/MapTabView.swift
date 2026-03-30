@@ -27,6 +27,7 @@ struct MapTabView: View {
     @AppStorage("hasSeenCoachMarks") private var hasSeenCoachMarks = false
     @State private var showCoachMarks = false
     @State private var routingDetent: PresentationDetent = .fraction(0.35)
+    @State private var poiSearchTask: Task<Void, Never>?
 
     var filteredPlaces: [Place] {
         filterVM.filteredPlaces(allPlaces: places, allLayers: layers)
@@ -72,6 +73,11 @@ struct MapTabView: View {
                                 case .transitStops: transitStopResults
                                 case .pois: poiResults
                                 }
+                            }
+                            if !searchState.transitDataReady && !searchState.searchText.isEmpty {
+                                Text("Loading transit data...")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -148,111 +154,14 @@ struct MapTabView: View {
                 selectedTransitOption = nil
             }
         }
-        .task {
-            // All work happens in local variables — no @State/@Observable mutations
-            // until the very end. This prevents 7+ intermediate body recomputes that
-            // stall the main thread rendering MapPolylines and block touch events.
-
-            // Step 1: Load stops into local var
-            let loader = GTFSStopLoader()
-            var allStops = await loader.loadStops()
-
-            // Step 2: Load schedule database and reclassify
-            await GTFSScheduleService.shared.loadIfNeeded()
-            let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
-            if !classification.isEmpty {
-                allStops = allStops.map { stop in
-                    guard let typeStr = classification[stop.id],
-                          let newType = TransitStop.TransitStopType(rawValue: typeStr),
-                          stop.type != newType else { return stop }
-                    return TransitStop(id: stop.id, name: stop.name,
-                                       latitude: stop.latitude, longitude: stop.longitude,
-                                       type: newType, stopCode: stop.stopCode)
-                }
-            }
-
-            // Step 3: Luas dedup (on local var — no state mutation)
-            let classifiedIds = Set(classification.keys)
-            let luasStops = allStops.filter { $0.type == .luas }
-                .sorted { classifiedIds.contains($0.id) && !classifiedIds.contains($1.id) }
-            let nonLuas = allStops.filter { $0.type != .luas }
-            var keptLuas: [TransitStop] = []
-            for stop in luasStops {
-                let isDuplicate = keptLuas.contains { kept in
-                    let loc1 = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                    let loc2 = CLLocation(latitude: kept.latitude, longitude: kept.longitude)
-                    if loc1.distance(from: loc2) < 250 { return true }
-                    let a = stop.name.lowercased().replacingOccurrences(of: " luas", with: "")
-                        .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
-                    let b = kept.name.lowercased().replacingOccurrences(of: " luas", with: "")
-                        .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
-                    return a == b || a.contains(b) || b.contains(a)
-                }
-                if !isDuplicate { keptLuas.append(stop) }
-            }
-            allStops = nonLuas + keptLuas
-
-            // Step 4: Load ALL shapes into locals
-            let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
-            let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()
-            let rail = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
-
-            // Step 5: Single batch state update — ONE re-render instead of 7
-            transitState.transitStops = allStops
-            transitState.luasRedShapeLines = luasShapes.red
-            transitState.luasGreenShapeLines = luasShapes.green
-            transitState.dartShapeLines = dart
-            transitState.railShapeLines = rail
-
-            // Load cached transit graph for instant route planning (~50ms).
-            // If no cache (first launch after install), build it.
-            Task.detached(priority: .utility) {
-                await TransitRoutePlanner.shared.headwayRouter.loadGraph()
-
-                if await !TransitRoutePlanner.shared.headwayRouter.isReady {
-                    let services = await GTFSScheduleService.shared.activeServiceIds(for: Date())
-                    let stops = await GTFSStopLoader().loadStops()
-                    let builder = TransitGraphBuilder()
-                    let graph = await builder.build(
-                        db: GTFSScheduleService.shared.database,
-                        activeServices: services, allStops: stops
-                    )
-                    await TransitRoutePlanner.shared.headwayRouter.setGraph(graph)
-                }
-            }
-        }
-        .task(id: transitState.showLiveTransit) {
-            // Debounce: wait 1 second after last toggle change before making API calls
-            // This prevents rapid toggling from burning through rate limits
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled else { return }
-
-            let wantsBus = transitState.showLiveTransit.contains(.bus) && NTATransitService.isConfigured
-            let wantsTrains = transitState.showLiveTransit.contains(.dart) || transitState.showLiveTransit.contains(.rail)
-            guard wantsBus || wantsTrains else {
-                transitState.liveVehicles = []
-                transitState.liveTrains = []
-                return
-            }
-            let vehicleService = LiveVehicleService()
-            let railService = IrishRailService()
-            var interval: Duration = .seconds(30)
-            while !Task.isCancelled {
-                async let busFetch: [GTFSVehiclePosition] = wantsBus ? vehicleService.fetchVehiclePositions() : []
-                async let trainFetch: [IrishRailTrainPosition] = wantsTrains ? railService.fetchCurrentTrains() : []
-                let (buses, trains) = await (busFetch, trainFetch)
-                // Check cancellation before mutating state — prevents crash from mid-toggle updates
-                guard !Task.isCancelled else { break }
-                let anySuccess = !buses.isEmpty || !trains.isEmpty
-                if wantsBus { transitState.liveVehicles = buses }
-                if wantsTrains { transitState.liveTrains = trains }
-                interval = anySuccess ? .seconds(30) : min(interval * 2, .seconds(120))
-                try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { break }
-            }
-            transitState.liveVehicles = []
-            transitState.liveTrains = []
-        }
+        .modifier(RouteZoomModifier(
+            routingVM: routingVM,
+            cameraPosition: $cameraPosition,
+            selectedTransitOption: $selectedTransitOption,
+            selectedRouteId: $selectedRouteId
+        ))
+        .task { await loadTransitData() }
+        .task(id: transitState.showLiveTransit) { await pollLiveTransit() }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
         }
@@ -456,11 +365,11 @@ struct MapTabView: View {
                 if transitState.showTransitStops.contains(.luas) {
                     ForEach(Array(transitState.luasRedShapeLines.enumerated()), id: \.offset) { _, coords in
                         MapPolyline(coordinates: coords)
-                            .stroke(.red.opacity(0.6), lineWidth: 3)
+                            .stroke(TransitColors.luasRedLayer, lineWidth: 3)
                     }
                     ForEach(Array(transitState.luasGreenShapeLines.enumerated()), id: \.offset) { _, coords in
                         MapPolyline(coordinates: coords)
-                            .stroke(.green.opacity(0.6), lineWidth: 3)
+                            .stroke(TransitColors.layer(.luas), lineWidth: 3)
                     }
                 }
 
@@ -468,7 +377,7 @@ struct MapTabView: View {
                 if transitState.showTransitStops.contains(.dart) {
                     ForEach(Array(transitState.dartShapeLines.enumerated()), id: \.offset) { _, coords in
                         MapPolyline(coordinates: coords)
-                            .stroke(.orange.opacity(0.6), lineWidth: 3)
+                            .stroke(TransitColors.layer(.dart), lineWidth: 3)
                     }
                 }
 
@@ -476,7 +385,7 @@ struct MapTabView: View {
                 if transitState.showTransitStops.contains(.rail) {
                     ForEach(Array(transitState.railShapeLines.enumerated()), id: \.offset) { _, coords in
                         MapPolyline(coordinates: coords)
-                            .stroke(Color(red: 0.69, green: 0.32, blue: 0.87).opacity(0.6), lineWidth: 3)
+                            .stroke(TransitColors.layer(.rail), lineWidth: 3)
                     }
                 }
 
@@ -550,25 +459,17 @@ struct MapTabView: View {
                         switch leg {
                         case .walk(_, _, _, _, _, let fromCoord, let toCoord):
                             MapPolyline(coordinates: [fromCoord.clCoordinate, toCoord.clCoordinate])
-                                .stroke(.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
+                                .stroke(TransitColors.walkColor, style: TransitColors.walkDash)
 
-                        case .ride(_, _, _, _, _, _, _, _, let mode, _, _, let pathCoords):
-                            let color: Color = {
-                                switch mode {
-                                case .bus: return .blue
-                                case .luas: return .green
-                                case .dart: return .orange
-                                case .rail: return .purple
-                                }
-                            }()
+                        case .ride(_, _, _, _, _, _, _, _, let mode, _, _, let pathCoords, _, _):
                             if pathCoords.count >= 2 {
                                 MapPolyline(coordinates: pathCoords.map { $0.clCoordinate })
-                                    .stroke(color, lineWidth: 5)
+                                    .stroke(TransitColors.route(mode), lineWidth: 5)
                             }
 
                         case .transfer(_, _, _, _, let fromCoord, let toCoord):
                             MapPolyline(coordinates: [fromCoord.clCoordinate, toCoord.clCoordinate])
-                                .stroke(.gray, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
+                                .stroke(TransitColors.walkColor, style: TransitColors.transferDash)
                         }
                     }
                 }
@@ -623,6 +524,7 @@ struct MapTabView: View {
                 // Dismiss keyboard if searching
                 if isSearchFocused {
                     isSearchFocused = false
+                    searchState.clearSearch()
                     return
                 }
                 // Clear any displayed bus route overlay
@@ -635,11 +537,10 @@ struct MapTabView: View {
                 if viewModel.activeSheet != nil { return }
 
                 guard let coordinate = proxy.convert(screenPoint, from: .local) else { return }
-                Task {
-                    // Delay to let annotation taps fire first
-                    try? await Task.sleep(for: .milliseconds(350))
-                    // Only search if no sheet was opened by an annotation tap
-                    guard viewModel.activeSheet == nil else { return }
+                poiSearchTask?.cancel()
+                poiSearchTask = Task {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled, viewModel.activeSheet == nil else { return }
                     await searchPOI(at: coordinate)
                 }
             }
@@ -855,9 +756,11 @@ struct MapTabView: View {
                 TextField("Search stops, routes, places...", text: $searchState.searchText)
                     .textFieldStyle(.plain)
                     .focused($isSearchFocused)
+                    .onChange(of: searchState.searchText) { _, _ in
+                        searchState.debouncedSearch(places: places, transitStops: transitState.transitStops, userLocation: locationManager.userLocation)
+                    }
                     .onSubmit {
                         isSearchFocused = false
-                        Task { await searchState.performSearch(places: places, transitStops: transitState.transitStops, userLocation: locationManager.userLocation) }
                     }
                 if !searchState.searchText.isEmpty {
                     Button(action: {
@@ -912,6 +815,122 @@ struct MapTabView: View {
     // MARK: - POI Search
 
     @MainActor
+    // MARK: - Async Tasks (extracted from body to reduce type-checker complexity)
+
+    private func pollLiveTransit() async {
+        // Debounce: wait 1 second after last toggle change before making API calls
+        // This prevents rapid toggling from burning through rate limits
+        try? await Task.sleep(for: .seconds(1))
+        guard !Task.isCancelled else { return }
+
+        let wantsBus = transitState.showLiveTransit.contains(.bus) && NTATransitService.isConfigured
+        let wantsTrains = transitState.showLiveTransit.contains(.dart) || transitState.showLiveTransit.contains(.rail)
+        guard wantsBus || wantsTrains else {
+            transitState.liveVehicles = []
+            transitState.liveTrains = []
+            return
+        }
+        let vehicleService = LiveVehicleService()
+        let railService = IrishRailService()
+        var interval: Duration = .seconds(30)
+        while !Task.isCancelled {
+            async let busFetch: [GTFSVehiclePosition] = wantsBus ? vehicleService.fetchVehiclePositions() : []
+            async let trainFetch: [IrishRailTrainPosition] = wantsTrains ? railService.fetchCurrentTrains() : []
+            let (buses, trains) = await (busFetch, trainFetch)
+            guard !Task.isCancelled else { break }
+            let anySuccess = !buses.isEmpty || !trains.isEmpty
+            if wantsBus { transitState.liveVehicles = buses }
+            if wantsTrains { transitState.liveTrains = trains }
+            interval = anySuccess ? .seconds(30) : min(interval * 2, .seconds(120))
+            try? await Task.sleep(for: interval)
+            guard !Task.isCancelled else { break }
+        }
+        transitState.liveVehicles = []
+        transitState.liveTrains = []
+    }
+
+
+    private func loadTransitData() async {
+        // All work happens in local variables — no @State/@Observable mutations
+        // until the very end. This prevents 7+ intermediate body recomputes that
+        // stall the main thread rendering MapPolylines and block touch events.
+
+        // Step 1: Load stops into local var
+        let loader = GTFSStopLoader()
+        var allStops = await loader.loadStops()
+
+        // Step 2: Load schedule database and reclassify
+        await GTFSScheduleService.shared.loadIfNeeded()
+        let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
+        if !classification.isEmpty {
+            allStops = allStops.map { stop in
+                guard let typeStr = classification[stop.id],
+                      let newType = TransitStop.TransitStopType(rawValue: typeStr),
+                      stop.type != newType else { return stop }
+                return TransitStop(id: stop.id, name: stop.name,
+                                   latitude: stop.latitude, longitude: stop.longitude,
+                                   type: newType, stopCode: stop.stopCode)
+            }
+        }
+
+        // Step 3: Luas dedup (on local var — no state mutation)
+        allStops = Self.deduplicateLuasStops(allStops, classifiedIds: Set(classification.keys))
+
+        // Step 4: Load ALL shapes into locals
+        let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
+        let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()
+        let rail = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
+
+        // Step 5: Single batch state update — ONE re-render instead of 7
+        transitState.transitStops = allStops
+        transitState.luasRedShapeLines = luasShapes.red
+        transitState.luasGreenShapeLines = luasShapes.green
+        transitState.dartShapeLines = dart
+        transitState.railShapeLines = rail
+        searchState.transitDataReady = true
+
+        // Load cached transit graph for instant route planning (~50ms).
+        // If no cache (first launch after install), build it.
+        Task.detached(priority: .utility) {
+            let router = TransitRoutePlanner.shared.headwayRouter
+            await router.loadGraph()
+
+            let isReady: Bool = await router.isReady
+            if !isReady {
+                let services = await GTFSScheduleService.shared.activeServiceIds(for: Date())
+                let stops = await GTFSStopLoader().loadStops()
+                let builder = TransitGraphBuilder()
+                let db = await GTFSScheduleService.shared.database
+                let graph = await builder.build(
+                    db: db, activeServices: services, allStops: stops
+                )
+                await router.setGraph(graph)
+            }
+        }
+    }
+
+    /// Extracted to a static function to avoid type-checker timeout in the .task closure.
+    private static func deduplicateLuasStops(_ allStops: [TransitStop], classifiedIds: Set<String>) -> [TransitStop] {
+        let luasStops = allStops.filter { $0.type == .luas }
+            .sorted { classifiedIds.contains($0.id) && !classifiedIds.contains($1.id) }
+        let nonLuas = allStops.filter { $0.type != .luas }
+        var kept: [TransitStop] = []
+        for stop in luasStops {
+            let isDuplicate = kept.contains { existing in
+                let loc1 = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
+                let loc2 = CLLocation(latitude: existing.latitude, longitude: existing.longitude)
+                if loc1.distance(from: loc2) < 250 { return true }
+                let a = stop.name.lowercased().replacingOccurrences(of: " luas", with: "")
+                    .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
+                let b = existing.name.lowercased().replacingOccurrences(of: " luas", with: "")
+                    .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
+                return a == b || a.contains(b) || b.contains(a)
+            }
+            if !isDuplicate { kept.append(stop) }
+        }
+        return nonLuas + kept
+    }
+
     private func searchPOI(at coordinate: CLLocationCoordinate2D) async {
         let request = MKLocalPointsOfInterestRequest(center: coordinate, radius: 50)
         let search = MKLocalSearch(request: request)
@@ -977,5 +996,60 @@ struct MapTabView: View {
         guard let userLocation = locationManager.userLocation else { return }
         let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
         await routingVM.calculateRoutes(from: userLocation, to: destination.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: transitState.showTransitStops)
+    }
+}
+
+// MARK: - Route Zoom Modifier (extracted to reduce body type-checker complexity)
+
+private struct RouteZoomModifier: ViewModifier {
+    let routingVM: RoutingViewModel
+    @Binding var cameraPosition: MapCameraPosition
+    @Binding var selectedTransitOption: TransitRouteOption?
+    @Binding var selectedRouteId: UUID?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: routingVM.activeRoutes.count) { old, new in
+                if old == 0 && new > 0 && selectedTransitOption == nil {
+                    let allCoords = routingVM.activeRoutes.flatMap { routingVM.coordinates(for: $0) }
+                    if let region = routingVM.boundingRegion(for: allCoords) {
+                        withAnimation(.easeInOut(duration: 0.5)) {
+                            cameraPosition = .region(region)
+                        }
+                    }
+                }
+            }
+            .onChange(of: routingVM.transitOptions.count) { old, new in
+                // Zoom to show the first transit option's extent, but don't auto-select
+                // so the user stays on the route list
+                if old == 0 && new > 0, let first = routingVM.transitOptions.first {
+                    let coords = routingVM.coordinates(for: first)
+                    if let region = routingVM.boundingRegion(for: coords) {
+                        withAnimation(.easeInOut(duration: 0.5)) {
+                            cameraPosition = .region(region)
+                        }
+                    }
+                }
+            }
+            .onChange(of: selectedTransitOption?.id) { _, newId in
+                guard let newId,
+                      let option = routingVM.transitOptions.first(where: { $0.id == newId }) else { return }
+                let coords = routingVM.coordinates(for: option)
+                if let region = routingVM.boundingRegion(for: coords) {
+                    withAnimation(.easeInOut(duration: 0.5)) {
+                        cameraPosition = .region(region)
+                    }
+                }
+            }
+            .onChange(of: selectedRouteId) { _, newId in
+                guard let newId,
+                      let result = routingVM.activeRoutes.first(where: { $0.id == newId }) else { return }
+                let coords = routingVM.coordinates(for: result)
+                if let region = routingVM.boundingRegion(for: coords) {
+                    withAnimation(.easeInOut(duration: 0.5)) {
+                        cameraPosition = .region(region)
+                    }
+                }
+            }
     }
 }

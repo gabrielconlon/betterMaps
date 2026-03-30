@@ -11,6 +11,10 @@ class SearchState {
     var transitSearchResults: [TransitStop] = []
     var routeSearchResults: [(routeId: String, routeName: String, longName: String, routeType: Int)] = []
     var showSearchResults: Bool = false
+    var transitDataReady: Bool = false
+
+    /// Cancellable task for debounced live search
+    private var liveSearchTask: Task<Void, Never>?
 
     // MARK: - Search Section Ordering (Serial Position Effect)
 
@@ -100,6 +104,23 @@ class SearchState {
             searchResults = response.mapItems
         }
         showSearchResults = true
+    }
+
+    // MARK: - Debounced Live Search
+
+    /// Call on every keystroke — debounces 300ms then runs performSearch.
+    func debouncedSearch(places: [Place], transitStops: [TransitStop], userLocation: CLLocationCoordinate2D?) {
+        liveSearchTask?.cancel()
+        let text = searchText
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
+            showSearchResults = false
+            return
+        }
+        liveSearchTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await performSearch(places: places, transitStops: transitStops, userLocation: userLocation)
+        }
     }
 
     // MARK: - Clear

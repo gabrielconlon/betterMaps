@@ -438,6 +438,63 @@ class RoutingViewModel {
         }
     }
 
+    // MARK: - Bounding Region
+
+    /// Compute an MKCoordinateRegion that fits all given coordinates with padding.
+    func boundingRegion(for coordinates: [CLLocationCoordinate2D], padding: Double = 1.4) -> MKCoordinateRegion? {
+        guard !coordinates.isEmpty else { return nil }
+        let lats = coordinates.map(\.latitude)
+        let lons = coordinates.map(\.longitude)
+        guard let minLat = lats.min(), let maxLat = lats.max(),
+              let minLon = lons.min(), let maxLon = lons.max() else { return nil }
+        let center = CLLocationCoordinate2D(
+            latitude: (minLat + maxLat) / 2,
+            longitude: (minLon + maxLon) / 2
+        )
+        let span = MKCoordinateSpan(
+            latitudeDelta: max((maxLat - minLat) * padding, 0.005),
+            longitudeDelta: max((maxLon - minLon) * padding, 0.005)
+        )
+        return MKCoordinateRegion(center: center, span: span)
+    }
+
+    /// Extract all coordinates from a transit route option's legs.
+    func coordinates(for option: TransitRouteOption) -> [CLLocationCoordinate2D] {
+        var coords: [CLLocationCoordinate2D] = []
+        for leg in option.legs {
+            switch leg {
+            case .walk(_, _, _, _, _, let from, let to):
+                coords.append(from.clCoordinate)
+                coords.append(to.clCoordinate)
+            case .ride(_, _, _, _, _, _, _, _, _, let board, let alight, let path, _, _):
+                coords.append(board.clCoordinate)
+                coords.append(alight.clCoordinate)
+                coords.append(contentsOf: path.map(\.clCoordinate))
+            case .transfer(_, _, _, _, let from, let to):
+                coords.append(from.clCoordinate)
+                coords.append(to.clCoordinate)
+            }
+        }
+        return coords
+    }
+
+    /// Extract all coordinates from a standard route result.
+    func coordinates(for result: RouteResult) -> [CLLocationCoordinate2D] {
+        var coords: [CLLocationCoordinate2D] = []
+        if let route = result.route {
+            let points = route.polyline.points()
+            for i in 0..<route.polyline.pointCount {
+                coords.append(points[i].coordinate)
+            }
+        } else if let polyline = result.cyclingPolyline {
+            let points = polyline.points()
+            for i in 0..<polyline.pointCount {
+                coords.append(points[i].coordinate)
+            }
+        }
+        return coords
+    }
+
     func clearRoutes() {
         activeRoutes = []
         transitOptions = []

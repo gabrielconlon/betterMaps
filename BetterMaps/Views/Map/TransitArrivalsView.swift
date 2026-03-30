@@ -228,11 +228,12 @@ struct TransitArrivalsView: View {
                                             .foregroundStyle(.blue)
                                     }
                                 }
+                                .padding(10)
+                                .background(Color(.systemGray6))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .contentShape(RoundedRectangle(cornerRadius: 8))
                             }
-                            .buttonStyle(.plain)
-                            .padding(10)
-                            .background(Color(.systemGray6))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .buttonStyle(TapFeedbackStyle())
                         }
                     }
                 }
@@ -488,5 +489,15 @@ struct FavoriteStopButton: View {
             profile.favoriteStopIds.append(stopId)
         }
         profile.updatedAt = Date()
+    }
+}
+
+// MARK: - Tap Feedback Button Style
+
+private struct TapFeedbackStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
     }
 }

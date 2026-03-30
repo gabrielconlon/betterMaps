@@ -50,7 +50,7 @@ struct TransitStopPin: View {
                     .offset(y: -2)
             }
             .frame(minWidth: 44, minHeight: 44) // Apple HIG minimum tap target
-            .contentShape(Rectangle())
+            .contentShape(Circle())
         }
     }
 }
