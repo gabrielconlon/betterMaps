@@ -292,28 +292,31 @@ struct WaypointDrawView: View {
                                 .onLongPressGesture(minimumDuration: 0.4) {
                                     deleteWaypoint(wp.id)
                                 }
-                                // Drag gesture on the annotation handle.
-                                // minimumDistance:8 stops a stationary press
-                                // from registering as a drag (which would
-                                // race the long-press / tap). Once a drag
-                                // starts, every onChanged frame converts the
-                                // current finger location to a map coord via
-                                // proxy.convert and rewrites the waypoint's
-                                // lat/lon — the Annotation's coordinate
-                                // binding rerenders so the handle and any
-                                // polyline through it move under the finger.
-                                .gesture(
-                                    DragGesture(minimumDistance: 8, coordinateSpace: .local)
+                                // Drag-to-move on the annotation handle.
+                                // Two things had to be right for this to work
+                                // at all:
+                                //   1. coordinateSpace MUST be .global, not
+                                //      .local. The gesture sits inside the
+                                //      annotation, so .local is the
+                                //      handle's tiny ~44pt frame — converting
+                                //      that point through proxy.convert gave
+                                //      coordinates a few meters from the
+                                //      handle's anchor and the waypoint
+                                //      barely moved (or moved sideways).
+                                //   2. .highPriorityGesture (not .gesture).
+                                //      SwiftUI's Map runs its pan gesture at
+                                //      the MKMapView level; a plain .gesture
+                                //      on a subview loses to it. High
+                                //      priority forces the annotation to win.
+                                .highPriorityGesture(
+                                    DragGesture(minimumDistance: 8, coordinateSpace: .global)
                                         .onChanged { value in
-                                            // Snapshot once at drag start so
-                                            // the entire drag is one undo
-                                            // entry, not one per frame.
                                             if draggingWaypointSnapshot == nil {
                                                 draggingWaypointSnapshot = paths
                                                 draggingWaypointId = wp.id
                                                 selectedWaypointId = wp.id
                                             }
-                                            if let coord = proxy.convert(value.location, from: .local) {
+                                            if let coord = proxy.convert(value.location, from: .global) {
                                                 updateWaypointCoord(wp.id, to: coord)
                                             }
                                         }
