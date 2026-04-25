@@ -911,19 +911,45 @@ struct MapTabView: View {
 
     @MainActor
     private func loadTransitData() async {
-        // MUST be @MainActor: writes @Observable state on transitState/searchState.
-        // Without isolation, Swift schedules this on the cooperative pool and the
-        // final batch of assignments happens off-main — SwiftUI never observes the
-        // change, which silently breaks the Luas/DART/Rail overlays and live search.
+        // ARCHITECTURE — Two-phase load.
         //
-        // All work happens in local variables — no @State/@Observable mutations
-        // until the very end. This prevents 7+ intermediate body recomputes that
-        // stall the main thread rendering MapPolylines and block touch events.
+        // The history of this function is a series of regressions where the user
+        // saw an empty map (no stops or no lines) for some window — sometimes a
+        // few seconds, sometimes seven days until the SQLite freshness window
+        // expired. The recurring root cause was always the same shape: a slow
+        // async step (downloading or re-parsing the 65MB GTFS ZIP, which can
+        // take 30–60s) sat *between* the data we already had on disk and the
+        // single point where we wrote it onto transitState.
+        //
+        // The fix is structural, not another patch:
+        //
+        //   PHASE 1 — Hydrate from disk caches synchronously *before* any await
+        //             that could block. After Phase 1 the map is fully usable
+        //             from whatever was cached on the previous successful launch.
+        //             If every subsequent step in this function fails or hangs,
+        //             the user still sees a working map.
+        //
+        //   PHASE 2 — Refresh from SQLite once the GTFS DB is loaded. Empty
+        //             query results never overwrite a Phase 1 hit (so a partial
+        //             SQLite parse can't wipe the map).
+        //
+        // Each phase logs its outcome to APILogger so future "stops/lines
+        // missing" debugging is one tap into the API Log instead of another
+        // round of guess-and-rebuild.
+        //
+        // MUST be @MainActor: writes @Observable state on transitState. Without
+        // isolation Swift may schedule the final assignments off-main and
+        // SwiftUI never observes the change.
 
-        // Step 0: Hydrate transit shape lines from disk cache so polylines render
-        // immediately. Without this, the lines stay invisible until SQLite finishes
-        // loading + per-line shape queries return (a few seconds at best, never
-        // when the GTFS feed is unreachable).
+        // ─── PHASE 1: Instant hydration from disk caches ──────────────────────
+        // Both the stop JSON and the shape JSON are read synchronously (no
+        // suspension). Map is populated within the first frame even if the
+        // SQLite DB needs a 60s rebuild after this point.
+        let phase1Start = Date()
+        let loader = GTFSStopLoader()
+        let stopsFromCache = await loader.loadStops()    // returns from JSON cache in ~100ms
+        transitState.transitStops = stopsFromCache       // ← assign EARLY, before any slow await
+
         if let cached = TransitShapeCache.load() {
             transitState.luasRedShapeLines = cached.red
             transitState.luasGreenShapeLines = cached.green
@@ -931,15 +957,27 @@ struct MapTabView: View {
             transitState.railShapeLines = cached.rail
         }
 
-        // Step 1: Load stops into local var
-        let loader = GTFSStopLoader()
-        var allStops = await loader.loadStops()
+        let phase1Ms = Int(Date().timeIntervalSince(phase1Start) * 1000)
+        let cachedLines = transitState.luasRedShapeLines.count
+            + transitState.luasGreenShapeLines.count
+            + transitState.dartShapeLines.count
+            + transitState.railShapeLines.count
+        APILogger.shared.log(
+            service: "BetterMaps", endpoint: "loadTransitData phase1 (caches)",
+            status: .success, durationMs: phase1Ms,
+            detail: "\(stopsFromCache.count) stops, \(cachedLines) cached shape segments"
+        )
 
-        // Step 2: Load schedule database and reclassify
+        // ─── PHASE 2: Refresh from SQLite GTFS database ────────────────────────
+        // This may block on a 30–60s re-parse the first time after install or
+        // after the cached DB is rejected for being incomplete. Phase 1 already
+        // populated the map, so the user is not staring at nothing.
         await GTFSScheduleService.shared.loadIfNeeded()
         let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
+
+        var reclassified = stopsFromCache
         if !classification.isEmpty {
-            allStops = allStops.map { stop in
+            reclassified = stopsFromCache.map { stop in
                 guard let typeStr = classification[stop.id],
                       let newType = TransitStop.TransitStopType(rawValue: typeStr),
                       stop.type != newType else { return stop }
@@ -948,28 +986,26 @@ struct MapTabView: View {
                                    type: newType, stopCode: stop.stopCode)
             }
         }
+        let dedupedStops = Self.deduplicateLuasStops(reclassified, classifiedIds: Set(classification.keys))
 
-        // Step 3: Luas dedup (on local var — no state mutation)
-        allStops = Self.deduplicateLuasStops(allStops, classifiedIds: Set(classification.keys))
-
-        // Step 4: Load ALL shapes into locals
         let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
         let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()
         let rail = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
 
-        // Step 5: Single batch state update — ONE re-render instead of 7.
-        // Only overwrite a shape array if the SQLite query returned data; an empty
-        // result means the feed/parse failed and we'd rather keep what the disk
-        // cache restored in Step 0 than wipe the map.
-        transitState.transitStops = allStops
+        // Single-frame batch refresh. Conditional overwrites are deliberate:
+        // an empty SQL result (broken DB, mid-parse, partial download) MUST
+        // NOT clobber the Phase 1 cache hit. The whole point of the two-phase
+        // design is that Phase 2 can fail and the map keeps working.
+        transitState.transitStops = dedupedStops
         if !luasShapes.red.isEmpty { transitState.luasRedShapeLines = luasShapes.red }
         if !luasShapes.green.isEmpty { transitState.luasGreenShapeLines = luasShapes.green }
         if !dart.isEmpty { transitState.dartShapeLines = dart }
         if !rail.isEmpty { transitState.railShapeLines = rail }
         searchState.transitDataReady = true
 
-        // Persist whatever we have on transitState now (post-merge) so the next
-        // launch can hydrate before the SQLite roundtrip.
+        // Persist Phase 2's truth back to disk so the next launch's Phase 1 is
+        // accurate. TransitShapeCache.save refuses empty snapshots so a fully
+        // empty Phase 2 never wipes a good cache.
         TransitShapeCache.save(
             luasRed: transitState.luasRedShapeLines,
             luasGreen: transitState.luasGreenShapeLines,
@@ -977,8 +1013,14 @@ struct MapTabView: View {
             rail: transitState.railShapeLines
         )
 
-        // Load cached transit graph for instant route planning (~50ms).
-        // If no cache (first launch after install), build it.
+        APILogger.shared.log(
+            service: "BetterMaps", endpoint: "loadTransitData phase2 (SQLite)",
+            status: (luasShapes.red.isEmpty && luasShapes.green.isEmpty && dart.isEmpty && rail.isEmpty) ? .failure : .success,
+            durationMs: 0,
+            detail: "\(dedupedStops.count) stops, luasRed=\(luasShapes.red.count) luasGreen=\(luasShapes.green.count) dart=\(dart.count) rail=\(rail.count)"
+        )
+
+        // Background graph build (independent of view rendering — does not block).
         Task.detached(priority: .utility) {
             let router = TransitRoutePlanner.shared.headwayRouter
             await router.loadGraph()
