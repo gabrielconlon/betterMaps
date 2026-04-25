@@ -587,6 +587,37 @@ actor GTFSScheduleService {
         }
     }
 
+    /// Maps Luas stop IDs to their line color. Mirror of luasShapesByLine but
+    /// for stops, so the map can give Red-line pins the red Luas color and
+    /// Green-line pins the green Luas color (matching what DART and Rail
+    /// already do — pin hue matches the line you'd ride from there).
+    /// Interchange stops served by both lines fall into both sets; the map
+    /// view picks Red on overlap to make the rarer Red presence stand out.
+    func luasStopsByLine() -> (red: Set<String>, green: Set<String>) {
+        let sql = """
+            SELECT DISTINCT st.stop_id, LOWER(COALESCE(r.route_short_name, '') || ' ' || COALESCE(r.route_long_name, ''))
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            WHERE r.route_type = 0
+        """
+        guard let stmt = db.prepare(sql) else { return ([], []) }
+        defer { db.finalize(stmt) }
+
+        var red = Set<String>()
+        var green = Set<String>()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let stopId = db.columnText(stmt, index: 0),
+                  let names = db.columnText(stmt, index: 1) else { continue }
+            if names.contains("red") {
+                red.insert(stopId)
+            } else {
+                green.insert(stopId)
+            }
+        }
+        return (red, green)
+    }
+
     /// Luas shapes split by line color. Returns (red, green) shape arrays.
     /// Uses DISTINCT shape_id to capture all branches (e.g. Red Line Tallaght + Saggart).
     /// Identifies Red vs Green by route_short_name or route_long_name.
@@ -1096,6 +1127,12 @@ enum TransitShapeCache {
         var luasGreen: [[Coord]]
         var dart: [[Coord]]
         var rail: [[Coord]]
+        // Luas stop IDs by line. Optional in the codable to stay backward-
+        // compatible with caches written before this field existed — those
+        // decode to nil here and the map view falls back to the default
+        // green Luas pin color until SQLite catches up.
+        var luasRedStops: [String]?
+        var luasGreenStops: [String]?
 
         struct Coord: Codable {
             let lat: Double
@@ -1114,20 +1151,26 @@ enum TransitShapeCache {
     static func load() -> (red: [[CLLocationCoordinate2D]],
                           green: [[CLLocationCoordinate2D]],
                           dart: [[CLLocationCoordinate2D]],
-                          rail: [[CLLocationCoordinate2D]])? {
+                          rail: [[CLLocationCoordinate2D]],
+                          luasRedStops: Set<String>,
+                          luasGreenStops: Set<String>)? {
         guard let data = try? Data(contentsOf: fileURL),
               let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
         let red = snap.luasRed.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
         let green = snap.luasGreen.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
         let dart = snap.dart.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
         let rail = snap.rail.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
-        return (red, green, dart, rail)
+        let redStops = Set(snap.luasRedStops ?? [])
+        let greenStops = Set(snap.luasGreenStops ?? [])
+        return (red, green, dart, rail, redStops, greenStops)
     }
 
     static func save(luasRed: [[CLLocationCoordinate2D]],
                      luasGreen: [[CLLocationCoordinate2D]],
                      dart: [[CLLocationCoordinate2D]],
-                     rail: [[CLLocationCoordinate2D]]) {
+                     rail: [[CLLocationCoordinate2D]],
+                     luasRedStops: Set<String>,
+                     luasGreenStops: Set<String>) {
         // Refuse to write an empty snapshot — that would clobber a good cache when
         // the SQLite query temporarily returns nothing (mid-rebuild, partial parse).
         guard !luasRed.isEmpty || !luasGreen.isEmpty || !dart.isEmpty || !rail.isEmpty else { return }
@@ -1135,7 +1178,9 @@ enum TransitShapeCache {
             luasRed: luasRed.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } },
             luasGreen: luasGreen.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } },
             dart: dart.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } },
-            rail: rail.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } }
+            rail: rail.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } },
+            luasRedStops: Array(luasRedStops),
+            luasGreenStops: Array(luasGreenStops)
         )
         guard let data = try? JSONEncoder().encode(snap) else { return }
         try? data.write(to: fileURL, options: .atomic)

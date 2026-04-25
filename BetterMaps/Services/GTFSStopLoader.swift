@@ -41,13 +41,21 @@ struct TransitStop: Identifiable {
             }
         }
 
+        /// Pastel hex values that match TransitColors.*PinHex. Pins, sidebar
+        /// chips, and search-result badges all read from this; keeping them
+        /// pastel here keeps the whole transit overlay distinct from the
+        /// vibrant custom-layer palette (Color.layerPalette).
+        ///
+        /// Note: this returns the GREEN Luas pin color; for stops on the Red
+        /// line, the map view overrides with TransitColors.luasRedPin via
+        /// pinColorForStop().
         var colorHex: String {
             switch self {
-            case .bus: return "#007AFF"
-            case .luas: return "#34C759"
-            case .dart: return "#FF9500"
-            case .rail: return "#AF52DE"
-            case .suburban: return "#FF2D55"
+            case .bus:      return TransitColors.busPinHex
+            case .luas:     return TransitColors.luasGrnPinHex
+            case .dart:     return TransitColors.dartPinHex
+            case .rail:     return TransitColors.railPinHex
+            case .suburban: return TransitColors.railPinHex
             }
         }
     }

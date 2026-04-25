@@ -111,24 +111,53 @@ extension Color {
 
 // MARK: - Centralized Transit Colors
 
+/// Transit network palette is deliberately PASTEL so it never collides with the
+/// vibrant custom-layer palette in `Color.layerPalette`. A user picking "Green"
+/// for a custom layer (#34C759, fully saturated) sees a clearly different color
+/// from the Luas Green line overlay (mint pastel) — the network reads as
+/// "background infrastructure" while custom places stay as the foreground story.
+///
+/// Within transit, pins and lines share a hue so a stop visibly belongs to its
+/// route: DART pin = peach, DART line = peach. Rail pin = lilac, Rail line = lilac.
+/// Luas is split: Red-line stops get the coral pin, Green-line stops get the mint
+/// pin — this is what the user means by "the red line should have red icons".
 enum TransitColors {
-    /// Muted colors for background map layer lines (Luas/DART/Rail network)
+    // Pastel pin colors — used for both stop annotations and as the base for
+    // line strokes (lines just apply .opacity(0.7) on top).
+    static let busPin     = Color(red: 0.46, green: 0.66, blue: 1.00)  // pastel cornflower
+    static let luasRedPin = Color(red: 1.00, green: 0.55, blue: 0.55)  // pastel coral
+    static let luasGrnPin = Color(red: 0.50, green: 0.81, blue: 0.63)  // pastel mint
+    static let dartPin    = Color(red: 1.00, green: 0.72, blue: 0.48)  // pastel peach
+    static let railPin    = Color(red: 0.76, green: 0.61, blue: 0.91)  // pastel lilac
+
+    // Hex equivalents — used by TransitStopType.colorHex for pin rendering and
+    // by sidebar legends. Keep in lock-step with the Color values above.
+    static let busPinHex     = "#75A8FF"
+    static let luasRedPinHex = "#FF8C8C"
+    static let luasGrnPinHex = "#7FCEA1"
+    static let dartPinHex    = "#FFB87A"
+    static let railPinHex    = "#C39BE8"
+
+    /// Background line color for the Luas/DART/Rail network overlay. Same hue
+    /// as the pin so a stop and its line visibly share identity.
     static func layer(_ mode: TransitLegMode) -> Color {
         switch mode {
-        case .bus:  return .blue.opacity(0.5)
-        case .luas: return .green.opacity(0.5)
-        case .dart: return .orange.opacity(0.5)
-        case .rail: return .purple.opacity(0.5)
+        case .bus:  return busPin.opacity(0.7)
+        case .luas: return luasGrnPin.opacity(0.7)   // Green line — Red is `luasRedLayer`
+        case .dart: return dartPin.opacity(0.7)
+        case .rail: return railPin.opacity(0.7)
         }
     }
 
-    /// Saturated colors for active route polylines (so they pop over layer lines)
+    /// Saturated colors for the *active selected* route polyline so it pops
+    /// against the pastel network underneath. These stay vivid on purpose —
+    /// they're a foreground action layer, not background context.
     static func route(_ mode: TransitLegMode) -> Color {
         switch mode {
-        case .bus:  return .blue
-        case .luas: return Color(red: 0.1, green: 0.85, blue: 0.35)
-        case .dart: return Color(red: 1.0, green: 0.6, blue: 0.0)
-        case .rail: return Color(red: 0.65, green: 0.25, blue: 0.95)
+        case .bus:  return Color(red: 0.0, green: 0.48, blue: 1.0)
+        case .luas: return Color(red: 0.1, green: 0.75, blue: 0.4)
+        case .dart: return Color(red: 1.0, green: 0.55, blue: 0.0)
+        case .rail: return Color(red: 0.55, green: 0.25, blue: 0.85)
         }
     }
 
@@ -141,9 +170,11 @@ enum TransitColors {
         return .gray
     }
 
-    /// Luas Red line — distinct from Luas Green for layer display
-    static let luasRedLayer = Color.red.opacity(0.5)
-    static let luasRedRoute = Color(red: 1.0, green: 0.25, blue: 0.25)
+    /// Luas Red line — pastel coral with the same .opacity treatment as the
+    /// other network lines so all four (LuasRed/LuasGreen/DART/Rail) read
+    /// as a coherent overlay set.
+    static let luasRedLayer = luasRedPin.opacity(0.7)
+    static let luasRedRoute = Color(red: 0.95, green: 0.25, blue: 0.25)  // saturated red for selected route
 
     // Walk & transfer styling
     static let walkColor = Color.gray

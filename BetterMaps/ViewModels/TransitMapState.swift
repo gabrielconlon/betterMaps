@@ -18,6 +18,12 @@ class TransitMapState {
     var dartShapeLines: [[CLLocationCoordinate2D]] = []
     var railShapeLines: [[CLLocationCoordinate2D]] = []
 
+    /// Luas stop IDs broken out by line, so the map view can tint Red-line pins
+    /// red (matching the Red line stroke) and Green-line pins green. Without
+    /// this, every Luas stop draws as Green even when it sits on the Red line.
+    var luasRedStopIds: Set<String> = []
+    var luasGreenStopIds: Set<String> = []
+
     /// Updated from MapTabView's onMapCameraChange so computed properties can filter by region.
     /// Seeded to a Dublin-wide default so stops/lines render immediately on first launch —
     /// otherwise nothing shows until the user first pans the map (onMapCameraChange fires

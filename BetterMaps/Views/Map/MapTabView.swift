@@ -955,6 +955,8 @@ struct MapTabView: View {
             transitState.luasGreenShapeLines = cached.green
             transitState.dartShapeLines = cached.dart
             transitState.railShapeLines = cached.rail
+            transitState.luasRedStopIds = cached.luasRedStops
+            transitState.luasGreenStopIds = cached.luasGreenStops
         }
 
         let phase1Ms = Int(Date().timeIntervalSince(phase1Start) * 1000)
@@ -989,6 +991,7 @@ struct MapTabView: View {
         let dedupedStops = Self.deduplicateLuasStops(reclassified, classifiedIds: Set(classification.keys))
 
         let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
+        let luasStops = await GTFSScheduleService.shared.luasStopsByLine()
         let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()
         let rail = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
 
@@ -1001,6 +1004,10 @@ struct MapTabView: View {
         if !luasShapes.green.isEmpty { transitState.luasGreenShapeLines = luasShapes.green }
         if !dart.isEmpty { transitState.dartShapeLines = dart }
         if !rail.isEmpty { transitState.railShapeLines = rail }
+        if !luasStops.red.isEmpty || !luasStops.green.isEmpty {
+            transitState.luasRedStopIds = luasStops.red
+            transitState.luasGreenStopIds = luasStops.green
+        }
         searchState.transitDataReady = true
 
         // Persist Phase 2's truth back to disk so the next launch's Phase 1 is
@@ -1010,7 +1017,9 @@ struct MapTabView: View {
             luasRed: transitState.luasRedShapeLines,
             luasGreen: transitState.luasGreenShapeLines,
             dart: transitState.dartShapeLines,
-            rail: transitState.railShapeLines
+            rail: transitState.railShapeLines,
+            luasRedStops: transitState.luasRedStopIds,
+            luasGreenStops: transitState.luasGreenStopIds
         )
 
         APILogger.shared.log(
@@ -1106,10 +1115,20 @@ struct MapTabView: View {
         return [step, step * 2, step * 3]
     }
 
-    /// Determine pin color for a stop. Each type uses its own color —
-    /// DART and Rail are independent toggles, no cross-showing.
+    /// Determine pin color for a stop. Returns nil for the default (the
+    /// stop type's `colorHex`); only overrides for Luas stops where the
+    /// pin should match the LINE color (Red vs Green) rather than the
+    /// generic Luas-green default. This is what gives the Red line stops
+    /// red pins, matching DART (peach) / Rail (lilac) where pin = line.
     private func pinColorForStop(_ stop: TransitStop) -> Color? {
-        return nil // use default color from stop type (orange=DART, purple=Rail, etc.)
+        guard stop.type == .luas else { return nil }
+        if transitState.luasRedStopIds.contains(stop.id) {
+            return TransitColors.luasRedPin
+        }
+        if transitState.luasGreenStopIds.contains(stop.id) {
+            return TransitColors.luasGrnPin
+        }
+        return nil
     }
 
     // MARK: - Routing
