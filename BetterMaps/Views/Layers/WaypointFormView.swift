@@ -139,6 +139,17 @@ struct WaypointDrawView: View {
     /// Set by long-pressing a row in the side panel; the sheet binds to the
     /// matching draft via this ID and mutates the staging array directly.
     @State private var editingWaypointId: UUID?
+    /// Trail IDs whose waypoint rows are visible in the side panel. By
+    /// default only the active trail expands so many-trail layers don't
+    /// push the panel toward its height cap. Tapping a chevron toggles
+    /// the path's membership here.
+    @State private var expandedPathIds: Set<UUID> = []
+    /// Trail being renamed via the explicit rename alert. Separate from
+    /// currentPathId because renaming and selecting are different actions
+    /// (the previous "TextField is the section header" design conflated
+    /// them — every tap to select also opened the keyboard).
+    @State private var renamingPathId: UUID?
+    @State private var renamingText: String = ""
 
     private var totalWaypointCount: Int {
         paths.reduce(0) { $0 + $1.waypoints.count }
@@ -193,6 +204,17 @@ struct WaypointDrawView: View {
                 },
                 onCancel: { editingWaypointId = nil }
             )
+        }
+        .alert("Rename Trail",
+               isPresented: Binding(
+                get: { renamingPathId != nil },
+                set: { if !$0 { renamingPathId = nil } }
+               )) {
+            TextField("Trail name", text: $renamingText)
+            Button("Save") { commitRename() }
+            Button("Cancel", role: .cancel) { renamingPathId = nil }
+        } message: {
+            Text("Give this trail a name you'll recognize on the map.")
         }
     }
 
@@ -382,34 +404,103 @@ struct WaypointDrawView: View {
 
     @ViewBuilder
     private func pathSection(_ path: DraftPath) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                // Editable inline path name. Section header doubles as the
-                // rename affordance — no extra tap target needed.
-                TextField("Path name", text: bindingForPathName(path.id))
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-                    .textFieldStyle(.plain)
-                Spacer()
-                Text("\(path.waypoints.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                if path.id == currentPathId {
+        let isActive = path.id == currentPathId
+        let isExpanded = expandedPathIds.contains(path.id)
+
+        VStack(alignment: .leading, spacing: 0) {
+            // Header is a tap target with three concrete affordances:
+            //   • chevron (left)  — toggles waypoint list expansion
+            //   • body         — selects this trail as the active one
+            //   • pencil (right) — opens rename alert
+            // Static Text replaces the previous inline TextField so a tap
+            // on the header never pops the keyboard. This was the bug the
+            // user hit: tapping to "select Trail 1" instead activated text
+            // editing, and the next map tap kept dropping into Trail 2.
+            HStack(spacing: 8) {
+                Button(action: { toggleExpand(path.id) }) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Text(path.name)
+                    .font(.subheadline.weight(isActive ? .bold : .regular))
+                    .foregroundStyle(isActive ? .primary : .secondary)
+                    .lineLimit(1)
+
+                if isActive {
                     Image(systemName: "pencil.tip")
                         .font(.caption2)
                         .foregroundStyle(.blue)
                 }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
-            .contentShape(Rectangle())
-            .onTapGesture { currentPathId = path.id }
 
-            ForEach(path.waypoints) { wp in
-                waypointRow(wp, in: path)
+                Spacer()
+
+                Text("\(path.waypoints.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+
+                Button(action: { startRename(path) }) {
+                    Image(systemName: "pencil")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            Divider()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isActive ? Color.blue.opacity(0.12) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+            .onTapGesture { selectPath(path.id) }
+
+            if isExpanded {
+                ForEach(path.waypoints) { wp in
+                    waypointRow(wp, in: path)
+                }
+            }
+            Divider().padding(.top, 4)
         }
+    }
+
+    private func toggleExpand(_ id: UUID) {
+        if expandedPathIds.contains(id) {
+            expandedPathIds.remove(id)
+        } else {
+            expandedPathIds.insert(id)
+        }
+    }
+
+    private func selectPath(_ id: UUID) {
+        currentPathId = id
+        // Auto-expand so the user can immediately verify which waypoints
+        // are in the trail they just selected.
+        expandedPathIds.insert(id)
+    }
+
+    private func startRename(_ path: DraftPath) {
+        renamingPathId = path.id
+        renamingText = path.name
+    }
+
+    private func commitRename() {
+        guard let id = renamingPathId,
+              let i = paths.firstIndex(where: { $0.id == id }) else {
+            renamingPathId = nil
+            return
+        }
+        let trimmed = renamingText.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty && trimmed != paths[i].name {
+            pushUndo()
+            paths[i].name = trimmed
+        }
+        renamingPathId = nil
     }
 
     @ViewBuilder
@@ -605,6 +696,9 @@ struct WaypointDrawView: View {
         )
         paths.append(newPath)
         currentPathId = newPath.id
+        // New trails always start expanded — the user just created it,
+        // they want to see waypoints accumulate as they tap the map.
+        expandedPathIds.insert(newPath.id)
     }
 
     private func undo() {
@@ -699,6 +793,9 @@ struct WaypointDrawView: View {
 
         paths = seedPaths
         currentPathId = paths.last?.id
+        // Start with only the active trail expanded — many-trail layers
+        // would otherwise overflow the panel on first open.
+        if let cur = currentPathId { expandedPathIds = [cur] }
 
         // Center camera on the data we have, or fall back to Dublin.
         let allCoords = paths.flatMap { $0.waypoints.map(\.coordinate) }
@@ -769,17 +866,6 @@ struct WaypointDrawView: View {
     }
 
     // MARK: - Helpers
-
-    private func bindingForPathName(_ id: UUID) -> Binding<String> {
-        Binding(
-            get: { paths.first(where: { $0.id == id })?.name ?? "" },
-            set: { newValue in
-                guard let i = paths.firstIndex(where: { $0.id == id }) else { return }
-                pushUndo()
-                paths[i].name = newValue
-            }
-        )
-    }
 
     private func boundingRegion(for coords: [CLLocationCoordinate2D]) -> MKCoordinateRegion? {
         guard !coords.isEmpty else { return nil }
