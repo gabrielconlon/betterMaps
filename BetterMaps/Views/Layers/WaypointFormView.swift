@@ -118,28 +118,11 @@ struct WaypointDrawView: View {
     @Environment(\.dismiss) private var dismiss
     let layer: Layer
 
-    /// One ordered group of waypoints — the unit of "a trail" in the UI.
-    /// Insertion order is preserved so first/last carry the auto-flag rule.
-    private struct DraftPath: Identifiable {
-        let id: UUID
-        var name: String
-        var waypoints: [DraftWaypoint]
-    }
-
-    private struct DraftWaypoint: Identifiable {
-        let id: UUID
-        var latitude: Double
-        var longitude: Double
-        var name: String
-        var isEndpoint: Bool
-        /// nil = newly created during this draw session; non-nil = a Place
-        /// that already exists in SwiftData and may need an update on commit.
-        var existingPlaceId: UUID?
-
-        var coordinate: CLLocationCoordinate2D {
-            CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-        }
-    }
+    // fileprivate (not private) so WaypointEditSheet at file scope can refer
+    // to these types directly. Still scoped to the file so they don't leak
+    // into the rest of the project as a public API.
+    typealias DraftPath = WaypointDrawDraftPath
+    typealias DraftWaypoint = WaypointDrawDraftWaypoint
 
     /// Snapshot taken before each mutating action. Undo pops the last one.
     /// Capped to keep memory bounded — the user can hit Cancel for a full revert.
@@ -152,6 +135,10 @@ struct WaypointDrawView: View {
     @State private var undoStack: [[DraftPath]] = []
     @State private var showSidePanel: Bool = false
     @State private var showCancelConfirm: Bool = false
+    /// Identity of the waypoint currently open in the precision-edit sheet.
+    /// Set by long-pressing a row in the side panel; the sheet binds to the
+    /// matching draft via this ID and mutates the staging array directly.
+    @State private var editingWaypointId: UUID?
 
     private var totalWaypointCount: Int {
         paths.reduce(0) { $0 + $1.waypoints.count }
@@ -196,6 +183,55 @@ struct WaypointDrawView: View {
         } message: {
             Text("Unsaved waypoint edits will be lost.")
         }
+        .sheet(item: editingWaypointBinding) { editing in
+            WaypointEditSheet(
+                waypoint: editing,
+                paths: paths,
+                onSave: { updated, newPathId in
+                    applyEdit(waypointId: editing.id, updated: updated, newPathId: newPathId)
+                    editingWaypointId = nil
+                },
+                onCancel: { editingWaypointId = nil }
+            )
+        }
+    }
+
+    /// Bridges editingWaypointId (UUID?) to the sheet's `item:` binding which
+    /// expects an Identifiable. Locating the actual draft by ID happens here
+    /// so the sheet body sees the live current values, not a stale snapshot.
+    private var editingWaypointBinding: Binding<DraftWaypoint?> {
+        Binding(
+            get: {
+                guard let id = editingWaypointId else { return nil }
+                return paths.flatMap(\.waypoints).first(where: { $0.id == id })
+            },
+            set: { newValue in
+                editingWaypointId = newValue?.id
+            }
+        )
+    }
+
+    private func applyEdit(waypointId: UUID, updated: DraftWaypoint, newPathId: UUID?) {
+        pushUndo()
+        // If the user changed which path the waypoint belongs to, move it.
+        // Otherwise mutate in place. Endpoint flags are NOT auto-recomputed
+        // here — manual edit means the user is being explicit.
+        let targetPathId = newPathId ?? findPathId(for: waypointId)
+        for i in paths.indices {
+            paths[i].waypoints.removeAll { $0.id == waypointId }
+        }
+        if let target = targetPathId,
+           let idx = paths.firstIndex(where: { $0.id == target }) {
+            paths[idx].waypoints.append(updated)
+        }
+        paths.removeAll { $0.waypoints.isEmpty }
+        if let cur = currentPathId, !paths.contains(where: { $0.id == cur }) {
+            currentPathId = paths.last?.id
+        }
+    }
+
+    private func findPathId(for waypointId: UUID) -> UUID? {
+        paths.first(where: { p in p.waypoints.contains(where: { $0.id == waypointId }) })?.id
     }
 
     // MARK: - Map canvas
@@ -417,6 +453,12 @@ struct WaypointDrawView: View {
                 center: wp.coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
             ))
+        }
+        .onLongPressGesture(minimumDuration: 0.4) {
+            // Long-press = open precision edit sheet (name, exact lat/lng,
+            // endpoint flag, path reassignment). Tap stays as the cheap
+            // select+pan action so the rapid review flow isn't slowed down.
+            editingWaypointId = wp.id
         }
     }
 
@@ -754,5 +796,130 @@ struct WaypointDrawView: View {
             longitudeDelta: max((maxLon - minLon) * 1.4, 0.005)
         )
         return MKCoordinateRegion(center: center, span: span)
+    }
+}
+
+// MARK: - Draft types (file scope so WaypointEditSheet can reference them)
+
+struct WaypointDrawDraftPath: Identifiable {
+    let id: UUID
+    var name: String
+    var waypoints: [WaypointDrawDraftWaypoint]
+}
+
+struct WaypointDrawDraftWaypoint: Identifiable {
+    let id: UUID
+    var latitude: Double
+    var longitude: Double
+    var name: String
+    var isEndpoint: Bool
+    /// nil = newly created during this draw session; non-nil = a Place
+    /// that already exists in SwiftData and may need an update on commit.
+    var existingPlaceId: UUID?
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
+// MARK: - Edit sheet
+
+/// Precision-edit sheet for a single waypoint, shown when the user long-
+/// presses a row in WaypointDrawView's side panel. Lets the user fix the
+/// name, type exact lat/lng, toggle the endpoint flag, and reassign the
+/// waypoint to a different path within the same layer.
+///
+/// Saves go back through WaypointDrawView.applyEdit (which calls pushUndo)
+/// so transactional Cancel still works — nothing here writes to SwiftData
+/// directly.
+private struct WaypointEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let waypoint: WaypointDrawDraftWaypoint
+    let paths: [WaypointDrawDraftPath]
+    let onSave: (WaypointDrawDraftWaypoint, UUID?) -> Void
+    let onCancel: () -> Void
+
+    @State private var name: String = ""
+    @State private var latitude: Double = 0
+    @State private var longitude: Double = 0
+    @State private var isEndpoint: Bool = false
+    @State private var selectedPathId: UUID?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("e.g. Trailhead", text: $name)
+                }
+
+                Section("Location") {
+                    HStack {
+                        Text("Lat").foregroundStyle(.secondary)
+                        TextField("Latitude", value: $latitude, format: .number.precision(.fractionLength(0...7)))
+                            .keyboardType(.numbersAndPunctuation)
+                    }
+                    HStack {
+                        Text("Lng").foregroundStyle(.secondary)
+                        TextField("Longitude", value: $longitude, format: .number.precision(.fractionLength(0...7)))
+                            .keyboardType(.numbersAndPunctuation)
+                    }
+                }
+
+                Section {
+                    Toggle(isOn: $isEndpoint) {
+                        Label("Start / End of path", systemImage: "flag.fill")
+                    }
+                } footer: {
+                    Text("Endpoints connect to only their single nearest neighbor.")
+                }
+
+                if paths.count > 1 {
+                    Section("Path") {
+                        Picker("Move to", selection: $selectedPathId) {
+                            ForEach(paths) { path in
+                                Text(path.name).tag(Optional(path.id))
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit Waypoint")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                }
+            }
+            .onAppear {
+                name = waypoint.name
+                latitude = waypoint.latitude
+                longitude = waypoint.longitude
+                isEndpoint = waypoint.isEndpoint
+                selectedPathId = paths.first(where: { p in
+                    p.waypoints.contains(where: { $0.id == waypoint.id })
+                })?.id
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func save() {
+        let updated = WaypointDrawDraftWaypoint(
+            id: waypoint.id,
+            latitude: latitude,
+            longitude: longitude,
+            name: name.trimmingCharacters(in: .whitespaces),
+            isEndpoint: isEndpoint,
+            existingPlaceId: waypoint.existingPlaceId
+        )
+        onSave(updated, selectedPathId)
+        dismiss()
     }
 }
