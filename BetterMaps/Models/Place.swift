@@ -22,6 +22,12 @@ final class Place {
     /// existing waypoints written before this field existed default to nil — the
     /// renderer treats nil as a single legacy bucket so old data keeps working.
     var pathId: UUID? = nil
+    /// Position within the path. Used by waypoint-path layers to draw the line in
+    /// tap-order rather than nearest-neighbor MST order — MST creates phantom
+    /// shortcuts (Y-shapes, triangles) when geometry is non-convex (e.g., a trail
+    /// along a winding canal). Defaults to 0; legacy data uses createdAt as a
+    /// tiebreaker until the next save assigns proper values.
+    var sortIndex: Int = 0
 
     @Attribute(.externalStorage)
     var photoData: [Data] = []

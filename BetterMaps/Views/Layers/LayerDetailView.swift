@@ -8,6 +8,10 @@ struct LayerDetailView: View {
     @State private var showAddPlace = false
     @State private var showAddWaypoint = false
     @State private var showDrawMode = false
+    /// Per-pathId expansion state for the trail-grouped waypoint list.
+    /// Default state (set on first appear): all trails expanded.
+    @State private var expandedPathIds: Set<UUID> = []
+    @State private var didSeedExpansion: Bool = false
 
     var layerPlaces: [Place] {
         (layer.places ?? []).sorted { $0.name < $1.name }
@@ -18,6 +22,53 @@ struct LayerDetailView: View {
     var pointsLabel: String {
         let count = layerPlaces.count
         return isWaypointPath ? "\(count) waypoints" : "\(count) places"
+    }
+
+    /// Sort function shared by all trail groupings: tap-order first, then
+    /// creation date as a tiebreaker for legacy waypoints (sortIndex == 0).
+    private func sortByTapOrder(_ places: [Place]) -> [Place] {
+        places.sorted { lhs, rhs in
+            if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+            return lhs.createdAt < rhs.createdAt
+        }
+    }
+
+    /// Groups the layer's waypoints by pathId for the trail-grouped section
+    /// rendering. Returns ordered (id, name, places) tuples — id is nil for
+    /// the legacy "Ungrouped" bucket of waypoints predating multi-path
+    /// support. Stable order: named trails alphabetically, then a single
+    /// "Ungrouped" bucket if any nil-pathId waypoints exist.
+    private var trailGroups: [(id: UUID?, name: String, places: [Place])] {
+        let all = layer.places ?? []
+        var byPathId: [UUID?: [Place]] = [:]
+        for place in all { byPathId[place.pathId, default: []].append(place) }
+
+        var result: [(UUID?, String, [Place])] = []
+        let pathNames = layer.pathNames
+
+        // Named trails sorted alphabetically. Trails that have a UUID but no
+        // name in pathNames get a fallback "Trail (unnamed)" so they're still
+        // visible (defensive — shouldn't normally happen).
+        let knownIds: [UUID] = byPathId.keys.compactMap { $0 }
+        let sortedKnown = knownIds.sorted { (a, b) in
+            let na = pathNames[a] ?? "Trail (unnamed)"
+            let nb = pathNames[b] ?? "Trail (unnamed)"
+            return na.localizedCaseInsensitiveCompare(nb) == .orderedAscending
+        }
+        for id in sortedKnown {
+            result.append((
+                id,
+                pathNames[id] ?? "Trail (unnamed)",
+                sortByTapOrder(byPathId[id] ?? [])
+            ))
+        }
+
+        // Legacy bucket — only show if non-empty.
+        if let nilPlaces = byPathId[nil], !nilPlaces.isEmpty {
+            result.append((nil, "Ungrouped", sortByTapOrder(nilPlaces)))
+        }
+
+        return result
     }
 
     var body: some View {
@@ -45,32 +96,49 @@ struct LayerDetailView: View {
 
             if isWaypointPath {
                 Section {
-                    Text("Each waypoint connects to its two nearest neighbors. Mark a waypoint as a Start/End to connect it to only its single closest neighbor.")
+                    Text("Trails draw their lines in tap-order. Use Draw Path to add or rearrange waypoints; the flag icon marks the start and end.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Section(isWaypointPath ? "Waypoints" : "Places") {
+            if isWaypointPath {
                 if layerPlaces.isEmpty {
-                    Text(isWaypointPath
-                        ? "No waypoints yet. Add at least two to draw a path."
-                        : "No places in this layer yet.")
-                        .foregroundStyle(.secondary)
+                    Section("Waypoints") {
+                        Text("No waypoints yet. Tap Draw Path to start a trail.")
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
-                    ForEach(layerPlaces) { place in
-                        if isWaypointPath {
-                            WaypointRowView(place: place)
-                        } else {
+                    // One section per trail. Each section is collapsible
+                    // independently — long lists never wall off the others.
+                    ForEach(trailGroups, id: \.id) { group in
+                        trailSection(group)
+                    }
+                }
+            } else {
+                Section("Places") {
+                    if layerPlaces.isEmpty {
+                        Text("No places in this layer yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(layerPlaces) { place in
                             PlaceRowView(place: place)
                         }
+                        .onDelete(perform: removePlaces)
                     }
-                    .onDelete(perform: removePlaces)
                 }
             }
         }
         .navigationTitle(layer.name)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // Seed expansion state once, defaulting to all trails expanded.
+            // Subsequent views preserve the user's manual collapse choices.
+            if !didSeedExpansion {
+                expandedPathIds = Set(trailGroups.compactMap(\.id))
+                didSeedExpansion = true
+            }
+        }
         .toolbar {
             // Draw Path is the primary action for waypoint layers — surface it
             // outside the menu so it's one tap (Fitts's Law). The "Add Waypoint"
@@ -122,6 +190,65 @@ struct LayerDetailView: View {
             // user can rapid-tap without other UI competing for hits.
             NavigationStack {
                 WaypointDrawView(layer: layer)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func trailSection(_ group: (id: UUID?, name: String, places: [Place])) -> some View {
+        let isExpanded = group.id.map { expandedPathIds.contains($0) } ?? true
+        Section {
+            if isExpanded {
+                ForEach(group.places) { place in
+                    WaypointRowView(place: place)
+                }
+                .onDelete { offsets in removeFromTrail(group: group, at: offsets) }
+            }
+        } header: {
+            // Tappable section header to toggle expansion. Only shown for
+            // waypoint-path layers; the chevron mirrors the side-panel UX
+            // in WaypointDrawView for visual consistency.
+            HStack(spacing: 8) {
+                if let id = group.id {
+                    Button(action: { toggleExpand(id) }) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    // Legacy "Ungrouped" bucket — non-collapsible since it
+                    // doesn't have a stable id we can use.
+                    Image(systemName: "questionmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Text(group.name)
+                    .textCase(nil)
+                Spacer()
+                Text("\(group.places.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .textCase(nil)
+            }
+        }
+    }
+
+    private func toggleExpand(_ id: UUID) {
+        if expandedPathIds.contains(id) {
+            expandedPathIds.remove(id)
+        } else {
+            expandedPathIds.insert(id)
+        }
+    }
+
+    private func removeFromTrail(group: (id: UUID?, name: String, places: [Place]), at offsets: IndexSet) {
+        for index in offsets {
+            guard index < group.places.count else { continue }
+            let place = group.places[index]
+            layer.places?.removeAll { $0.id == place.id }
+            if isWaypointPath, (place.layers?.isEmpty ?? true) {
+                modelContext.delete(place)
             }
         }
     }

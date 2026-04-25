@@ -262,9 +262,9 @@ struct WaypointDrawView: View {
         MapReader { proxy in
             Map(position: $cameraPosition) {
                 ForEach(paths) { path in
-                    // Live polyline per path. Uses the same MST graph as the
-                    // main map renderer so what you see while drawing matches
-                    // exactly what gets persisted.
+                    // Live polyline per path — ordered traversal: connect the
+                    // waypoints in the order the user tapped them. path.waypoints
+                    // is already in tap-order by construction (we append on add).
                     let nodes = path.waypoints.map {
                         WaypointGraph.Node(
                             id: $0.id,
@@ -273,7 +273,7 @@ struct WaypointDrawView: View {
                             pathId: path.id
                         )
                     }
-                    let segs = WaypointGraph.segments(for: nodes)
+                    let segs = WaypointGraph.orderedSegments(for: nodes)
                     ForEach(Array(segs.enumerated()), id: \.offset) { _, seg in
                         MapPolyline(coordinates: seg)
                             .stroke(Color(hex: layer.colorHex) ?? .red,
@@ -736,9 +736,17 @@ struct WaypointDrawView: View {
         let existingPlaces = layer.places ?? []
         let existingPathNames = layer.pathNames
 
-        // Group existing places by pathId. nil pathIds get bucketed into a
-        // single "Trail 1" so legacy waypoints (pre-multi-path) keep their
-        // line and can be split later.
+        // Sorter shared by every group. (sortIndex, createdAt) — sortIndex
+        // wins; createdAt is the tiebreaker that gives legacy data (all
+        // sortIndex == 0) a deterministic order until the next save assigns
+        // proper indices.
+        func sortPlaces(_ places: [Place]) -> [Place] {
+            places.sorted { lhs, rhs in
+                if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+                return lhs.createdAt < rhs.createdAt
+            }
+        }
+
         var grouped: [UUID?: [Place]] = [:]
         for place in existingPlaces { grouped[place.pathId, default: []].append(place) }
 
@@ -746,11 +754,11 @@ struct WaypointDrawView: View {
 
         // Named paths first, in stable order.
         for (uuid, name) in existingPathNames.sorted(by: { $0.value < $1.value }) {
-            let places = grouped[uuid] ?? []
+            let places = sortPlaces(grouped[uuid] ?? [])
             seedPaths.append(DraftPath(
                 id: uuid,
                 name: name,
-                waypoints: places.enumerated().map { idx, place in
+                waypoints: places.map { place in
                     DraftWaypoint(
                         id: place.id,
                         latitude: place.latitude,
@@ -771,7 +779,7 @@ struct WaypointDrawView: View {
             seedPaths.append(DraftPath(
                 id: id,
                 name: "Trail \(seedPaths.count + 1)",
-                waypoints: places.map {
+                waypoints: sortPlaces(places).map {
                     DraftWaypoint(
                         id: $0.id,
                         latitude: $0.latitude,
@@ -789,7 +797,7 @@ struct WaypointDrawView: View {
             seedPaths.append(DraftPath(
                 id: UUID(),
                 name: "Trail \(seedPaths.count + 1)",
-                waypoints: nilGroup.map {
+                waypoints: sortPlaces(nilGroup).map {
                     DraftWaypoint(
                         id: $0.id,
                         latitude: $0.latitude,
@@ -841,9 +849,12 @@ struct WaypointDrawView: View {
             }
         }
 
-        // Upsert drafts.
+        // Upsert drafts. Write sortIndex from each waypoint's position in
+        // path.waypoints so the renderer (orderedSegmentsByPath) draws the
+        // line in tap-order on the next launch — fixes the MST shortcut bug
+        // where flagging a new endpoint silently rewired the topology.
         for path in paths {
-            for draft in path.waypoints {
+            for (index, draft) in path.waypoints.enumerated() {
                 if let existingId = draft.existingPlaceId,
                    let place = existingById[existingId] {
                     place.latitude = draft.latitude
@@ -851,6 +862,7 @@ struct WaypointDrawView: View {
                     place.name = draft.name.isEmpty ? "Waypoint" : draft.name
                     place.isWaypointEndpoint = draft.isEndpoint
                     place.pathId = path.id
+                    place.sortIndex = index
                 } else {
                     let new = Place(
                         name: draft.name.isEmpty ? "Waypoint" : draft.name,
@@ -859,6 +871,7 @@ struct WaypointDrawView: View {
                     )
                     new.isWaypointEndpoint = draft.isEndpoint
                     new.pathId = path.id
+                    new.sortIndex = index
                     modelContext.insert(new)
                     if layer.places == nil { layer.places = [] }
                     layer.places?.append(new)

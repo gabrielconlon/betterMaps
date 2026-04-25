@@ -46,14 +46,20 @@ struct MapTabView: View {
     }
 
     /// (layer, segments) tuples for each visible waypoint-path layer.
-    /// Uses segmentsByPath so multiple independent trails in the same layer
-    /// (e.g., Grand Canal Trail + Phoenix Park Loop in a "Walking Trails" layer)
-    /// each render as their own connected line — never shortcutted to each other.
+    /// Trails draw in tap-order via orderedSegmentsByPath — MST was creating
+    /// phantom Y-shape shortcuts when endpoint flags changed degree caps on
+    /// non-convex routes (e.g., a path winding along a canal). Per-trail
+    /// sort: by sortIndex first, falling back to createdAt for legacy data
+    /// where every place has sortIndex == 0.
     var waypointPathRenderables: [(layer: Layer, segments: [[CLLocationCoordinate2D]])] {
         layers
             .filter { $0.isVisible && $0.kind == .waypointPath }
             .map { layer in
-                let nodes = (layer.places ?? []).map {
+                let sorted = (layer.places ?? []).sorted { lhs, rhs in
+                    if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+                    return lhs.createdAt < rhs.createdAt
+                }
+                let nodes = sorted.map {
                     WaypointGraph.Node(
                         id: $0.id,
                         coordinate: $0.coordinate,
@@ -61,7 +67,7 @@ struct MapTabView: View {
                         pathId: $0.pathId
                     )
                 }
-                return (layer, WaypointGraph.segmentsByPath(for: nodes))
+                return (layer, WaypointGraph.orderedSegmentsByPath(for: nodes))
             }
     }
 
