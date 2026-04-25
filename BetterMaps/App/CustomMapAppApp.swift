@@ -9,7 +9,8 @@ struct CustomMapAppApp: App {
             Layer.self,
             WeatherRule.self,
             SavedRoute.self,
-            UserProfile.self
+            UserProfile.self,
+            FavoriteTransitRoute.self
         ])
         let modelConfiguration = ModelConfiguration(
             schema: schema,

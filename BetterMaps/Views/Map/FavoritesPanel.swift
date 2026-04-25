@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import MapKit
 
 enum MapStyleOption: String, CaseIterable {
     case standard = "Standard"
@@ -17,43 +18,49 @@ enum MapStyleOption: String, CaseIterable {
     }
 }
 
-/// Compact quick-toggle panel for transit layers and user place layers.
-/// Appears above the bottom bar (near the button that triggers it).
+/// Quick-access panel covering the three things a user toggles most: transit
+/// modes (+ favorited routes), their saved place layers, and the map style.
+///
+/// LAYOUT — three banded regions, only the middle one scrolls.
+///
+/// ┌─────────────────────────┐
+/// │ Header                  │  fixed
+/// ├─────────────────────────┤
+/// │ Transit modes + Routes  │  fixed (max ~140pt)
+/// ├─────────────────────────┤
+/// │ Layers (your places)    │  scrolls — fills remaining
+/// ├─────────────────────────┤
+/// │ Map Style               │  fixed (~52pt)
+/// └─────────────────────────┘
+///
+/// The previous design wrapped every section in a single ScrollView, which
+/// meant a long Layers list could push Transit and Map Style off-screen — and
+/// since those two sections are capped at 4 items each they never need to
+/// scroll. By splitting into bands, the Layers section (the primary feature
+/// per Pareto) gets the full remaining height, while the fixed-size strips
+/// stay anchored where the user expects them.
 struct FavoritesPanel: View {
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \Layer.sortOrder) private var layers: [Layer]
+    @Query(sort: \FavoriteTransitRoute.sortOrder) private var favoriteRoutes: [FavoriteTransitRoute]
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
     @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
     @Binding var isPresented: Bool
     @Binding var mapStyle: MapStyleOption
+    /// Called when the user taps a favorited-route chip — host should select
+    /// the route on the map (draws shape + zooms). MapTabView wires this to
+    /// transitState.selectBusRoute.
+    var onSelectRoute: ((FavoriteTransitRoute) -> Void)? = nil
 
-    // Pinned transit types (persisted)
-    @AppStorage("favTransitBus") private var favBus = true
-    @AppStorage("favTransitLuas") private var favLuas = true
-    @AppStorage("favTransitDart") private var favDart = true
-    @AppStorage("favTransitRail") private var favRail = true
-
-    // Pinned map styles (persisted)
+    // Map style favorites stay AppStorage-backed; they're a UI preference,
+    // not user data, so SwiftData would be overkill.
     @AppStorage("favMapStandard") private var favStandard = true
     @AppStorage("favMapMuted") private var favMuted = true
     @AppStorage("favMapSatellite") private var favSatellite = true
     @AppStorage("favMapHybrid") private var favHybrid = true
 
-    private var favoriteLayers: [Layer] {
-        layers.filter { $0.isFavorite }
-    }
-
-    private var nonFavoriteLayers: [Layer] {
-        layers.filter { !$0.isFavorite }
-    }
-
-    private var favoriteTransitTypes: [(type: TransitStop.TransitStopType, icon: String, color: Color, label: String)] {
-        var result: [(TransitStop.TransitStopType, String, Color, String)] = []
-        if favBus { result.append((.bus, "bus.fill", .blue, "Bus")) }
-        if favLuas { result.append((.luas, "tram.fill", .green, "Luas")) }
-        if favDart { result.append((.dart, "tram.fill", .orange, "DART")) }
-        if favRail { result.append((.rail, "tram.fill", .purple, "Rail")) }
-        return result
-    }
+    private var favoriteLayers: [Layer] { layers.filter { $0.isFavorite } }
+    private var nonFavoriteLayers: [Layer] { layers.filter { !$0.isFavorite } }
 
     private var favoriteMapStyles: [MapStyleOption] {
         var result: [MapStyleOption] = []
@@ -64,109 +71,257 @@ struct FavoritesPanel: View {
         return result
     }
 
+    /// One row per transit mode for the chip strip.
+    /// Bus is special: long-press toggles the live layer (rare, bus-only).
+    private struct TransitMode: Identifiable {
+        let id: TransitStop.TransitStopType
+        let label: String
+        let icon: String
+        let color: Color
+    }
+    private static let transitModes: [TransitMode] = [
+        .init(id: .bus,  label: "Bus",  icon: "bus.fill",  color: TransitColors.busPin),
+        .init(id: .luas, label: "Luas", icon: "tram.fill", color: TransitColors.luasGrnPin),
+        .init(id: .dart, label: "DART", icon: "tram.fill", color: TransitColors.dartPin),
+        .init(id: .rail, label: "Rail", icon: "tram.fill", color: TransitColors.railPin),
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Header
-            HStack {
-                Text("Layers")
-                    .font(.headline)
-                Spacer()
-                Button(action: { isPresented = false }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Pinned place layers
-                    if !favoriteLayers.isEmpty {
-                        sectionHeader("Pinned")
-                        VStack(spacing: 6) {
-                            ForEach(favoriteLayers) { layer in
-                                layerRow(layer: layer)
-                            }
-                        }
-                    }
+            transitBand
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
 
-                    // All other place layers — saved sort order
-                    if !nonFavoriteLayers.isEmpty {
-                        if !favoriteLayers.isEmpty { Divider() }
-                        sectionHeader("All Layers")
-                        VStack(spacing: 6) {
-                            ForEach(nonFavoriteLayers) { layer in
-                                layerRow(layer: layer)
-                            }
-                        }
-                    }
+            Divider()
 
-                    // Pinned transit types
-                    if !favoriteTransitTypes.isEmpty {
-                        if !favoriteLayers.isEmpty || !nonFavoriteLayers.isEmpty { Divider() }
-                        sectionHeader("Transit")
-                        VStack(spacing: 6) {
-                            ForEach(favoriteTransitTypes, id: \.type) { item in
-                                transitRow(type: item.type, icon: item.icon, color: item.color, label: item.label)
-                            }
-                        }
-                    }
+            layersBand              // ← only band that scrolls; takes the rest
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
 
-                    // Pinned map styles
-                    if !favoriteMapStyles.isEmpty {
-                        Divider()
-                        sectionHeader("Map Style")
-                        let columns = [GridItem(.flexible()), GridItem(.flexible())]
-                        LazyVGrid(columns: columns, spacing: 6) {
-                            ForEach(favoriteMapStyles, id: \.self) { option in
-                                Button(action: { mapStyle = option }) {
-                                    VStack(spacing: 4) {
-                                        Image(systemName: option.icon)
-                                            .font(.caption)
-                                        Text(option.rawValue)
-                                            .font(.caption2)
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 8)
-                                    .background(mapStyle == option ? Color.blue.opacity(0.2) : Color(.systemGray5))
-                                    .foregroundStyle(mapStyle == option ? .blue : .secondary)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
+            Divider()
 
-                    if layers.isEmpty && favoriteTransitTypes.isEmpty && favoriteMapStyles.isEmpty {
-                        Text("Create layers in the menu, or pin transit/map styles in Settings.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .padding(.vertical, 2)
-                    }
-                }
-            }
-            .frame(maxHeight: .infinity)
-
-            if !showTransitStops.isEmpty || !showLiveTransit.isEmpty {
-                Button(action: {
-                    showTransitStops.removeAll()
-                    showLiveTransit.removeAll()
-                }) {
-                    Label("Hide All Transit", systemImage: "eye.slash")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                }
-            }
+            mapStyleBand
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
         }
-        .padding(14)
-        .frame(width: 260)
+        .frame(width: 280)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(color: .black.opacity(0.15), radius: 8, y: -2)
     }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack {
+            Text("Layers")
+                .font(.headline)
+            Spacer()
+            Button(action: { isPresented = false }) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Transit band (chips + favorite-routes strip)
+
+    private var transitBand: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Transit")
+
+            // Mode chips: tap toggles stops + lines for that mode. Long-press
+            // on Bus toggles Live (it's the only mode where Live is useful).
+            HStack(spacing: 6) {
+                ForEach(Self.transitModes) { mode in
+                    transitModeChip(mode)
+                }
+            }
+
+            // Favorited specific routes — horizontal scroll, anchored above
+            // the layers list. Tap a chip to draw that route on the map.
+            if !favoriteRoutes.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(favoriteRoutes) { route in
+                            routeChip(route)
+                        }
+                    }
+                }
+                .frame(height: 32)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func transitModeChip(_ mode: TransitMode) -> some View {
+        let isOn = showTransitStops.contains(mode.id)
+        let isLiveOn = showLiveTransit.contains(mode.id)
+        let liveAvailable = mode.id == .bus && NTATransitService.isConfigured
+
+        VStack(spacing: 2) {
+            Image(systemName: mode.icon)
+                .font(.system(size: 14, weight: .semibold))
+            Text(mode.label)
+                .font(.system(size: 10, weight: .medium))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(isOn ? mode.color.opacity(0.25) : Color(.systemGray5))
+        .foregroundStyle(isOn ? mode.color : .secondary)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(alignment: .topTrailing) {
+            // Tiny dot when Live is on — only meaningful for Bus today, but
+            // shown generically so the visual language is consistent if we
+            // expand Live to other modes later.
+            if isLiveOn {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 6, height: 6)
+                    .padding(4)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            toggleSet(&showTransitStops, type: mode.id)
+        }
+        .onLongPressGesture(minimumDuration: 0.4) {
+            // Long-press = toggle Live. Bus-only per current behavior; the
+            // gesture is harmless on the others since liveAvailable=false
+            // would just flip showLiveTransit which the live poller ignores
+            // for non-bus modes.
+            guard liveAvailable else { return }
+            toggleSet(&showLiveTransit, type: mode.id)
+        }
+    }
+
+    @ViewBuilder
+    private func routeChip(_ route: FavoriteTransitRoute) -> some View {
+        let bgColor: Color = {
+            switch route.routeType {
+            case 0: return TransitColors.luasGrnPin   // tram (Luas)
+            case 2: return TransitColors.dartPin      // rail (DART/Commuter)
+            default: return TransitColors.busPin      // bus
+            }
+        }()
+
+        Button(action: { onSelectRoute?(route) }) {
+            HStack(spacing: 4) {
+                Text(route.shortName)
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                Image(systemName: "star.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(bgColor)
+            .clipShape(Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            // Long-press / right-click access for unpinning. Keeps the
+            // primary tap action focused on the "show on map" path.
+            Button(role: .destructive) {
+                modelContext.delete(route)
+            } label: {
+                Label("Unpin Route", systemImage: "star.slash")
+            }
+            if !route.longName.isEmpty {
+                Text(route.longName)
+            }
+        }
+    }
+
+    // MARK: - Layers band (scrollable)
+
+    private var layersBand: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionHeader("My Layers")
+                Spacer()
+                if !showTransitStops.isEmpty || !showLiveTransit.isEmpty {
+                    Button(action: {
+                        showTransitStops.removeAll()
+                        showLiveTransit.removeAll()
+                    }) {
+                        Label("Hide Transit", systemImage: "eye.slash")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if !favoriteLayers.isEmpty {
+                        sectionHeader("Pinned").padding(.top, 2)
+                        ForEach(favoriteLayers) { layer in
+                            layerRow(layer: layer)
+                        }
+                    }
+                    if !nonFavoriteLayers.isEmpty {
+                        if !favoriteLayers.isEmpty {
+                            Divider().padding(.vertical, 2)
+                        }
+                        sectionHeader("All Layers").padding(.top, 2)
+                        ForEach(nonFavoriteLayers) { layer in
+                            layerRow(layer: layer)
+                        }
+                    }
+                    if layers.isEmpty {
+                        Text("Create layers in the menu to organize your saved places.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .padding(.vertical, 4)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    // MARK: - Map Style band (compact 4-button row)
+
+    private var mapStyleBand: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionHeader("Map Style")
+            HStack(spacing: 6) {
+                ForEach(favoriteMapStyles, id: \.self) { option in
+                    Button(action: { mapStyle = option }) {
+                        VStack(spacing: 2) {
+                            Image(systemName: option.icon)
+                                .font(.system(size: 13))
+                            Text(option.rawValue)
+                                .font(.system(size: 10))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(mapStyle == option ? Color.blue.opacity(0.2) : Color(.systemGray5))
+                        .foregroundStyle(mapStyle == option ? .blue : .secondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if favoriteMapStyles.isEmpty {
+                Text("Pin map styles in Settings to show them here.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    // MARK: - Helpers
 
     @ViewBuilder
     private func sectionHeader(_ title: String) -> some View {
@@ -174,8 +329,6 @@ struct FavoritesPanel: View {
             .font(.caption.bold())
             .foregroundStyle(.secondary)
     }
-
-    // MARK: - User Layer Row
 
     @ViewBuilder
     private func layerRow(layer: Layer) -> some View {
@@ -208,50 +361,6 @@ struct FavoritesPanel: View {
                     .foregroundStyle(layer.isFavorite ? .yellow : .secondary)
             }
             .buttonStyle(.plain)
-        }
-    }
-
-    // MARK: - Transit Row
-
-    @ViewBuilder
-    private func transitRow(type: TransitStop.TransitStopType, icon: String, color: Color, label: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .foregroundStyle(color)
-                .frame(width: 20)
-
-            Text(label)
-                .font(.subheadline)
-                .frame(width: 40, alignment: .leading)
-
-            Spacer()
-
-            Button(action: { toggleSet(&showTransitStops, type: type) }) {
-                Text("Stops")
-                    .font(.caption)
-                    .fixedSize()
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(showTransitStops.contains(type) ? color.opacity(0.2) : Color(.systemGray5))
-                    .foregroundStyle(showTransitStops.contains(type) ? color : .secondary)
-                    .clipShape(Capsule())
-                    .contentShape(Rectangle())
-            }
-
-            let liveDisabled = type == .bus && !NTATransitService.isConfigured
-            Button(action: { toggleSet(&showLiveTransit, type: type) }) {
-                Text("Live")
-                    .font(.caption)
-                    .fixedSize()
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(showLiveTransit.contains(type) ? color.opacity(0.2) : Color(.systemGray5))
-                    .foregroundStyle(showLiveTransit.contains(type) ? color : .secondary)
-                    .clipShape(Capsule())
-                    .contentShape(Rectangle())
-            }
-            .disabled(liveDisabled)
-            .opacity(liveDisabled ? 0.4 : 1)
         }
     }
 

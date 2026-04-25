@@ -29,6 +29,39 @@ enum LayerKind: String, CaseIterable, Identifiable {
     }
 }
 
+/// User's pinned transit routes (e.g. bus S8, S21, 39A) shown as quick-access
+/// chips in the layers panel. Lives alongside `Layer` because it follows the
+/// same favorite/sortOrder/persisted-via-SwiftData pattern.
+@Model
+final class FavoriteTransitRoute {
+    /// GTFS route_id — the canonical identifier from the GTFS feed. Marked
+    /// unique so duplicates can't accumulate when the same route is starred
+    /// twice from different search sessions.
+    @Attribute(.unique) var routeId: String = ""
+    /// Display string for the chip label, e.g. "S8" or "39A".
+    var shortName: String = ""
+    /// Long-form description shown on long-press / accessibility, e.g.
+    /// "Spencer Dock — UCD via City Centre". Cached so we don't need a SQLite
+    /// query each time the chip strip renders.
+    var longName: String = ""
+    /// GTFS route_type: 0=tram (Luas), 2=rail (DART/Commuter), 3=bus.
+    /// Drives the chip color and icon.
+    var routeType: Int = 3
+    /// User-defined order within the chip strip; new favorites get the
+    /// largest existing sortOrder + 1.
+    var sortOrder: Int = 0
+    var addedAt: Date = Date()
+
+    init(routeId: String, shortName: String, longName: String, routeType: Int, sortOrder: Int = 0) {
+        self.routeId = routeId
+        self.shortName = shortName
+        self.longName = longName
+        self.routeType = routeType
+        self.sortOrder = sortOrder
+        self.addedAt = Date()
+    }
+}
+
 @Model
 final class Layer {
     var id: UUID = UUID()

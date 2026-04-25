@@ -6,6 +6,7 @@ struct MapTabView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var layers: [Layer]
     @Query private var places: [Place]
+    @Query(sort: \FavoriteTransitRoute.sortOrder) private var favoriteRoutes: [FavoriteTransitRoute]
 
     @State private var viewModel = MapViewModel()
     @State private var filterVM = LayerFilterViewModel()
@@ -336,7 +337,22 @@ struct MapTabView: View {
                         showTransitStops: $transitState.showTransitStops,
                         showLiveTransit: $transitState.showLiveTransit,
                         isPresented: $showFavoritesPanel,
-                        mapStyle: $mapStyleOption
+                        mapStyle: $mapStyleOption,
+                        onSelectRoute: { route in
+                            // Tap on a favorited-route chip = draw it on the map
+                            // (same code path as picking a route from the search
+                            // results). The host owns the cameraPosition so it
+                            // belongs here, not inside FavoritesPanel.
+                            transitState.selectedBusRouteName = route.shortName
+                            Task {
+                                if let region = await transitState.selectBusRoute(routeId: route.routeId, routeName: route.shortName) {
+                                    cameraPosition = .region(region)
+                                }
+                            }
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                showFavoritesPanel = false
+                            }
+                        }
                     )
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 }
@@ -671,43 +687,77 @@ struct MapTabView: View {
     @ViewBuilder
     private var routeResults: some View {
         ForEach(searchState.routeSearchResults, id: \.routeId) { route in
-            Button(action: {
-                searchState.showSearchResults = false
-                searchState.searchText = ""
-                Task {
-                    if let region = await transitState.selectBusRoute(routeId: route.routeId, routeName: route.routeName) {
-                        cameraPosition = .region(region)
-                    }
-                }
-            }) {
-                HStack(spacing: 10) {
-                    Image(systemName: route.routeType == 0 ? "tram.fill" : (route.routeType == 2 ? "train.side.front.car" : "bus.fill"))
-                        .foregroundStyle(.white)
-                        .font(.caption.bold())
-                        .frame(width: 28, height: 28)
-                        .background(route.routeType == 0 ? .green : (route.routeType == 2 ? .orange : .blue))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Route \(route.routeName)")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.primary)
-                        if !route.longName.isEmpty {
-                            Text(route.longName)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+            HStack(spacing: 10) {
+                Button(action: {
+                    searchState.showSearchResults = false
+                    searchState.searchText = ""
+                    Task {
+                        if let region = await transitState.selectBusRoute(routeId: route.routeId, routeName: route.routeName) {
+                            cameraPosition = .region(region)
                         }
                     }
-                    Spacer()
-                    Image(systemName: "map.fill")
-                        .foregroundStyle(.blue)
-                        .font(.caption)
+                }) {
+                    HStack(spacing: 10) {
+                        Image(systemName: route.routeType == 0 ? "tram.fill" : (route.routeType == 2 ? "train.side.front.car" : "bus.fill"))
+                            .foregroundStyle(.white)
+                            .font(.caption.bold())
+                            .frame(width: 28, height: 28)
+                            .background(route.routeType == 0 ? .green : (route.routeType == 2 ? .orange : .blue))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Route \(route.routeName)")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.primary)
+                            if !route.longName.isEmpty {
+                                Text(route.longName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: "map.fill")
+                            .foregroundStyle(.blue)
+                            .font(.caption)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .buttonStyle(.plain)
+
+                // Star toggle — pin/unpin this route to the layers panel quick-access strip.
+                Button(action: { toggleFavoriteRoute(route) }) {
+                    Image(systemName: isRouteFavorited(route.routeId) ? "star.fill" : "star")
+                        .font(.subheadline)
+                        .foregroundStyle(isRouteFavorited(route.routeId) ? .yellow : .secondary)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             Divider()
         }
+    }
+
+    private func isRouteFavorited(_ routeId: String) -> Bool {
+        favoriteRoutes.contains { $0.routeId == routeId }
+    }
+
+    private func toggleFavoriteRoute(_ route: (routeId: String, routeName: String, longName: String, routeType: Int)) {
+        if let existing = favoriteRoutes.first(where: { $0.routeId == route.routeId }) {
+            modelContext.delete(existing)
+            return
+        }
+        let nextOrder = (favoriteRoutes.map(\.sortOrder).max() ?? -1) + 1
+        let fav = FavoriteTransitRoute(
+            routeId: route.routeId,
+            shortName: route.routeName,
+            longName: route.longName,
+            routeType: route.routeType,
+            sortOrder: nextOrder
+        )
+        modelContext.insert(fav)
     }
 
     @ViewBuilder
