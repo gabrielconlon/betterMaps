@@ -150,6 +150,11 @@ struct WaypointDrawView: View {
     /// them — every tap to select also opened the keyboard).
     @State private var renamingPathId: UUID?
     @State private var renamingText: String = ""
+    /// Snapshot taken at the start of a drag-to-move on a waypoint handle.
+    /// Pushed onto the undo stack at .onEnded so the entire drag is one
+    /// undo step instead of one-per-frame. nil when no drag is in flight.
+    @State private var draggingWaypointSnapshot: [DraftPath]?
+    @State private var draggingWaypointId: UUID?
 
     private var totalWaypointCount: Int {
         paths.reduce(0) { $0 + $1.waypoints.count }
@@ -287,6 +292,42 @@ struct WaypointDrawView: View {
                                 .onLongPressGesture(minimumDuration: 0.4) {
                                     deleteWaypoint(wp.id)
                                 }
+                                // Drag gesture on the annotation handle.
+                                // minimumDistance:8 stops a stationary press
+                                // from registering as a drag (which would
+                                // race the long-press / tap). Once a drag
+                                // starts, every onChanged frame converts the
+                                // current finger location to a map coord via
+                                // proxy.convert and rewrites the waypoint's
+                                // lat/lon — the Annotation's coordinate
+                                // binding rerenders so the handle and any
+                                // polyline through it move under the finger.
+                                .gesture(
+                                    DragGesture(minimumDistance: 8, coordinateSpace: .local)
+                                        .onChanged { value in
+                                            // Snapshot once at drag start so
+                                            // the entire drag is one undo
+                                            // entry, not one per frame.
+                                            if draggingWaypointSnapshot == nil {
+                                                draggingWaypointSnapshot = paths
+                                                draggingWaypointId = wp.id
+                                                selectedWaypointId = wp.id
+                                            }
+                                            if let coord = proxy.convert(value.location, from: .local) {
+                                                updateWaypointCoord(wp.id, to: coord)
+                                            }
+                                        }
+                                        .onEnded { _ in
+                                            if let snapshot = draggingWaypointSnapshot {
+                                                undoStack.append(snapshot)
+                                                if undoStack.count > Self.undoStackLimit {
+                                                    undoStack.removeFirst(undoStack.count - Self.undoStackLimit)
+                                                }
+                                            }
+                                            draggingWaypointSnapshot = nil
+                                            draggingWaypointId = nil
+                                        }
+                                )
                         }
                     }
                 }
@@ -321,12 +362,13 @@ struct WaypointDrawView: View {
     @ViewBuilder
     private func waypointHandle(_ wp: DraftWaypoint) -> some View {
         let isSelected = selectedWaypointId == wp.id
+        let isDragging = draggingWaypointId == wp.id
         let strokeColor = Color(hex: layer.colorHex) ?? .red
         ZStack {
-            if isSelected {
+            if isSelected || isDragging {
                 Circle()
                     .stroke(strokeColor, lineWidth: 3)
-                    .frame(width: 28, height: 28)
+                    .frame(width: isDragging ? 36 : 28, height: isDragging ? 36 : 28)
             }
             Circle()
                 .fill(wp.isEndpoint ? strokeColor : .white)
@@ -340,6 +382,9 @@ struct WaypointDrawView: View {
                     .foregroundStyle(.white)
             }
         }
+        .scaleEffect(isDragging ? 1.15 : 1.0)
+        .shadow(color: isDragging ? strokeColor.opacity(0.6) : .clear, radius: 6)
+        .animation(.easeInOut(duration: 0.15), value: isDragging)
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Rectangle())
     }
@@ -707,6 +752,19 @@ struct WaypointDrawView: View {
             currentPathId = paths.last?.id
         }
         if selectedWaypointId == id { selectedWaypointId = nil }
+    }
+
+    /// Live waypoint reposition during a drag-to-move gesture. Called
+    /// many times per second from DragGesture.onChanged — does NOT push
+    /// undo here; the gesture's onEnded pushes a single snapshot taken
+    /// at drag start so an entire drag is one Undo step.
+    private func updateWaypointCoord(_ id: UUID, to coord: CLLocationCoordinate2D) {
+        for i in paths.indices {
+            for j in paths[i].waypoints.indices where paths[i].waypoints[j].id == id {
+                paths[i].waypoints[j].latitude = coord.latitude
+                paths[i].waypoints[j].longitude = coord.longitude
+            }
+        }
     }
 
     /// Manually toggle the endpoint flag on a waypoint. The flag is now
