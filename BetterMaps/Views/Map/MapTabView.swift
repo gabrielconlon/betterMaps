@@ -313,16 +313,14 @@ struct MapTabView: View {
     private static let panelBottomReserve: CGFloat = 76
 
     private var layersPanelOverlay: some View {
-        // The panel-closed and panel-open states are split into two ZStack branches
-        // so the closed state has zero full-screen frames. The previous single-branch
-        // layout used .frame(maxWidth: .infinity, maxHeight: .infinity) on the HStack
-        // and .frame(maxHeight: .infinity) on the inner VStack at all times — those
-        // expanded the overlay's hit-test rect even with no visible content, eating
-        // taps over transit pins and POIs in the left column. Now the closed state
-        // is just the small button at top-leading.
+        // ZStack must claim the full screen so its alignment(.topLeading) actually
+        // pins the toggle button to the corner — without the maxWidth/maxHeight
+        // frame the ZStack sizes to its content and the parent ZStack centers it.
+        // SwiftUI's empty ZStack frame doesn't intercept taps on its own; the
+        // dimmer view (only shown when the panel is open) is what catches outside
+        // taps to dismiss.
         ZStack(alignment: .topLeading) {
             if showFavoritesPanel {
-                // Dimmer behind the panel — tap-to-dismiss outside the panel.
                 Color.black.opacity(0.001)
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
@@ -352,6 +350,7 @@ struct MapTabView: View {
                     .padding(.top, 10)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .zIndex(10)
     }
 
