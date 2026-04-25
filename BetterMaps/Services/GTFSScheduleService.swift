@@ -1068,3 +1068,63 @@ extension GTFSStopLoader {
         extractFileDataFromZip(data: data, fileName: fileName)
     }
 }
+
+// MARK: - Transit Shape Disk Cache
+
+/// Persists Luas/DART/Rail polyline arrays to JSON in the caches directory so the
+/// map renders lines instantly on launch — even before the SQLite GTFS DB has
+/// finished opening, and even if the GTFS feed is unreachable. Without this
+/// cache the polyline arrays start empty every launch and only populate after
+/// loadIfNeeded() + per-line SQL queries return, which is what made Luas/DART
+/// lines vanish intermittently after a fresh install or when the feed was slow.
+enum TransitShapeCache {
+    struct Snapshot: Codable {
+        var luasRed: [[Coord]]
+        var luasGreen: [[Coord]]
+        var dart: [[Coord]]
+        var rail: [[Coord]]
+
+        struct Coord: Codable {
+            let lat: Double
+            let lon: Double
+        }
+    }
+
+    private static let fileName = "gtfs_shapes_cache.json"
+
+    private static var fileURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(fileName)
+    }
+
+    /// Synchronous read so callers can populate state before the first body recompute.
+    static func load() -> (red: [[CLLocationCoordinate2D]],
+                          green: [[CLLocationCoordinate2D]],
+                          dart: [[CLLocationCoordinate2D]],
+                          rail: [[CLLocationCoordinate2D]])? {
+        guard let data = try? Data(contentsOf: fileURL),
+              let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
+        let red = snap.luasRed.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
+        let green = snap.luasGreen.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
+        let dart = snap.dart.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
+        let rail = snap.rail.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
+        return (red, green, dart, rail)
+    }
+
+    static func save(luasRed: [[CLLocationCoordinate2D]],
+                     luasGreen: [[CLLocationCoordinate2D]],
+                     dart: [[CLLocationCoordinate2D]],
+                     rail: [[CLLocationCoordinate2D]]) {
+        // Refuse to write an empty snapshot — that would clobber a good cache when
+        // the SQLite query temporarily returns nothing (mid-rebuild, partial parse).
+        guard !luasRed.isEmpty || !luasGreen.isEmpty || !dart.isEmpty || !rail.isEmpty else { return }
+        let snap = Snapshot(
+            luasRed: luasRed.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } },
+            luasGreen: luasGreen.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } },
+            dart: dart.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } },
+            rail: rail.map { $0.map { Snapshot.Coord(lat: $0.latitude, lon: $0.longitude) } }
+        )
+        guard let data = try? JSONEncoder().encode(snap) else { return }
+        try? data.write(to: fileURL, options: .atomic)
+    }
+}

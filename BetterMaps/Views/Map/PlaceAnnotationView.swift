@@ -101,7 +101,8 @@ struct PlaceAnnotationView: View {
                     .clipShape(Circle())
                     .shadow(color: pinColor.opacity(0.4), radius: 4, y: 2)
             }
-            .contentShape(Circle())
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
 
             Image(systemName: "triangle.fill")
                 .font(.system(size: 8))

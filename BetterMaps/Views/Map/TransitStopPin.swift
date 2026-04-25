@@ -32,7 +32,10 @@ struct TransitStopPin: View {
                 .background(color)
                 .clipShape(Circle())
                 .frame(minWidth: 44, minHeight: 44) // Apple HIG minimum tap target
-                .contentShape(Circle())
+                // Rectangle (not Circle) so the full 44x44 frame accepts taps —
+                // an inscribed circle leaves ~32% of the corner area dead, and
+                // those misses fall through to the map's POI search debounce.
+                .contentShape(Rectangle())
         case .full:
             VStack(spacing: 0) {
                 Image(systemName: stop.type.systemImage)
@@ -50,7 +53,7 @@ struct TransitStopPin: View {
                     .offset(y: -2)
             }
             .frame(minWidth: 44, minHeight: 44) // Apple HIG minimum tap target
-            .contentShape(Circle())
+            .contentShape(Rectangle())
         }
     }
 }

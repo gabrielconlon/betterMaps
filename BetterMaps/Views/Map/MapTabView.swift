@@ -313,59 +313,68 @@ struct MapTabView: View {
     private static let panelBottomReserve: CGFloat = 76
 
     private var layersPanelOverlay: some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        showFavoritesPanel.toggle()
-                    }
-                }) {
-                    Image(systemName: "square.3.layers.3d")
-                        .font(.body)
-                        .padding(10)
-                        .background {
-                            if showFavoritesPanel {
-                                Circle().fill(Color.blue.opacity(0.2))
-                            } else {
-                                Circle().fill(.ultraThinMaterial)
-                            }
+        // The panel-closed and panel-open states are split into two ZStack branches
+        // so the closed state has zero full-screen frames. The previous single-branch
+        // layout used .frame(maxWidth: .infinity, maxHeight: .infinity) on the HStack
+        // and .frame(maxHeight: .infinity) on the inner VStack at all times — those
+        // expanded the overlay's hit-test rect even with no visible content, eating
+        // taps over transit pins and POIs in the left column. Now the closed state
+        // is just the small button at top-leading.
+        ZStack(alignment: .topLeading) {
+            if showFavoritesPanel {
+                // Dimmer behind the panel — tap-to-dismiss outside the panel.
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            showFavoritesPanel = false
                         }
-                        .foregroundStyle(showFavoritesPanel ? .blue : .primary)
-                        .clipShape(Circle())
-                        .shadow(color: .black.opacity(0.1), radius: 2)
-                }
+                    }
 
-                if showFavoritesPanel {
+                VStack(alignment: .leading, spacing: 8) {
+                    layersPanelToggleButton
                     FavoritesPanel(
                         showTransitStops: $transitState.showTransitStops,
                         showLiveTransit: $transitState.showLiveTransit,
                         isPresented: $showFavoritesPanel,
                         mapStyle: $mapStyleOption
                     )
-                    .frame(maxHeight: .infinity)
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 }
+                .padding(.leading, 12)
+                .padding(.top, 10)
+                .padding(.bottom, Self.panelBottomReserve)
+                .frame(maxHeight: .infinity, alignment: .top)
+            } else {
+                layersPanelToggleButton
+                    .padding(.leading, 12)
+                    .padding(.top, 10)
             }
-            .padding(.leading, 12)
-            .padding(.top, 10)
-            .padding(.bottom, showFavoritesPanel ? Self.panelBottomReserve : 0)
-            .frame(maxHeight: .infinity, alignment: .top)
-
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .zIndex(10)
-        .background(
-            showFavoritesPanel ?
-                Color.black.opacity(0.001)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            showFavoritesPanel = false
-                        }
+    }
+
+    private var layersPanelToggleButton: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                showFavoritesPanel.toggle()
+            }
+        }) {
+            Image(systemName: "square.3.layers.3d")
+                .font(.body)
+                .padding(10)
+                .background {
+                    if showFavoritesPanel {
+                        Circle().fill(Color.blue.opacity(0.2))
+                    } else {
+                        Circle().fill(.ultraThinMaterial)
                     }
-                : nil
-        )
+                }
+                .foregroundStyle(showFavoritesPanel ? .blue : .primary)
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.1), radius: 2)
+        }
     }
 
     // MARK: - Map
@@ -912,6 +921,17 @@ struct MapTabView: View {
         // until the very end. This prevents 7+ intermediate body recomputes that
         // stall the main thread rendering MapPolylines and block touch events.
 
+        // Step 0: Hydrate transit shape lines from disk cache so polylines render
+        // immediately. Without this, the lines stay invisible until SQLite finishes
+        // loading + per-line shape queries return (a few seconds at best, never
+        // when the GTFS feed is unreachable).
+        if let cached = TransitShapeCache.load() {
+            transitState.luasRedShapeLines = cached.red
+            transitState.luasGreenShapeLines = cached.green
+            transitState.dartShapeLines = cached.dart
+            transitState.railShapeLines = cached.rail
+        }
+
         // Step 1: Load stops into local var
         let loader = GTFSStopLoader()
         var allStops = await loader.loadStops()
@@ -938,13 +958,25 @@ struct MapTabView: View {
         let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()
         let rail = await GTFSScheduleService.shared.shapeCoordinatesForNonDartRail()
 
-        // Step 5: Single batch state update — ONE re-render instead of 7
+        // Step 5: Single batch state update — ONE re-render instead of 7.
+        // Only overwrite a shape array if the SQLite query returned data; an empty
+        // result means the feed/parse failed and we'd rather keep what the disk
+        // cache restored in Step 0 than wipe the map.
         transitState.transitStops = allStops
-        transitState.luasRedShapeLines = luasShapes.red
-        transitState.luasGreenShapeLines = luasShapes.green
-        transitState.dartShapeLines = dart
-        transitState.railShapeLines = rail
+        if !luasShapes.red.isEmpty { transitState.luasRedShapeLines = luasShapes.red }
+        if !luasShapes.green.isEmpty { transitState.luasGreenShapeLines = luasShapes.green }
+        if !dart.isEmpty { transitState.dartShapeLines = dart }
+        if !rail.isEmpty { transitState.railShapeLines = rail }
         searchState.transitDataReady = true
+
+        // Persist whatever we have on transitState now (post-merge) so the next
+        // launch can hydrate before the SQLite roundtrip.
+        TransitShapeCache.save(
+            luasRed: transitState.luasRedShapeLines,
+            luasGreen: transitState.luasGreenShapeLines,
+            dart: transitState.dartShapeLines,
+            rail: transitState.railShapeLines
+        )
 
         // Load cached transit graph for instant route planning (~50ms).
         // If no cache (first launch after install), build it.
