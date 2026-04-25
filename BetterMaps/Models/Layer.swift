@@ -34,10 +34,13 @@ enum LayerKind: String, CaseIterable, Identifiable {
 /// same favorite/sortOrder/persisted-via-SwiftData pattern.
 @Model
 final class FavoriteTransitRoute {
-    /// GTFS route_id — the canonical identifier from the GTFS feed. Marked
-    /// unique so duplicates can't accumulate when the same route is starred
-    /// twice from different search sessions.
-    @Attribute(.unique) var routeId: String = ""
+    /// GTFS route_id — the canonical identifier from the GTFS feed.
+    /// Cannot use @Attribute(.unique) here: this app's ModelContainer is
+    /// configured with cloudKitDatabase: .automatic, and CloudKit-mirrored
+    /// SwiftData containers reject unique constraints with a
+    /// loadIssueModelContainer fatal at startup. Dedup is enforced in
+    /// MapTabView.toggleFavoriteRoute by checking existing favorites.
+    var routeId: String = ""
     /// Display string for the chip label, e.g. "S8" or "39A".
     var shortName: String = ""
     /// Long-form description shown on long-press / accessibility, e.g.
