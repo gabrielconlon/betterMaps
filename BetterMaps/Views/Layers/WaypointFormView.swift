@@ -513,25 +513,32 @@ struct WaypointDrawView: View {
     @ViewBuilder
     private func waypointRow(_ wp: DraftWaypoint, in path: DraftPath) -> some View {
         let isSelected = selectedWaypointId == wp.id
-        // Position-derived flag: first row = start (⛳), last = end (🏁), else none.
-        // The single source of truth — eliminates the bug where the flag column
-        // and the array position disagreed because the flag was a manual toggle.
+        // Flag is now a manual user annotation (the toggle on the right).
+        // "start" / "end" semantics come from BOTH the flag AND position:
+        //   flagged + first row → start
+        //   flagged + last row → end
+        //   flagged + middle → just visually flagged (no label)
+        //   unflagged → no flag, no label
+        // This matches the user's mental model: drag controls position, flag
+        // controls "this is an endpoint" — the combination derives the label.
         let position = path.waypoints.firstIndex(where: { $0.id == wp.id }) ?? 0
         let isFirst = position == 0
         let isLast = position == path.waypoints.count - 1
         let positionLabel: String? = {
+            guard wp.isEndpoint else { return nil }
             if isFirst && isLast { return "start / end" }
             if isFirst { return "start" }
             if isLast { return "end" }
             return nil
         }()
+        let dotColor = wp.isEndpoint ? .orange : (Color(hex: layer.colorHex) ?? .secondary)
 
         HStack(spacing: 10) {
             ZStack {
                 Circle()
-                    .fill(isFirst || isLast ? .orange : Color(hex: layer.colorHex) ?? .secondary)
+                    .fill(dotColor)
                     .frame(width: 14, height: 14)
-                if isFirst || isLast {
+                if wp.isEndpoint {
                     Image(systemName: "flag.fill")
                         .font(.system(size: 7, weight: .bold))
                         .foregroundStyle(.white)
@@ -555,18 +562,28 @@ struct WaypointDrawView: View {
             }
             Spacer()
 
-            // "Move to end" — fast path for the common "make this the new end"
-            // gesture. Tapping the flag icon now moves the row to the bottom
-            // of its trail (auto-demoting the previous end). To make a row
-            // the start instead, drag it (Edit mode) or use the Edit Waypoint
-            // sheet (long-press the row).
-            Button(action: { moveToEnd(wp.id) }) {
-                Image(systemName: "arrow.down.to.line")
+            // Manual flag toggle. Independent of position — user controls
+            // whether a waypoint is "an endpoint". Combined with drag-to-
+            // reorder, this restores the model the user asked for:
+            // "flagged + at top → start; flagged + at bottom → end".
+            Button(action: { toggleEndpoint(wp.id) }) {
+                Image(systemName: wp.isEndpoint ? "flag.fill" : "flag")
                     .font(.caption)
-                    .foregroundStyle(isLast ? .tertiary : .secondary)
+                    .foregroundStyle(wp.isEndpoint ? .orange : .secondary)
             }
             .buttonStyle(.plain)
-            .disabled(isLast)
+
+            // Always-visible edit affordance. Long-press also opens the
+            // edit sheet, but in Edit mode (drag handles active) the
+            // long-press gesture conflicts with reorder, so this button
+            // is the reliable way to edit a waypoint's name / coords from
+            // the list.
+            Button(action: { editingWaypointId = wp.id }) {
+                Image(systemName: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
         }
         .listRowBackground(isSelected ? Color.blue.opacity(0.1) : Color.clear)
         .listRowSeparator(.hidden)
@@ -580,14 +597,6 @@ struct WaypointDrawView: View {
         }
         .onLongPressGesture(minimumDuration: 0.4) {
             editingWaypointId = wp.id
-        }
-        .swipeActions(edge: .leading) {
-            Button {
-                moveToStart(wp.id)
-            } label: {
-                Label("Move to Start", systemImage: "arrow.up.to.line")
-            }
-            .tint(.orange)
         }
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) {
@@ -668,11 +677,23 @@ struct WaypointDrawView: View {
             latitude: coord.latitude,
             longitude: coord.longitude,
             name: "",
-            isEndpoint: false,  // recomputed below by position
+            isEndpoint: paths[pathIndex].waypoints.isEmpty,   // first auto-flags
             existingPlaceId: nil
         )
-        paths[pathIndex].waypoints.append(new)
-        recomputeEndpointFlags(in: pathIndex)
+
+        // Insert-between: if the long-press landed near a segment of the
+        // current path, drop the new waypoint at that segment's index so the
+        // line still passes through it in order. This lets the user refine
+        // the path mid-line without manually reordering afterwards.
+        if let insertAt = nearestSegmentInsertionIndex(
+            for: coord,
+            in: paths[pathIndex].waypoints,
+            thresholdMeters: 30
+        ) {
+            paths[pathIndex].waypoints.insert(new, at: insertAt)
+        } else {
+            paths[pathIndex].waypoints.append(new)
+        }
         selectedWaypointId = new.id
     }
 
@@ -681,7 +702,6 @@ struct WaypointDrawView: View {
         for i in paths.indices {
             paths[i].waypoints.removeAll { $0.id == id }
         }
-        for i in paths.indices { recomputeEndpointFlags(in: i) }
         paths.removeAll { $0.waypoints.isEmpty }
         if let cur = currentPathId, !paths.contains(where: { $0.id == cur }) {
             currentPathId = paths.last?.id
@@ -689,34 +709,16 @@ struct WaypointDrawView: View {
         if selectedWaypointId == id { selectedWaypointId = nil }
     }
 
-    /// Move a waypoint to the last position of its path. Tapping the flag
-    /// button on a row triggers this — replaces the previous "manually
-    /// toggle isEndpoint" behavior, which let the flag and the array
-    /// position disagree (the bug the user hit: middle waypoint flagged
-    /// as End, line straight to a different terminus). To make a waypoint
-    /// the start, drag it to the top via Edit mode.
-    private func moveToEnd(_ id: UUID) {
+    /// Manually toggle the endpoint flag on a waypoint. The flag is now
+    /// independent of position — it's a user annotation. Whether a flag
+    /// reads as "start" or "end" is derived in the UI from the row's
+    /// position in its path: flagged + first row → start, flagged + last
+    /// row → end, flagged + middle → just visually flagged.
+    private func toggleEndpoint(_ id: UUID) {
         pushUndo()
         for i in paths.indices {
-            if let j = paths[i].waypoints.firstIndex(where: { $0.id == id }) {
-                let wp = paths[i].waypoints.remove(at: j)
-                paths[i].waypoints.append(wp)
-                recomputeEndpointFlags(in: i)
-                return
-            }
-        }
-    }
-
-    /// Move a waypoint to the first position of its path. Used by the
-    /// move-to-start swipe action and the edit sheet.
-    private func moveToStart(_ id: UUID) {
-        pushUndo()
-        for i in paths.indices {
-            if let j = paths[i].waypoints.firstIndex(where: { $0.id == id }) {
-                let wp = paths[i].waypoints.remove(at: j)
-                paths[i].waypoints.insert(wp, at: 0)
-                recomputeEndpointFlags(in: i)
-                return
+            for j in paths[i].waypoints.indices where paths[i].waypoints[j].id == id {
+                paths[i].waypoints[j].isEndpoint.toggle()
             }
         }
     }
@@ -727,20 +729,64 @@ struct WaypointDrawView: View {
         guard let i = paths.firstIndex(where: { $0.id == pathId }) else { return }
         pushUndo()
         paths[i].waypoints.move(fromOffsets: source, toOffset: destination)
-        recomputeEndpointFlags(in: i)
     }
 
-    /// Position-derived endpoint flags. After every add/delete/reorder/edit,
-    /// the first row of a path is its start and the last row is its end.
-    /// Middle rows have no flag. This is the single invariant that keeps the
-    /// list view, the side panel, the saved Place rows, and the rendered
-    /// polyline all in agreement.
-    private func recomputeEndpointFlags(in pathIndex: Int) {
-        let count = paths[pathIndex].waypoints.count
-        guard count > 0 else { return }
-        for j in 0..<count {
-            paths[pathIndex].waypoints[j].isEndpoint = (j == 0 || j == count - 1)
+    /// If `coord` is within `thresholdMeters` of any segment connecting two
+    /// consecutive waypoints in `path`, returns the index where a new point
+    /// should be inserted to land on that segment. Otherwise returns nil so
+    /// the caller can append to the end instead.
+    ///
+    /// Distance computation uses a flat-earth projection — fine at the
+    /// 30-meter scale we're checking; the curvature error over 30m is well
+    /// under a millimeter, far below tap accuracy.
+    private func nearestSegmentInsertionIndex(
+        for coord: CLLocationCoordinate2D,
+        in waypoints: [DraftWaypoint],
+        thresholdMeters: Double
+    ) -> Int? {
+        guard waypoints.count >= 2 else { return nil }
+        var bestDistance = Double.infinity
+        var bestInsertIndex: Int? = nil
+        for i in 0..<(waypoints.count - 1) {
+            let d = distance(from: coord, toSegment: waypoints[i].coordinate, waypoints[i + 1].coordinate)
+            if d < bestDistance {
+                bestDistance = d
+                bestInsertIndex = i + 1   // insert between i and i+1
+            }
         }
+        return bestDistance <= thresholdMeters ? bestInsertIndex : nil
+    }
+
+    /// Perpendicular distance in meters from `point` to the line segment
+    /// between `a` and `b`. Clamps to segment endpoints when the foot of
+    /// the perpendicular falls outside the segment.
+    private func distance(from point: CLLocationCoordinate2D,
+                          toSegment a: CLLocationCoordinate2D,
+                          _ b: CLLocationCoordinate2D) -> Double {
+        // Project lat/lon to a local meters plane around `a`. Latitude
+        // degrees are ~111km regardless of where on Earth; longitude
+        // degrees scale by cos(lat).
+        let metersPerLat = 111_320.0
+        let metersPerLon = 111_320.0 * cos(a.latitude * .pi / 180)
+
+        let ax = 0.0
+        let ay = 0.0
+        let bx = (b.longitude - a.longitude) * metersPerLon
+        let by = (b.latitude - a.latitude) * metersPerLat
+        let px = (point.longitude - a.longitude) * metersPerLon
+        let py = (point.latitude - a.latitude) * metersPerLat
+
+        let dx = bx - ax
+        let dy = by - ay
+        let lengthSq = dx * dx + dy * dy
+        guard lengthSq > 0 else {
+            return hypot(px - ax, py - ay)
+        }
+        var t = ((px - ax) * dx + (py - ay) * dy) / lengthSq
+        t = max(0, min(1, t))
+        let cx = ax + t * dx
+        let cy = ay + t * dy
+        return hypot(px - cx, py - cy)
     }
 
     private func startNewPath() {
@@ -865,11 +911,6 @@ struct WaypointDrawView: View {
         // Start with only the active trail expanded — many-trail layers
         // would otherwise overflow the panel on first open.
         if let cur = currentPathId { expandedPathIds = [cur] }
-        // Force position-derived endpoint flags. Legacy data may have flagged
-        // a middle waypoint (the bug); sorting alone wouldn't fix the
-        // visual. Recomputing by position guarantees first/last carry the
-        // flag and middles never do.
-        for i in paths.indices { recomputeEndpointFlags(in: i) }
 
         // Center camera on the data we have, or fall back to Dublin.
         let allCoords = paths.flatMap { $0.waypoints.map(\.coordinate) }

@@ -280,14 +280,13 @@ struct LayerDetailView: View {
 
     /// Reorder places within a trail. Writes incremental sortIndex values to
     /// the underlying Place rows so the ordering persists across launches and
-    /// CloudKit syncs, and re-derives isWaypointEndpoint by position so the
-    /// flag visual matches the line on the map.
+    /// CloudKit syncs. The endpoint flag stays as the user set it — drag
+    /// only affects order, not flag state.
     private func moveInTrail(group: (id: UUID?, name: String, places: [Place]), from source: IndexSet, to destination: Int) {
         var reordered = group.places
         reordered.move(fromOffsets: source, toOffset: destination)
         for (index, place) in reordered.enumerated() {
             place.sortIndex = index
-            place.isWaypointEndpoint = (index == 0 || index == reordered.count - 1)
         }
     }
 
