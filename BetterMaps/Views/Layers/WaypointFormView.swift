@@ -742,7 +742,15 @@ struct WaypointDrawView: View {
         } else {
             paths[pathIndex].waypoints.append(new)
         }
-        selectedWaypointId = new.id
+        // Deliberately do NOT auto-select the just-added waypoint. Auto-
+        // selecting put the new handle into "selected" state which inflated
+        // its visual ring and parked an active high-priority drag gesture
+        // right under the user's finger — every subsequent long-press
+        // landed inside that ~44pt hit area and got swallowed (the drag
+        // tracked but didn't fire, then leaked to MKMapView's underlying
+        // pan/zoom recognizer). Leaving selection nil lets the next
+        // long-press flow cleanly to the Map's add gesture.
+        selectedWaypointId = nil
     }
 
     private func deleteWaypoint(_ id: UUID) {
