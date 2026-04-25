@@ -292,18 +292,29 @@ struct WaypointDrawView: View {
                 }
             }
             .mapStyle(.standard(elevation: .realistic))
-            .onTapGesture { screenPoint in
-                // Single-finger tap on empty map = drop a new waypoint at the
-                // tap coordinate. If a waypoint is currently selected, tapping
-                // empty space deselects instead of adding (avoids accidental
-                // adds while the user is scanning the popover).
-                if selectedWaypointId != nil {
-                    selectedWaypointId = nil
-                    return
-                }
-                guard let coord = proxy.convert(screenPoint, from: .local) else { return }
-                addWaypoint(at: coord)
+            .onTapGesture {
+                // Single-finger tap on empty map = deselect any current
+                // waypoint. NOT an add. Single-tap-to-add was too sensitive
+                // — accidental drops happened while panning, scanning the
+                // map, or aiming for a handle. Add is now long-press (below)
+                // so the user has to commit to the gesture deliberately.
+                selectedWaypointId = nil
             }
+            .gesture(
+                // Long-press to drop a waypoint at the press location. The
+                // sequenced(before: DragGesture(0)) trick lets us capture
+                // the release coordinate — SwiftUI's plain
+                // .onLongPressGesture has no location parameter. Same
+                // pattern the main map uses for "drop a pin".
+                LongPressGesture(minimumDuration: 0.35)
+                    .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
+                    .onEnded { value in
+                        guard case .second(true, let drag?) = value,
+                              let coord = proxy.convert(drag.location, from: .local)
+                        else { return }
+                        addWaypoint(at: coord)
+                    }
+            )
         }
     }
 
@@ -360,8 +371,8 @@ struct WaypointDrawView: View {
     }
 
     private var currentPathStatusText: String {
-        guard let path = currentPath else { return "Tap to start drawing" }
-        return "Drawing: \(path.name) • \(path.waypoints.count) waypoints"
+        guard let path = currentPath else { return "Long-press the map to start drawing" }
+        return "Drawing: \(path.name) • \(path.waypoints.count) wpts • long-press to add"
     }
 
     // MARK: - Side panel (waypoint list, grouped by path)
