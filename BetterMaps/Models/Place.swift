@@ -15,6 +15,13 @@ final class Place {
     /// For places used in a waypoint-path layer: when true this point is a path endpoint
     /// and is connected to only its single nearest neighbor instead of two.
     var isWaypointEndpoint: Bool = false
+    /// Groups waypoints into independent paths within the same waypoint-path layer.
+    /// Two waypoints with the same pathId are part of the same connected line; with
+    /// different pathIds they belong to separate lines (e.g., Grand Canal Trail vs
+    /// Phoenix Park Loop, both in the user's "Walking Trails" layer). Optional so
+    /// existing waypoints written before this field existed default to nil — the
+    /// renderer treats nil as a single legacy bucket so old data keeps working.
+    var pathId: UUID? = nil
 
     @Attribute(.externalStorage)
     var photoData: [Data] = []

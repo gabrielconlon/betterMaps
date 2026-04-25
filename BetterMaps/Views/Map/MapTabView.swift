@@ -46,14 +46,22 @@ struct MapTabView: View {
     }
 
     /// (layer, segments) tuples for each visible waypoint-path layer.
+    /// Uses segmentsByPath so multiple independent trails in the same layer
+    /// (e.g., Grand Canal Trail + Phoenix Park Loop in a "Walking Trails" layer)
+    /// each render as their own connected line — never shortcutted to each other.
     var waypointPathRenderables: [(layer: Layer, segments: [[CLLocationCoordinate2D]])] {
         layers
             .filter { $0.isVisible && $0.kind == .waypointPath }
             .map { layer in
                 let nodes = (layer.places ?? []).map {
-                    WaypointGraph.Node(id: $0.id, coordinate: $0.coordinate, isEndpoint: $0.isWaypointEndpoint)
+                    WaypointGraph.Node(
+                        id: $0.id,
+                        coordinate: $0.coordinate,
+                        isEndpoint: $0.isWaypointEndpoint,
+                        pathId: $0.pathId
+                    )
                 }
-                return (layer, WaypointGraph.segments(for: nodes))
+                return (layer, WaypointGraph.segmentsByPath(for: nodes))
             }
     }
 

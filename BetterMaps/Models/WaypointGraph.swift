@@ -18,9 +18,35 @@ enum WaypointGraph {
         let id: UUID
         let coordinate: CLLocationCoordinate2D
         let isEndpoint: Bool
+        /// Groups nodes into independent paths within the same set. Nodes with the
+        /// same pathId are connected via the MST algorithm; nodes with different
+        /// pathIds never share an edge — even if their coords are close. nil means
+        /// "ungrouped" and is treated as one shared bucket so legacy waypoints
+        /// (pre-multi-path) keep rendering as a single line.
+        var pathId: UUID? = nil
+    }
+
+    /// Multi-path segment computation: groups nodes by `pathId`, runs the MST
+    /// algorithm independently per group, and returns the flattened polylines.
+    /// This is what prevents an unrelated trail in the same layer from getting
+    /// connected to its neighbor by a phantom shortest-edge.
+    static func segmentsByPath(for nodes: [Node]) -> [[CLLocationCoordinate2D]] {
+        guard !nodes.isEmpty else { return [] }
+        // Bucket by pathId. nil pathIds collapse into a single shared bucket so
+        // pre-existing waypoints (created before the field existed) still render.
+        var groups: [UUID?: [Node]] = [:]
+        for node in nodes { groups[node.pathId, default: []].append(node) }
+        var result: [[CLLocationCoordinate2D]] = []
+        for (_, group) in groups {
+            result.append(contentsOf: segments(for: group))
+        }
+        return result
     }
 
     /// Returns segments as pairs of coordinates, ready to feed to `MapPolyline(coordinates:)`.
+    /// Use `segmentsByPath` when waypoints may belong to multiple independent paths;
+    /// this single-group method is kept for tests and callers that already know they
+    /// have one connected set.
     static func segments(for nodes: [Node]) -> [[CLLocationCoordinate2D]] {
         guard nodes.count >= 2 else { return [] }
 

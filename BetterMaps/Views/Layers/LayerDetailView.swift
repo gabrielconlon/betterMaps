@@ -7,6 +7,7 @@ struct LayerDetailView: View {
     @State private var showEditForm = false
     @State private var showAddPlace = false
     @State private var showAddWaypoint = false
+    @State private var showDrawMode = false
 
     var layerPlaces: [Place] {
         (layer.places ?? []).sorted { $0.name < $1.name }
@@ -71,11 +72,22 @@ struct LayerDetailView: View {
         .navigationTitle(layer.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Draw Path is the primary action for waypoint layers — surface it
+            // outside the menu so it's one tap (Fitts's Law). The "Add Waypoint"
+            // form remains available in the menu as the precision-entry escape
+            // hatch.
+            if isWaypointPath {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: { showDrawMode = true }) {
+                        Label("Draw Path", systemImage: "scribble.variable")
+                    }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if isWaypointPath {
                         Button(action: { showAddWaypoint = true }) {
-                            Label("Add Waypoint", systemImage: "plus")
+                            Label("Add Waypoint (Form)", systemImage: "plus")
                         }
                     } else {
                         Button(action: { showAddPlace = true }) {
@@ -104,6 +116,13 @@ struct LayerDetailView: View {
         }
         .sheet(isPresented: $showAddWaypoint) {
             WaypointFormView(layer: layer)
+        }
+        .fullScreenCover(isPresented: $showDrawMode) {
+            // Full-screen cover — Draw Mode owns the entire screen so the
+            // user can rapid-tap without other UI competing for hits.
+            NavigationStack {
+                WaypointDrawView(layer: layer)
+            }
         }
     }
 

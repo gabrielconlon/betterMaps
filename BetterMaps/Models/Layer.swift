@@ -80,10 +80,40 @@ final class Layer {
     var lineWidth: Double = 4.0
     var places: [Place]? = []
     var createdAt: Date = Date()
+    /// JSON-encoded `[pathIdString: pathName]` map. Stored as a String because
+    /// CloudKit-mirrored SwiftData containers don't accept Dictionary directly.
+    /// Use `pathNames` (computed) to read/write — handles encode/decode and
+    /// returns an empty dict on a malformed string instead of crashing.
+    var pathNamesJSON: String = "{}"
 
     var kind: LayerKind {
         get { LayerKind(rawValue: kindRaw) ?? .places }
         set { kindRaw = newValue.rawValue }
+    }
+
+    /// User-facing names for each pathId in this waypoint layer. Read-side
+    /// returns an empty dict if pathNamesJSON is empty/malformed (defensive —
+    /// any single corrupted Layer shouldn't crash the whole list).
+    /// Write-side re-encodes; failure to encode keeps the previous string.
+    var pathNames: [UUID: String] {
+        get {
+            guard let data = pathNamesJSON.data(using: .utf8),
+                  let raw = try? JSONDecoder().decode([String: String].self, from: data)
+            else { return [:] }
+            var result: [UUID: String] = [:]
+            for (key, value) in raw {
+                if let uuid = UUID(uuidString: key) { result[uuid] = value }
+            }
+            return result
+        }
+        set {
+            var raw: [String: String] = [:]
+            for (uuid, name) in newValue { raw[uuid.uuidString] = name }
+            if let data = try? JSONEncoder().encode(raw),
+               let str = String(data: data, encoding: .utf8) {
+                pathNamesJSON = str
+            }
+        }
     }
 
     init(
