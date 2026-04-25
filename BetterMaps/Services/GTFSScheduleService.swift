@@ -167,15 +167,21 @@ actor GTFSScheduleService {
         if GTFSDatabase.isFresh {
             if db.open() {
                 let trips = db.count(table: "trips")
-                if trips > 0 {
+                let shapes = db.count(table: "shapes")
+                // Both must be populated. A DB with trips but zero shapes is the
+                // signature of the BOM-affected parseShapes header miss — accept
+                // it and the Luas/DART/Rail polylines never render. Force a
+                // re-parse so users on broken caches recover without waiting for
+                // the 7-day freshness window to lapse.
+                if trips > 0 && shapes > 0 {
                     isLoaded = true
-                    await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .cached, durationMs: 0, detail: "\(trips) trips")
+                    await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .cached, durationMs: 0, detail: "\(trips) trips, \(shapes) shapes")
                     return
                 }
-                // Database exists but has 0 trips — likely bad parse, re-download
+                let reason = trips == 0 ? "0 trips" : "\(trips) trips but 0 shapes"
                 db.close()
                 try? FileManager.default.removeItem(atPath: GTFSDatabase.defaultPath)
-                await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .failure, durationMs: 0, detail: "Cached DB has 0 trips — re-downloading")
+                await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .failure, durationMs: 0, detail: "Cached DB has \(reason) — re-parsing")
             }
         }
 
@@ -958,7 +964,14 @@ actor GTFSScheduleService {
 
                 if !headerSeen {
                     headerSeen = true
-                    let headers = line.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                    // parseCSVRow strips the UTF-8 BOM (0xEF 0xBB 0xBF / U+FEFF) that
+                    // TFI's shapes.txt occasionally ships with. The previous bare
+                    // line.split path didn't, so the first header read as
+                    // "\u{FEFF}shape_id", firstIndex(of: "shape_id") returned nil,
+                    // maxIdx stayed -1, and the whole shapes table silently parsed
+                    // zero rows — which manifested as no Luas/DART/Rail polylines
+                    // even though stops/trips/routes loaded fine.
+                    let headers = parseCSVRow(line)
                     if let h = headers.firstIndex(of: "shape_id"),
                        let la = headers.firstIndex(of: "shape_pt_lat"),
                        let lo = headers.firstIndex(of: "shape_pt_lon"),
