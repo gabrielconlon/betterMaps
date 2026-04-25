@@ -30,7 +30,30 @@ struct MapTabView: View {
     @State private var poiSearchTask: Task<Void, Never>?
 
     var filteredPlaces: [Place] {
-        filterVM.filteredPlaces(allPlaces: places, allLayers: layers)
+        let base = filterVM.filteredPlaces(allPlaces: places, allLayers: layers)
+        // For waypoint-path layers, only show pins at the start/end. Intermediate
+        // waypoints contribute to the line but aren't drawn as map pins.
+        // A place is hidden only when its sole reason to render is a non-endpoint
+        // waypoint membership; if it also belongs to any visible places-layer, it shows.
+        return base.filter { place in
+            let visibleMemberships = (place.layers ?? []).filter { $0.isVisible }
+            let onlyWaypointMemberships = !visibleMemberships.isEmpty
+                && visibleMemberships.allSatisfy { $0.kind == .waypointPath }
+            if onlyWaypointMemberships && !place.isWaypointEndpoint { return false }
+            return true
+        }
+    }
+
+    /// (layer, segments) tuples for each visible waypoint-path layer.
+    var waypointPathRenderables: [(layer: Layer, segments: [[CLLocationCoordinate2D]])] {
+        layers
+            .filter { $0.isVisible && $0.kind == .waypointPath }
+            .map { layer in
+                let nodes = (layer.places ?? []).map {
+                    WaypointGraph.Node(id: $0.id, coordinate: $0.coordinate, isEndpoint: $0.isWaypointEndpoint)
+                }
+                return (layer, WaypointGraph.segments(for: nodes))
+            }
     }
 
     var activeLayerCount: Int {
@@ -285,46 +308,52 @@ struct MapTabView: View {
 
     // MARK: - Layers Panel Overlay
 
-    private var layersPanelOverlay: some View {
-        VStack {
-            HStack {
-                VStack(alignment: .leading, spacing: 8) {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            showFavoritesPanel.toggle()
-                        }
-                    }) {
-                        Image(systemName: "square.3.layers.3d")
-                            .font(.body)
-                            .padding(10)
-                            .background {
-                                if showFavoritesPanel {
-                                    Circle().fill(Color.blue.opacity(0.2))
-                                } else {
-                                    Circle().fill(.ultraThinMaterial)
-                                }
-                            }
-                            .foregroundStyle(showFavoritesPanel ? .blue : .primary)
-                            .clipShape(Circle())
-                            .shadow(color: .black.opacity(0.1), radius: 2)
-                    }
+    /// Reserve enough vertical room for the bottom bar (search field + buttons).
+    /// 56pt button stack + 8pt bottom padding + ~12pt buffer above the search bar.
+    private static let panelBottomReserve: CGFloat = 76
 
-                    if showFavoritesPanel {
-                        FavoritesPanel(
-                            showTransitStops: $transitState.showTransitStops,
-                            showLiveTransit: $transitState.showLiveTransit,
-                            isPresented: $showFavoritesPanel,
-                            mapStyle: $mapStyleOption
-                        )
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+    private var layersPanelOverlay: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        showFavoritesPanel.toggle()
                     }
+                }) {
+                    Image(systemName: "square.3.layers.3d")
+                        .font(.body)
+                        .padding(10)
+                        .background {
+                            if showFavoritesPanel {
+                                Circle().fill(Color.blue.opacity(0.2))
+                            } else {
+                                Circle().fill(.ultraThinMaterial)
+                            }
+                        }
+                        .foregroundStyle(showFavoritesPanel ? .blue : .primary)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.1), radius: 2)
                 }
-                .padding(.leading, 12)
-                .padding(.top, 10)
-                Spacer()
+
+                if showFavoritesPanel {
+                    FavoritesPanel(
+                        showTransitStops: $transitState.showTransitStops,
+                        showLiveTransit: $transitState.showLiveTransit,
+                        isPresented: $showFavoritesPanel,
+                        mapStyle: $mapStyleOption
+                    )
+                    .frame(maxHeight: .infinity)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                }
             }
-            Spacer()
+            .padding(.leading, 12)
+            .padding(.top, 10)
+            .padding(.bottom, showFavoritesPanel ? Self.panelBottomReserve : 0)
+            .frame(maxHeight: .infinity, alignment: .top)
+
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .zIndex(10)
         .background(
             showFavoritesPanel ?
@@ -358,6 +387,15 @@ struct MapTabView: View {
                         .onTapGesture {
                             if !isDot { viewModel.selectPlace(place) }
                         }
+                    }
+                }
+
+                // Waypoint-path layers: render the connecting lines.
+                ForEach(waypointPathRenderables, id: \.layer.id) { item in
+                    let strokeColor = Color(hex: item.layer.colorHex) ?? .red
+                    ForEach(Array(item.segments.enumerated()), id: \.offset) { _, segment in
+                        MapPolyline(coordinates: segment)
+                            .stroke(strokeColor, lineWidth: item.layer.lineWidth)
                     }
                 }
 
@@ -544,10 +582,22 @@ struct MapTabView: View {
                     await searchPOI(at: coordinate)
                 }
             }
-            .onLongPressGesture(minimumDuration: 0.5) {
-                guard let location = locationManager.userLocation else { return }
-                viewModel.startNewPlace(at: location)
-            }
+            // Long-press to drop a pin at the press location.
+            // SwiftUI's plain .onLongPressGesture has no location, so we sequence a
+            // zero-distance DragGesture after a LongPressGesture to capture the screen
+            // point, then convert it through the MapReader proxy.
+            .gesture(
+                LongPressGesture(minimumDuration: 0.5)
+                    .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
+                    .onEnded { value in
+                        guard case .second(true, let drag?) = value,
+                              let coord = proxy.convert(drag.location, from: .local)
+                        else { return }
+                        // Cancel any pending POI search from a near-simultaneous tap.
+                        poiSearchTask?.cancel()
+                        viewModel.startNewPlace(at: coord)
+                    }
+            )
             .onMapCameraChange(frequency: .onEnd) { context in
                 transitState.mapRegion = context.region
                 // Dismiss keyboard when user pans the map
@@ -779,9 +829,10 @@ struct MapTabView: View {
             .overlay {
                 // Tap catcher — only when TextField is NOT focused.
                 // Catches the first tap before the map's gesture recognizer can steal it.
+                // Color.clear (not Capsule().fill(.clear)) — a clear-filled shape can fail
+                // hit testing even with .contentShape; Color.clear is always hit-testable.
                 if !isSearchFocused {
-                    Capsule()
-                        .fill(Color.clear)
+                    Color.clear
                         .contentShape(Capsule())
                         .onTapGesture {
                             isSearchFocused = true
@@ -850,7 +901,13 @@ struct MapTabView: View {
     }
 
 
+    @MainActor
     private func loadTransitData() async {
+        // MUST be @MainActor: writes @Observable state on transitState/searchState.
+        // Without isolation, Swift schedules this on the cooperative pool and the
+        // final batch of assignments happens off-main — SwiftUI never observes the
+        // change, which silently breaks the Luas/DART/Rail overlays and live search.
+        //
         // All work happens in local variables — no @State/@Observable mutations
         // until the very end. This prevents 7+ intermediate body recomputes that
         // stall the main thread rendering MapPolylines and block touch events.

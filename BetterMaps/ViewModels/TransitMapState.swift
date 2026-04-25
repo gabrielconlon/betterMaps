@@ -19,7 +19,13 @@ class TransitMapState {
     var railShapeLines: [[CLLocationCoordinate2D]] = []
 
     /// Updated from MapTabView's onMapCameraChange so computed properties can filter by region.
-    var mapRegion: MKCoordinateRegion?
+    /// Seeded to a Dublin-wide default so stops/lines render immediately on first launch —
+    /// otherwise nothing shows until the user first pans the map (onMapCameraChange fires
+    /// only onEnd of an interaction, not on the initial camera setup).
+    var mapRegion: MKCoordinateRegion? = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
+        span: MKCoordinateSpan(latitudeDelta: 0.3, longitudeDelta: 0.3)
+    )
 
     // MARK: - Visible Subset Computed Properties
 

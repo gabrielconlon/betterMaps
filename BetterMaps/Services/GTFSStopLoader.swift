@@ -317,12 +317,27 @@ actor GTFSStopLoader {
 
     // MARK: - ZIP Extraction
 
+    /// Extract a file from the ZIP as Data, skipping the expensive String allocation.
+    /// Used for stop_times.txt and shapes.txt — decoding them as Strings peaks around
+    /// 500–800 MB each and can get the app killed by the OS during first-install parsing.
+    func extractFileDataFromZip(data: Data, fileName: String) -> Data? {
+        extractFileBytesFromZip(data: data, fileName: fileName)
+    }
+
     /// Extract a single file from a ZIP archive using the central directory.
     /// The old sequential local-header approach broke when entries used "data descriptors"
     /// (bit 3 of general purpose flag), which sets compressedSize=0 in the local header.
     /// This caused the offset to the next entry to be wrong, skipping all subsequent files.
     /// The central directory at the end of the ZIP always has correct sizes.
     func extractFileFromZip(data: Data, fileName: String) -> String? {
+        extractFileBytesFromZip(data: data, fileName: fileName)
+            .flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    /// Internal ZIP-extraction primitive. Returns the raw decompressed bytes for the
+    /// named entry, or nil if not found / malformed. Callers decide whether to decode
+    /// as String (small files) or stream line-by-line from Data (stop_times, shapes).
+    private func extractFileBytesFromZip(data: Data, fileName: String) -> Data? {
         // Step 1: Find End of Central Directory record (PK\x05\x06)
         // Search backwards from end of data (EOCD is within last 65557 bytes)
         var eocdOffset = -1
@@ -376,13 +391,12 @@ actor GTFSStopLoader {
             if compressionMethod == 0 {
                 let fileDataEnd = fileDataStart + uncompressedSize
                 guard fileDataEnd <= data.count else { return nil }
-                return String(data: data[fileDataStart..<fileDataEnd], encoding: .utf8)
+                return Data(data[fileDataStart..<fileDataEnd])
             } else if compressionMethod == 8 {
                 let fileDataEnd = fileDataStart + compressedSize
                 guard fileDataEnd <= data.count else { return nil }
                 let compressed = data[fileDataStart..<fileDataEnd]
                 return decompressRawDeflate(compressed: compressed, expectedSize: uncompressedSize)
-                    .flatMap { String(data: $0, encoding: .utf8) }
             }
             return nil
         }

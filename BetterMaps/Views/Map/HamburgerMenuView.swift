@@ -284,42 +284,102 @@ struct HamburgerMenuView: View {
 
     private var layerManagementView: some View {
         List {
-            ForEach(layers) { layer in
-                NavigationLink(destination: LayerDetailView(layer: layer)) {
-                    LayerToggleRow(layer: layer)
-                }
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
-                        modelContext.delete(layer)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
+            Section {
+                Text("Drag the handles to reorder. This order is used in the slide-out panel and place pickers. Pinned layers always appear first.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Pinned") {
+                let pinned = layers.filter { $0.isFavorite }
+                if pinned.isEmpty {
+                    Text("No pinned layers. Pin a layer to keep it at the top of the slide-out panel.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(pinned) { layer in
+                        layerManagementRow(layer)
                     }
-                }
-                .swipeActions(edge: .leading) {
-                    Button {
-                        editingLayer = layer
-                        showEditLayerForm = true
-                    } label: {
-                        Label("Edit", systemImage: "pencil")
+                    .onMove { source, destination in
+                        moveLayers(in: pinned, from: source, to: destination)
                     }
-                    .tint(.blue)
-                    Button {
-                        layer.isFavorite.toggle()
-                    } label: {
-                        Label(
-                            layer.isFavorite ? "Unpin" : "Pin to Layers",
-                            systemImage: layer.isFavorite ? "star.slash" : "star.fill"
-                        )
-                    }
-                    .tint(.yellow)
                 }
             }
 
-            Button(action: { showLayerForm = true }) {
-                Label("New Layer", systemImage: "plus.circle")
+            Section("All Layers") {
+                let unpinned = layers.filter { !$0.isFavorite }
+                if unpinned.isEmpty {
+                    Text("All your layers are pinned.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(unpinned) { layer in
+                        layerManagementRow(layer)
+                    }
+                    .onMove { source, destination in
+                        moveLayers(in: unpinned, from: source, to: destination)
+                    }
+                }
+            }
+
+            Section {
+                Button(action: { showLayerForm = true }) {
+                    Label("New Layer", systemImage: "plus.circle")
+                }
             }
         }
         .navigationTitle("Place Layers")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func layerManagementRow(_ layer: Layer) -> some View {
+        NavigationLink(destination: LayerDetailView(layer: layer)) {
+            LayerToggleRow(layer: layer)
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                modelContext.delete(layer)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .swipeActions(edge: .leading) {
+            Button {
+                editingLayer = layer
+                showEditLayerForm = true
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            .tint(.blue)
+            Button {
+                layer.isFavorite.toggle()
+            } label: {
+                Label(
+                    layer.isFavorite ? "Unpin" : "Pin to Layers",
+                    systemImage: layer.isFavorite ? "star.slash" : "star.fill"
+                )
+            }
+            .tint(.yellow)
+        }
+    }
+
+    /// Reorders the given slice (all-pinned or all-unpinned) by user gesture, then
+    /// renumbers sortOrder across the full layer list. Pinned layers always come first,
+    /// preserving each slice's independent user-defined order.
+    private func moveLayers(in slice: [Layer], from source: IndexSet, to destination: Int) {
+        var reordered = slice
+        reordered.move(fromOffsets: source, toOffset: destination)
+        let isPinnedSlice = slice.first?.isFavorite ?? false
+        let pinnedOrder: [Layer] = isPinnedSlice ? reordered : layers.filter { $0.isFavorite }
+        let unpinnedOrder: [Layer] = isPinnedSlice ? layers.filter { !$0.isFavorite } : reordered
+        for (index, layer) in (pinnedOrder + unpinnedOrder).enumerated() {
+            layer.sortOrder = index
+        }
     }
 
     // MARK: - Transit Pinnable Row

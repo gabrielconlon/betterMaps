@@ -4,12 +4,15 @@ import SwiftData
 struct LayerFormView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
 
     let layer: Layer?
 
     @State private var name: String = ""
     @State private var selectedColorHex: String = "#FF3B30"
     @State private var selectedSymbol: String = "mappin"
+    @State private var selectedKind: LayerKind = .places
+    @State private var lineWidth: Double = 4.0
     @State private var showSaveToast = false
 
     var isEditing: Bool { layer != nil }
@@ -19,6 +22,39 @@ struct LayerFormView: View {
             Form {
                 Section("Name") {
                     TextField("Layer name", text: $name)
+                }
+
+                Section {
+                    Picker("Type", selection: $selectedKind) {
+                        ForEach(LayerKind.allCases) { kind in
+                            Label(kind.displayName, systemImage: kind.systemImage)
+                                .tag(kind)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(selectedKind.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Layer Type")
+                }
+
+                if selectedKind == .waypointPath {
+                    Section {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Line width")
+                                Spacer()
+                                Text(String(format: "%.0f pt", lineWidth))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(value: $lineWidth, in: 2...10, step: 1)
+                                .tint(Color(hex: selectedColorHex) ?? .red)
+                        }
+                    } header: {
+                        Text("Path Style")
+                    }
                 }
 
                 Section("Color") {
@@ -83,6 +119,8 @@ struct LayerFormView: View {
                     name = layer.name
                     selectedColorHex = layer.colorHex
                     selectedSymbol = layer.symbolName
+                    selectedKind = layer.kind
+                    lineWidth = layer.lineWidth
                 }
             }
             .toast(isPresented: $showSaveToast, message: layer != nil ? "Layer updated!" : "Layer created!")
@@ -95,11 +133,17 @@ struct LayerFormView: View {
             layer.name = name.trimmingCharacters(in: .whitespaces)
             layer.colorHex = selectedColorHex
             layer.symbolName = selectedSymbol
+            layer.kind = selectedKind
+            layer.lineWidth = lineWidth
         } else {
+            let nextOrder = (allLayers.map(\.sortOrder).max() ?? -1) + 1
             let newLayer = Layer(
                 name: name.trimmingCharacters(in: .whitespaces),
                 colorHex: selectedColorHex,
-                symbolName: selectedSymbol
+                symbolName: selectedSymbol,
+                sortOrder: nextOrder,
+                kind: selectedKind,
+                lineWidth: lineWidth
             )
             modelContext.insert(newLayer)
         }

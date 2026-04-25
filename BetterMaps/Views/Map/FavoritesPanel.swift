@@ -42,6 +42,10 @@ struct FavoritesPanel: View {
         layers.filter { $0.isFavorite }
     }
 
+    private var nonFavoriteLayers: [Layer] {
+        layers.filter { !$0.isFavorite }
+    }
+
     private var favoriteTransitTypes: [(type: TransitStop.TransitStopType, icon: String, color: Color, label: String)] {
         var result: [(TransitStop.TransitStopType, String, Color, String)] = []
         if favBus { result.append((.bus, "bus.fill", .blue, "Bus")) }
@@ -73,71 +77,82 @@ struct FavoritesPanel: View {
                 }
             }
 
-            // Pinned place layers
-            if !favoriteLayers.isEmpty {
-                VStack(spacing: 6) {
-                    ForEach(favoriteLayers) { layer in
-                        layerRow(layer: layer)
-                    }
-                }
-            }
-
-            // Pinned transit types
-            if !favoriteTransitTypes.isEmpty {
-                if !favoriteLayers.isEmpty { Divider() }
-
-                VStack(spacing: 6) {
-                    ForEach(favoriteTransitTypes, id: \.type) { item in
-                        transitRow(type: item.type, icon: item.icon, color: item.color, label: item.label)
-                    }
-                }
-            }
-
-            // Pinned map styles
-            if !favoriteMapStyles.isEmpty {
-                Divider()
-
-                Text("Map Style")
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-
-                let columns = favoriteMapStyles.count <= 2
-                    ? [GridItem(.flexible()), GridItem(.flexible())]
-                    : [GridItem(.flexible()), GridItem(.flexible())]
-                LazyVGrid(columns: columns, spacing: 6) {
-                    ForEach(favoriteMapStyles, id: \.self) { option in
-                        Button(action: { mapStyle = option }) {
-                            VStack(spacing: 4) {
-                                Image(systemName: option.icon)
-                                    .font(.caption)
-                                Text(option.rawValue)
-                                    .font(.caption2)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 10) {
+                    // Pinned place layers
+                    if !favoriteLayers.isEmpty {
+                        sectionHeader("Pinned")
+                        VStack(spacing: 6) {
+                            ForEach(favoriteLayers) { layer in
+                                layerRow(layer: layer)
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(mapStyle == option ? Color.blue.opacity(0.2) : Color(.systemGray5))
-                            .foregroundStyle(mapStyle == option ? .blue : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                    }
+
+                    // All other place layers — saved sort order
+                    if !nonFavoriteLayers.isEmpty {
+                        if !favoriteLayers.isEmpty { Divider() }
+                        sectionHeader("All Layers")
+                        VStack(spacing: 6) {
+                            ForEach(nonFavoriteLayers) { layer in
+                                layerRow(layer: layer)
+                            }
+                        }
+                    }
+
+                    // Pinned transit types
+                    if !favoriteTransitTypes.isEmpty {
+                        if !favoriteLayers.isEmpty || !nonFavoriteLayers.isEmpty { Divider() }
+                        sectionHeader("Transit")
+                        VStack(spacing: 6) {
+                            ForEach(favoriteTransitTypes, id: \.type) { item in
+                                transitRow(type: item.type, icon: item.icon, color: item.color, label: item.label)
+                            }
+                        }
+                    }
+
+                    // Pinned map styles
+                    if !favoriteMapStyles.isEmpty {
+                        Divider()
+                        sectionHeader("Map Style")
+                        let columns = [GridItem(.flexible()), GridItem(.flexible())]
+                        LazyVGrid(columns: columns, spacing: 6) {
+                            ForEach(favoriteMapStyles, id: \.self) { option in
+                                Button(action: { mapStyle = option }) {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: option.icon)
+                                            .font(.caption)
+                                        Text(option.rawValue)
+                                            .font(.caption2)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(mapStyle == option ? Color.blue.opacity(0.2) : Color(.systemGray5))
+                                    .foregroundStyle(mapStyle == option ? .blue : .secondary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    if layers.isEmpty && favoriteTransitTypes.isEmpty && favoriteMapStyles.isEmpty {
+                        Text("Create layers in the menu, or pin transit/map styles in Settings.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .padding(.vertical, 2)
                     }
                 }
             }
-
-            if favoriteLayers.isEmpty && favoriteTransitTypes.isEmpty && favoriteMapStyles.isEmpty {
-                Text("Pin layers in Settings to show them here")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.vertical, 2)
-            }
+            .frame(maxHeight: .infinity)
 
             if !showTransitStops.isEmpty || !showLiveTransit.isEmpty {
                 Button(action: {
                     showTransitStops.removeAll()
                     showLiveTransit.removeAll()
                 }) {
-                    Label("Hide All", systemImage: "eye.slash")
+                    Label("Hide All Transit", systemImage: "eye.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
@@ -147,33 +162,53 @@ struct FavoritesPanel: View {
         }
         .padding(14)
         .frame(width: 260)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(color: .black.opacity(0.15), radius: 8, y: -2)
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
     }
 
     // MARK: - User Layer Row
 
     @ViewBuilder
     private func layerRow(layer: Layer) -> some View {
-        Button(action: { layer.isVisible.toggle() }) {
-            HStack(spacing: 10) {
-                Image(systemName: layer.symbolName)
-                    .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
-                    .frame(width: 20)
+        HStack(spacing: 10) {
+            Button(action: { layer.isVisible.toggle() }) {
+                HStack(spacing: 10) {
+                    Image(systemName: layer.kind == .waypointPath
+                          ? "point.topleft.down.to.point.bottomright.curvepath"
+                          : layer.symbolName)
+                        .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
+                        .frame(width: 20)
 
-                Text(layer.name)
-                    .font(.subheadline)
-                    .lineLimit(1)
+                    Text(layer.name)
+                        .font(.subheadline)
+                        .lineLimit(1)
 
-                Spacer()
+                    Spacer()
 
-                Image(systemName: layer.isVisible ? "eye.fill" : "eye.slash")
-                    .font(.caption)
-                    .foregroundStyle(layer.isVisible ? .blue : .secondary)
+                    Image(systemName: layer.isVisible ? "eye.fill" : "eye.slash")
+                        .font(.caption)
+                        .foregroundStyle(layer.isVisible ? .blue : .secondary)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+
+            Button(action: { layer.isFavorite.toggle() }) {
+                Image(systemName: layer.isFavorite ? "star.fill" : "star")
+                    .font(.caption)
+                    .foregroundStyle(layer.isFavorite ? .yellow : .secondary)
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Transit Row

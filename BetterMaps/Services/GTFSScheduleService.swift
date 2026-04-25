@@ -694,8 +694,11 @@ actor GTFSScheduleService {
         if let tripsCSV = await loader.extractFile(from: data, named: "trips.txt") {
             parseTrips(csv: tripsCSV)
         }
-        if let stopTimesCSV = await loader.extractFile(from: data, named: "stop_times.txt") {
-            parseStopTimes(csv: stopTimesCSV)
+        // stop_times.txt is the largest file (~500–800 MB uncompressed). Parse it from
+        // raw Data via streaming line iteration to avoid the giant String/[String] copies
+        // that push us past the iOS per-process memory limit on a fresh install.
+        if let stopTimesData = await loader.extractFileData(from: data, named: "stop_times.txt") {
+            parseStopTimes(data: stopTimesData)
         }
         if let calendarCSV = await loader.extractFile(from: data, named: "calendar.txt") {
             parseCalendar(csv: calendarCSV)
@@ -703,8 +706,9 @@ actor GTFSScheduleService {
         if let calendarDatesCSV = await loader.extractFile(from: data, named: "calendar_dates.txt") {
             parseCalendarDates(csv: calendarDatesCSV)
         }
-        if let shapesCSV = await loader.extractFile(from: data, named: "shapes.txt") {
-            parseShapes(csv: shapesCSV)
+        // shapes.txt is the second-largest (~50–100 MB). Same streaming treatment.
+        if let shapesData = await loader.extractFileData(from: data, named: "shapes.txt") {
+            parseShapes(data: shapesData)
         }
         if let routesCSV = await loader.extractFile(from: data, named: "routes.txt") {
             parseRoutes(csv: routesCSV)
@@ -751,54 +755,95 @@ actor GTFSScheduleService {
         db.finalize(stmt)
     }
 
-    private func parseStopTimes(csv: String) {
-        let lines = csv.components(separatedBy: .newlines)
-        guard let header = lines.first else { return }
-        let headers = parseCSVRow(header)
-
-        guard let tripIdx = headers.firstIndex(of: "trip_id"),
-              let stopIdx = headers.firstIndex(of: "stop_id"),
-              let arrIdx = headers.firstIndex(of: "arrival_time"),
-              let depIdx = headers.firstIndex(of: "departure_time"),
-              let seqIdx = headers.firstIndex(of: "stop_sequence") else { return }
-
-        // INSERT INTO stop_times (trip_id, stop_id, arrival_seconds, departure_seconds, stop_sequence, departure_time)
+    /// Streams stop_times.txt line-by-line directly from Data to avoid allocating the
+    /// full ~500–800 MB String and a second ~500 MB array-of-lines. Peak overhead is
+    /// one line's worth of memory.
+    ///
+    /// Deliberately avoids `data.withUnsafeBytes { ... }` and any other closure-taking
+    /// helper: this runs on the GTFSScheduleService actor, and capturing the mutable
+    /// SQLite `stmt` pointer inside a closure passed to a nonisolated function trips
+    /// Swift 6's region-based isolation analysis ("Sending 'stmt' risks data races"),
+    /// because OpaquePointer isn't Sendable. Direct subscript iteration keeps stmt
+    /// entirely within the actor method's body.
+    private func parseStopTimes(data: Data) {
         guard let stmt = db.prepareInsertStopTime() else { return }
-        db.beginTransaction()
+        defer { db.finalize(stmt) }
 
+        var tripIdx = -1, stopIdx = -1, arrIdx = -1, depIdx = -1, seqIdx = -1
+        var maxIdx = -1
+        var headerSeen = false
+        var transactionOpen = false
         var count = 0
-        for line in lines.dropFirst() {
-            let fields = parseCSVRow(line)
-            guard fields.count > max(tripIdx, stopIdx, arrIdx, depIdx, seqIdx) else { continue }
-            let tripId = fields[tripIdx]
-            let stopId = fields[stopIdx]
-            guard !tripId.isEmpty, !stopId.isEmpty else { continue }
 
-            let depTime = fields[depIdx]
-            let arrTime = fields[arrIdx]
-            let arrSec = timeToSeconds(arrTime)
-            let depSec = timeToSeconds(depTime)
-            let seq = Int(fields[seqIdx]) ?? 0
-
-            // Bind all 6 columns: trip_id, stop_id, arrival_seconds, departure_seconds, stop_sequence, departure_time
-            sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(stmt, 2, (stopId as NSString).utf8String, -1, nil)
-            sqlite3_bind_int(stmt, 3, Int32(arrSec))
-            sqlite3_bind_int(stmt, 4, Int32(depSec))
-            sqlite3_bind_int(stmt, 5, Int32(seq))
-            sqlite3_bind_text(stmt, 6, (depTime as NSString).utf8String, -1, nil)
-            sqlite3_step(stmt)
-            sqlite3_reset(stmt)
-
-            count += 1
-            if count % 100_000 == 0 {
-                db.commitTransaction()
-                db.beginTransaction()
+        let total = data.count
+        var i = 0
+        while i < total {
+            // Scan to end of current line
+            var end = i
+            while end < total {
+                let b = data[end]
+                if b == 0x0A || b == 0x0D { break }
+                end += 1
             }
+
+            if end > i {
+                // Decode a single line's UTF-8 bytes (invalid bytes become U+FFFD —
+                // fine for CSV that's expected to be ASCII/UTF-8).
+                let line = String(decoding: data[i..<end], as: UTF8.self)
+
+                if !headerSeen {
+                    headerSeen = true
+                    let headers = parseCSVRow(line)
+                    if let t = headers.firstIndex(of: "trip_id"),
+                       let s = headers.firstIndex(of: "stop_id"),
+                       let a = headers.firstIndex(of: "arrival_time"),
+                       let d = headers.firstIndex(of: "departure_time"),
+                       let q = headers.firstIndex(of: "stop_sequence") {
+                        tripIdx = t; stopIdx = s; arrIdx = a; depIdx = d; seqIdx = q
+                        maxIdx = max(tripIdx, stopIdx, arrIdx, depIdx, seqIdx)
+                        db.beginTransaction()
+                        transactionOpen = true
+                    }
+                } else if maxIdx >= 0 {
+                    let fields = parseCSVRow(line)
+                    if fields.count > maxIdx {
+                        let tripId = fields[tripIdx]
+                        let stopId = fields[stopIdx]
+                        if !tripId.isEmpty, !stopId.isEmpty {
+                            let depTime = fields[depIdx]
+                            let arrTime = fields[arrIdx]
+                            let arrSec = timeToSeconds(arrTime)
+                            let depSec = timeToSeconds(depTime)
+                            let seq = Int(fields[seqIdx]) ?? 0
+
+                            sqlite3_bind_text(stmt, 1, (tripId as NSString).utf8String, -1, nil)
+                            sqlite3_bind_text(stmt, 2, (stopId as NSString).utf8String, -1, nil)
+                            sqlite3_bind_int(stmt, 3, Int32(arrSec))
+                            sqlite3_bind_int(stmt, 4, Int32(depSec))
+                            sqlite3_bind_int(stmt, 5, Int32(seq))
+                            sqlite3_bind_text(stmt, 6, (depTime as NSString).utf8String, -1, nil)
+                            sqlite3_step(stmt)
+                            sqlite3_reset(stmt)
+
+                            count += 1
+                            if count % 100_000 == 0 {
+                                db.commitTransaction()
+                                db.beginTransaction()
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Advance past line terminator (CR, LF, or CRLF)
+            if end < total && data[end] == 0x0D { end += 1 }
+            if end < total && data[end] == 0x0A { end += 1 }
+            i = end
         }
 
-        db.commitTransaction()
-        db.finalize(stmt)
+        if transactionOpen {
+            db.commitTransaction()
+        }
     }
 
     private func parseCalendar(csv: String) {
@@ -885,47 +930,78 @@ actor GTFSScheduleService {
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     }
 
-    private func parseShapes(csv: String) {
-        let lines = csv.components(separatedBy: .newlines)
-        guard let header = lines.first else { return }
-        let headers = header.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-
-        guard let idIdx = headers.firstIndex(of: "shape_id"),
-              let latIdx = headers.firstIndex(of: "shape_pt_lat"),
-              let lonIdx = headers.firstIndex(of: "shape_pt_lon"),
-              let seqIdx = headers.firstIndex(of: "shape_pt_sequence") else { return }
-
-        let maxIdx = max(idIdx, latIdx, lonIdx, seqIdx)
+    /// Streams shapes.txt from raw Data. Same rationale as parseStopTimes — see the
+    /// comment there for why iteration is inlined with subscript access instead of
+    /// `withUnsafeBytes`.
+    private func parseShapes(data: Data) {
         guard let stmt = db.prepareInsertShape() else { return }
-        db.beginTransaction()
+        defer { db.finalize(stmt) }
 
+        var idIdx = -1, latIdx = -1, lonIdx = -1, seqIdx = -1
+        var maxIdx = -1
+        var headerSeen = false
+        var transactionOpen = false
         var count = 0
-        for line in lines.dropFirst() {
-            let fields = line.split(separator: ",", omittingEmptySubsequences: false)
-                .map { String($0).trimmingCharacters(in: .whitespaces) }
-            guard fields.count > maxIdx else { continue }
-            let shapeId = fields[idIdx]
-            guard !shapeId.isEmpty,
-                  let lat = Double(fields[latIdx]),
-                  let lon = Double(fields[lonIdx]),
-                  let seq = Int(fields[seqIdx]) else { continue }
 
-            sqlite3_bind_text(stmt, 1, (shapeId as NSString).utf8String, -1, nil)
-            sqlite3_bind_double(stmt, 2, lat)
-            sqlite3_bind_double(stmt, 3, lon)
-            sqlite3_bind_int(stmt, 4, Int32(seq))
-            sqlite3_step(stmt)
-            sqlite3_reset(stmt)
-
-            count += 1
-            if count % 100_000 == 0 {
-                db.commitTransaction()
-                db.beginTransaction()
+        let total = data.count
+        var i = 0
+        while i < total {
+            var end = i
+            while end < total {
+                let b = data[end]
+                if b == 0x0A || b == 0x0D { break }
+                end += 1
             }
+
+            if end > i {
+                let line = String(decoding: data[i..<end], as: UTF8.self)
+
+                if !headerSeen {
+                    headerSeen = true
+                    let headers = line.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                    if let h = headers.firstIndex(of: "shape_id"),
+                       let la = headers.firstIndex(of: "shape_pt_lat"),
+                       let lo = headers.firstIndex(of: "shape_pt_lon"),
+                       let sq = headers.firstIndex(of: "shape_pt_sequence") {
+                        idIdx = h; latIdx = la; lonIdx = lo; seqIdx = sq
+                        maxIdx = max(idIdx, latIdx, lonIdx, seqIdx)
+                        db.beginTransaction()
+                        transactionOpen = true
+                    }
+                } else if maxIdx >= 0 {
+                    let fields = line.split(separator: ",", omittingEmptySubsequences: false)
+                        .map { String($0).trimmingCharacters(in: .whitespaces) }
+                    if fields.count > maxIdx {
+                        let shapeId = fields[idIdx]
+                        if !shapeId.isEmpty,
+                           let lat = Double(fields[latIdx]),
+                           let lon = Double(fields[lonIdx]),
+                           let seq = Int(fields[seqIdx]) {
+                            sqlite3_bind_text(stmt, 1, (shapeId as NSString).utf8String, -1, nil)
+                            sqlite3_bind_double(stmt, 2, lat)
+                            sqlite3_bind_double(stmt, 3, lon)
+                            sqlite3_bind_int(stmt, 4, Int32(seq))
+                            sqlite3_step(stmt)
+                            sqlite3_reset(stmt)
+
+                            count += 1
+                            if count % 100_000 == 0 {
+                                db.commitTransaction()
+                                db.beginTransaction()
+                            }
+                        }
+                    }
+                }
+            }
+
+            if end < total && data[end] == 0x0D { end += 1 }
+            if end < total && data[end] == 0x0A { end += 1 }
+            i = end
         }
 
-        db.commitTransaction()
-        db.finalize(stmt)
+        if transactionOpen {
+            db.commitTransaction()
+        }
     }
 
     private func parseRoutes(csv: String) {
@@ -986,5 +1062,9 @@ actor GTFSScheduleService {
 extension GTFSStopLoader {
     func extractFile(from data: Data, named fileName: String) -> String? {
         extractFileFromZip(data: data, fileName: fileName)
+    }
+
+    func extractFileData(from data: Data, named fileName: String) -> Data? {
+        extractFileDataFromZip(data: data, fileName: fileName)
     }
 }

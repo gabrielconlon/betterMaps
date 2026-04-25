@@ -12,6 +12,9 @@ final class Place {
     var rating: Int = 0
     var hoursInfo: String = ""
     var tags: [String] = []
+    /// For places used in a waypoint-path layer: when true this point is a path endpoint
+    /// and is connected to only its single nearest neighbor instead of two.
+    var isWaypointEndpoint: Bool = false
 
     @Attribute(.externalStorage)
     var photoData: [Data] = []
