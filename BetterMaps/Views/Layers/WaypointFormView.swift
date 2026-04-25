@@ -383,6 +383,10 @@ struct WaypointDrawView: View {
                 Text("Waypoints")
                     .font(.headline)
                 Spacer()
+                // EditButton enables drag handles + delete circles on the
+                // List rows below. Out of edit mode the rows show normally.
+                EditButton()
+                    .font(.subheadline)
                 Button(action: { withAnimation { showSidePanel = false } }) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -392,21 +396,22 @@ struct WaypointDrawView: View {
             .padding(.vertical, 10)
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
-                    ForEach(paths) { path in
-                        pathSection(path)
-                    }
+            List {
+                ForEach(paths) { path in
+                    pathSection(path)
+                }
+                Section {
                     Button(action: { startNewPath() }) {
                         Label("Start New Trail", systemImage: "plus.circle")
                             .font(.subheadline.weight(.medium))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
                     }
+                    .listRowBackground(Color.clear)
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
-        .frame(maxHeight: 320)
+        .frame(maxHeight: 360)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .padding(.horizontal, 8)
@@ -418,22 +423,21 @@ struct WaypointDrawView: View {
         let isActive = path.id == currentPathId
         let isExpanded = expandedPathIds.contains(path.id)
 
-        VStack(alignment: .leading, spacing: 0) {
-            // Header is a tap target with three concrete affordances:
-            //   • chevron (left)  — toggles waypoint list expansion
-            //   • body         — selects this trail as the active one
-            //   • pencil (right) — opens rename alert
-            // Static Text replaces the previous inline TextField so a tap
-            // on the header never pops the keyboard. This was the bug the
-            // user hit: tapping to "select Trail 1" instead activated text
-            // editing, and the next map tap kept dropping into Trail 2.
+        Section {
+            if isExpanded {
+                ForEach(path.waypoints) { wp in
+                    waypointRow(wp, in: path)
+                }
+                .onMove { source, destination in
+                    reorder(in: path.id, from: source, to: destination)
+                }
+            }
+        } header: {
             HStack(spacing: 8) {
                 Button(action: { toggleExpand(path.id) }) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -441,6 +445,7 @@ struct WaypointDrawView: View {
                     .font(.subheadline.weight(isActive ? .bold : .regular))
                     .foregroundStyle(isActive ? .primary : .secondary)
                     .lineLimit(1)
+                    .textCase(nil)
 
                 if isActive {
                     Image(systemName: "pencil.tip")
@@ -453,30 +458,21 @@ struct WaypointDrawView: View {
                 Text("\(path.waypoints.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
+                    .textCase(nil)
 
                 Button(action: { startRename(path) }) {
                     Image(systemName: "pencil")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
             .background(isActive ? Color.blue.opacity(0.12) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal, 4)
             .contentShape(Rectangle())
             .onTapGesture { selectPath(path.id) }
-
-            if isExpanded {
-                ForEach(path.waypoints) { wp in
-                    waypointRow(wp, in: path)
-                }
-            }
-            Divider().padding(.top, 4)
         }
     }
 
@@ -517,50 +513,88 @@ struct WaypointDrawView: View {
     @ViewBuilder
     private func waypointRow(_ wp: DraftWaypoint, in path: DraftPath) -> some View {
         let isSelected = selectedWaypointId == wp.id
+        // Position-derived flag: first row = start (⛳), last = end (🏁), else none.
+        // The single source of truth — eliminates the bug where the flag column
+        // and the array position disagreed because the flag was a manual toggle.
+        let position = path.waypoints.firstIndex(where: { $0.id == wp.id }) ?? 0
+        let isFirst = position == 0
+        let isLast = position == path.waypoints.count - 1
+        let positionLabel: String? = {
+            if isFirst && isLast { return "start / end" }
+            if isFirst { return "start" }
+            if isLast { return "end" }
+            return nil
+        }()
+
         HStack(spacing: 10) {
-            Image(systemName: wp.isEndpoint ? "flag.fill" : "circle.fill")
-                .font(.caption)
-                .foregroundStyle(wp.isEndpoint ? .orange : Color(hex: layer.colorHex) ?? .secondary)
-                .frame(width: 18)
+            ZStack {
+                Circle()
+                    .fill(isFirst || isLast ? .orange : Color(hex: layer.colorHex) ?? .secondary)
+                    .frame(width: 14, height: 14)
+                if isFirst || isLast {
+                    Image(systemName: "flag.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 22)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(wp.name.isEmpty ? "Waypoint" : wp.name)
                     .font(.subheadline)
-                Text(String(format: "%.5f, %.5f", wp.latitude, wp.longitude))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                HStack(spacing: 4) {
+                    Text(String(format: "%.5f, %.5f", wp.latitude, wp.longitude))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                    if let label = positionLabel {
+                        Text("• \(label)")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
             }
             Spacer()
-            Button(action: { toggleEndpoint(wp.id) }) {
-                Image(systemName: wp.isEndpoint ? "flag.fill" : "flag")
+
+            // "Move to end" — fast path for the common "make this the new end"
+            // gesture. Tapping the flag icon now moves the row to the bottom
+            // of its trail (auto-demoting the previous end). To make a row
+            // the start instead, drag it (Edit mode) or use the Edit Waypoint
+            // sheet (long-press the row).
+            Button(action: { moveToEnd(wp.id) }) {
+                Image(systemName: "arrow.down.to.line")
                     .font(.caption)
-                    .foregroundStyle(wp.isEndpoint ? .orange : .secondary)
+                    .foregroundStyle(isLast ? .tertiary : .secondary)
             }
             .buttonStyle(.plain)
-            Button(action: { deleteWaypoint(wp.id) }) {
-                Image(systemName: "trash")
-                    .font(.caption)
-                    .foregroundStyle(.red.opacity(0.8))
-            }
-            .buttonStyle(.plain)
+            .disabled(isLast)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(isSelected ? Color.blue.opacity(0.1) : .clear)
+        .listRowBackground(isSelected ? Color.blue.opacity(0.1) : Color.clear)
+        .listRowSeparator(.hidden)
         .contentShape(Rectangle())
         .onTapGesture {
             selectedWaypointId = wp.id
-            // Pan camera to the tapped waypoint (Goal-Gradient: physical move
-            // confirms which row maps to which point).
             cameraPosition = .region(MKCoordinateRegion(
                 center: wp.coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
             ))
         }
         .onLongPressGesture(minimumDuration: 0.4) {
-            // Long-press = open precision edit sheet (name, exact lat/lng,
-            // endpoint flag, path reassignment). Tap stays as the cheap
-            // select+pan action so the rapid review flow isn't slowed down.
             editingWaypointId = wp.id
+        }
+        .swipeActions(edge: .leading) {
+            Button {
+                moveToStart(wp.id)
+            } label: {
+                Label("Move to Start", systemImage: "arrow.up.to.line")
+            }
+            .tint(.orange)
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                deleteWaypoint(wp.id)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
         }
     }
 
@@ -623,44 +657,22 @@ struct WaypointDrawView: View {
 
     private func addWaypoint(at coord: CLLocationCoordinate2D) {
         pushUndo()
-        // If no current path, start a fresh one. Defaults the user into a
-        // sensible state on first tap — no need to hit "New Path" first.
         if currentPathId == nil {
             startNewPathInternal()
         }
         guard let pathId = currentPathId,
               let pathIndex = paths.firstIndex(where: { $0.id == pathId }) else { return }
 
-        // Auto-flag rule, per path: first waypoint = start, last waypoint = end.
-        // Adding a new last point demotes the previous last from end → middle.
-        if !paths[pathIndex].waypoints.isEmpty {
-            let lastIndex = paths[pathIndex].waypoints.count - 1
-            // Only un-flag if it was the auto-set end (i.e., user didn't
-            // manually flag a middle point as endpoint). We can't fully
-            // distinguish so this is conservative: only demote if there are
-            // already 2+ waypoints and the last is currently flagged.
-            if paths[pathIndex].waypoints.count >= 2,
-               paths[pathIndex].waypoints[lastIndex].isEndpoint,
-               // Check it isn't ALSO the start (1-waypoint paths have last=start)
-               lastIndex != 0 {
-                paths[pathIndex].waypoints[lastIndex].isEndpoint = false
-            }
-        }
-
-        let isFirst = paths[pathIndex].waypoints.isEmpty
         let new = DraftWaypoint(
             id: UUID(),
             latitude: coord.latitude,
             longitude: coord.longitude,
             name: "",
-            isEndpoint: true,                  // last added = endpoint (auto)
+            isEndpoint: false,  // recomputed below by position
             existingPlaceId: nil
         )
-        // First waypoint of a path: it IS the start AND end of a 1-point path,
-        // and we want the next add to demote it correctly. Setting isEndpoint
-        // = true on the first point gives the visual flag immediately.
-        _ = isFirst
         paths[pathIndex].waypoints.append(new)
+        recomputeEndpointFlags(in: pathIndex)
         selectedWaypointId = new.id
     }
 
@@ -669,14 +681,7 @@ struct WaypointDrawView: View {
         for i in paths.indices {
             paths[i].waypoints.removeAll { $0.id == id }
         }
-        // Re-flag endpoints if removal made the path's first/last shift.
-        for i in paths.indices {
-            for j in paths[i].waypoints.indices {
-                paths[i].waypoints[j].isEndpoint =
-                    (j == 0 || j == paths[i].waypoints.count - 1)
-            }
-        }
-        // Drop empty paths so they don't pile up in the side panel.
+        for i in paths.indices { recomputeEndpointFlags(in: i) }
         paths.removeAll { $0.waypoints.isEmpty }
         if let cur = currentPathId, !paths.contains(where: { $0.id == cur }) {
             currentPathId = paths.last?.id
@@ -684,12 +689,57 @@ struct WaypointDrawView: View {
         if selectedWaypointId == id { selectedWaypointId = nil }
     }
 
-    private func toggleEndpoint(_ id: UUID) {
+    /// Move a waypoint to the last position of its path. Tapping the flag
+    /// button on a row triggers this — replaces the previous "manually
+    /// toggle isEndpoint" behavior, which let the flag and the array
+    /// position disagree (the bug the user hit: middle waypoint flagged
+    /// as End, line straight to a different terminus). To make a waypoint
+    /// the start, drag it to the top via Edit mode.
+    private func moveToEnd(_ id: UUID) {
         pushUndo()
         for i in paths.indices {
-            for j in paths[i].waypoints.indices where paths[i].waypoints[j].id == id {
-                paths[i].waypoints[j].isEndpoint.toggle()
+            if let j = paths[i].waypoints.firstIndex(where: { $0.id == id }) {
+                let wp = paths[i].waypoints.remove(at: j)
+                paths[i].waypoints.append(wp)
+                recomputeEndpointFlags(in: i)
+                return
             }
+        }
+    }
+
+    /// Move a waypoint to the first position of its path. Used by the
+    /// move-to-start swipe action and the edit sheet.
+    private func moveToStart(_ id: UUID) {
+        pushUndo()
+        for i in paths.indices {
+            if let j = paths[i].waypoints.firstIndex(where: { $0.id == id }) {
+                let wp = paths[i].waypoints.remove(at: j)
+                paths[i].waypoints.insert(wp, at: 0)
+                recomputeEndpointFlags(in: i)
+                return
+            }
+        }
+    }
+
+    /// Reorder hook used by SwiftUI List's .onMove. Operates on a single
+    /// path's waypoints (drag handles only show within a section).
+    private func reorder(in pathId: UUID, from source: IndexSet, to destination: Int) {
+        guard let i = paths.firstIndex(where: { $0.id == pathId }) else { return }
+        pushUndo()
+        paths[i].waypoints.move(fromOffsets: source, toOffset: destination)
+        recomputeEndpointFlags(in: i)
+    }
+
+    /// Position-derived endpoint flags. After every add/delete/reorder/edit,
+    /// the first row of a path is its start and the last row is its end.
+    /// Middle rows have no flag. This is the single invariant that keeps the
+    /// list view, the side panel, the saved Place rows, and the rendered
+    /// polyline all in agreement.
+    private func recomputeEndpointFlags(in pathIndex: Int) {
+        let count = paths[pathIndex].waypoints.count
+        guard count > 0 else { return }
+        for j in 0..<count {
+            paths[pathIndex].waypoints[j].isEndpoint = (j == 0 || j == count - 1)
         }
     }
 
@@ -815,6 +865,11 @@ struct WaypointDrawView: View {
         // Start with only the active trail expanded — many-trail layers
         // would otherwise overflow the panel on first open.
         if let cur = currentPathId { expandedPathIds = [cur] }
+        // Force position-derived endpoint flags. Legacy data may have flagged
+        // a middle waypoint (the bug); sorting alone wouldn't fix the
+        // visual. Recomputing by position guarantees first/last carry the
+        // flag and middles never do.
+        for i in paths.indices { recomputeEndpointFlags(in: i) }
 
         // Center camera on the data we have, or fall back to Dublin.
         let allCoords = paths.flatMap { $0.waypoints.map(\.coordinate) }

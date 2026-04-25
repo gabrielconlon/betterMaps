@@ -12,6 +12,10 @@ struct LayerDetailView: View {
     /// Default state (set on first appear): all trails expanded.
     @State private var expandedPathIds: Set<UUID> = []
     @State private var didSeedExpansion: Bool = false
+    /// Place currently open in the edit form. Tapping a row in the list
+    /// (place layers) sets this to push the precision-edit form. The user
+    /// reported tap-to-edit was missing — every row was non-interactive.
+    @State private var editingPlace: Place?
 
     var layerPlaces: [Place] {
         (layer.places ?? []).sorted { $0.name < $1.name }
@@ -122,7 +126,23 @@ struct LayerDetailView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(layerPlaces) { place in
-                            PlaceRowView(place: place)
+                            // Tap a place row to open its edit form. The user
+                            // reported this regressed — rows used to be
+                            // tappable for edit, but the recent rebuilds
+                            // turned them into static cells. Use Button +
+                            // .plain style so the cell still looks like a
+                            // List row but actually responds.
+                            Button(action: { editingPlace = place }) {
+                                HStack {
+                                    PlaceRowView(place: place)
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                         .onDelete(perform: removePlaces)
                     }
@@ -185,6 +205,9 @@ struct LayerDetailView: View {
         .sheet(isPresented: $showAddWaypoint) {
             WaypointFormView(layer: layer)
         }
+        .sheet(item: $editingPlace) { place in
+            PlaceFormView(place: place)
+        }
         .fullScreenCover(isPresented: $showDrawMode) {
             // Full-screen cover — Draw Mode owns the entire screen so the
             // user can rapid-tap without other UI competing for hits.
@@ -200,9 +223,22 @@ struct LayerDetailView: View {
         Section {
             if isExpanded {
                 ForEach(group.places) { place in
-                    WaypointRowView(place: place)
+                    Button(action: { editingPlace = place }) {
+                        HStack {
+                            WaypointRowView(place: place)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
                 .onDelete { offsets in removeFromTrail(group: group, at: offsets) }
+                .onMove { source, destination in
+                    moveInTrail(group: group, from: source, to: destination)
+                }
             }
         } header: {
             // Tappable section header to toggle expansion. Only shown for
@@ -239,6 +275,19 @@ struct LayerDetailView: View {
             expandedPathIds.remove(id)
         } else {
             expandedPathIds.insert(id)
+        }
+    }
+
+    /// Reorder places within a trail. Writes incremental sortIndex values to
+    /// the underlying Place rows so the ordering persists across launches and
+    /// CloudKit syncs, and re-derives isWaypointEndpoint by position so the
+    /// flag visual matches the line on the map.
+    private func moveInTrail(group: (id: UUID?, name: String, places: [Place]), from source: IndexSet, to destination: Int) {
+        var reordered = group.places
+        reordered.move(fromOffsets: source, toOffset: destination)
+        for (index, place) in reordered.enumerated() {
+            place.sortIndex = index
+            place.isWaypointEndpoint = (index == 0 || index == reordered.count - 1)
         }
     }
 
