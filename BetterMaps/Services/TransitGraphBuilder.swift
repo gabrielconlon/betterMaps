@@ -81,15 +81,34 @@ actor TransitGraphBuilder {
     /// v3: Added routeLongName for descriptive rail route names.
     private static let graphVersion = 3
 
-    /// Load cached graph if fresh and correct version, or return nil to trigger rebuild
+    /// Load cached graph if fresh, correct version, non-empty, and matches
+    /// today's service day. nil triggers a rebuild from SQLite.
     static func loadCached() -> TransitGraph? {
         guard let data = try? Data(contentsOf: cacheURL),
               let graph = try? JSONDecoder().decode(TransitGraph.self, from: data) else { return nil }
-        // Invalidate if old version (stop order was broken in v1)
         if graph.version != graphVersion { return nil }
-        // Valid if built within last 7 days
         if Date().timeIntervalSince1970 - graph.buildTimestamp > 7 * 24 * 3600 { return nil }
+        // Empty graphs are never useful — they get produced when build() runs
+        // before stops or services are populated (e.g., first-launch race
+        // condition during initial GTFS download). Trash and rebuild so the
+        // user doesn't sit on an empty graph for 7 days.
+        if graph.routes.isEmpty { return nil }
+        // Service-day mismatch: a graph built on Saturday includes only
+        // Saturday's routes. Sunday's routing query uses Sunday's active
+        // services, which won't match anything in a Saturday graph and the
+        // user gets zero results. Rebuild whenever the day's service type
+        // changes.
+        if graph.serviceDay != currentServiceDay() { return nil }
         return graph
+    }
+
+    /// "weekday", "saturday", or "sunday" for today in Europe/Dublin —
+    /// matches the value `build()` writes into TransitGraph.serviceDay.
+    static func currentServiceDay() -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Europe/Dublin")!
+        let weekday = cal.component(.weekday, from: Date())
+        return weekday == 1 ? "sunday" : weekday == 7 ? "saturday" : "weekday"
     }
 
     /// Build the transit graph from GTFS SQLite
@@ -347,16 +366,20 @@ actor TransitGraphBuilder {
             version: Self.graphVersion
         )
 
-        // Save to cache
-        if let data = try? JSONEncoder().encode(graph) {
+        // Save to cache — but only if the build actually produced data.
+        // An empty graph is the signature of a race during first launch
+        // (stops or activeServices not yet loaded); persisting it would
+        // poison the cache for up to 7 days even though SQLite is healthy.
+        if !routes.isEmpty,
+           let data = try? JSONEncoder().encode(graph) {
             try? data.write(to: Self.cacheURL)
         }
 
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         await APILogger.shared.log(
             service: "TransitGraph", endpoint: "build",
-            status: .success, durationMs: ms,
-            detail: "\(routes.count) routes, \(transfers.count) transfers, \(stopIds.count) stops. \(ms)ms"
+            status: routes.isEmpty ? .failure : .success, durationMs: ms,
+            detail: "\(routes.count) routes, \(transfers.count) transfers, \(stopIds.count) stops, services=\(activeServices.count). \(ms)ms"
         )
 
         return graph
