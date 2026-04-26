@@ -372,14 +372,14 @@ actor GTFSScheduleService {
         )
     }
 
-    /// Find nearby stop IDs from transit stop data (unchanged — uses in-memory stop list)
+    /// Find nearby stop IDs from transit stop data (unchanged — uses in-memory stop list).
+    /// Uses Haversine math instead of CLLocation.distance to avoid the
+    /// kernel's CoreLocation rate limit; this iterates all ~14k stops per
+    /// call which would otherwise burn through the 24k/sec quota in two
+    /// invocations.
     func findNearbyStopIds(coordinate: CLLocationCoordinate2D, radiusMeters: Double, allStops: [TransitStop]) -> [String] {
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         return allStops
-            .filter { stop in
-                let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                return stopLoc.distance(from: location) <= radiusMeters
-            }
+            .filter { WaypointGraph.meters($0.coordinate, coordinate) <= radiusMeters }
             .map { $0.id }
     }
 

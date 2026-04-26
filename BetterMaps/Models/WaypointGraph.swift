@@ -14,6 +14,24 @@ import CoreLocation
 /// The result is always a forest of disjoint chains.
 enum WaypointGraph {
 
+    /// Distance in meters between two coordinates via the Haversine formula.
+    /// Uses raw Double arithmetic — no CLLocation allocation, no system call —
+    /// so it avoids the kernel's CoreLocation API rate limit (~24k/sec).
+    /// The previous codebase used `CLLocation(...).distance(from:)` in
+    /// hot loops that iterated all ~14k transit stops on every routing
+    /// search; on multi-search sessions that tripped the limit and stalled
+    /// the main thread for ~60 seconds with the white-screen hang the user
+    /// reported. Use this helper for any geographic distance check.
+    static func meters(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let R = 6_371_000.0
+        let dLat = (b.latitude - a.latitude) * .pi / 180
+        let dLon = (b.longitude - a.longitude) * .pi / 180
+        let h = sin(dLat / 2) * sin(dLat / 2) +
+                cos(a.latitude * .pi / 180) * cos(b.latitude * .pi / 180) *
+                sin(dLon / 2) * sin(dLon / 2)
+        return R * 2 * atan2(sqrt(h), sqrt(1 - h))
+    }
+
     struct Node {
         let id: UUID
         let coordinate: CLLocationCoordinate2D

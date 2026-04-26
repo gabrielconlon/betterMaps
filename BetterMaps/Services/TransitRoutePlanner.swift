@@ -481,9 +481,9 @@ actor TransitRoutePlanner {
     }
 
     func walkingDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
-        let locA = CLLocation(latitude: from.latitude, longitude: from.longitude)
-        let locB = CLLocation(latitude: to.latitude, longitude: to.longitude)
-        return locA.distance(from: locB) * roadRoutingFactor
+        // Haversine — avoids the CoreLocation rate limit. This function is
+        // called many times per route plan (per leg, per transfer search).
+        return WaypointGraph.meters(from, to) * roadRoutingFactor
     }
 
     func legMode(for stop: TransitStop, trip: GTFSTrip) -> TransitLegMode {

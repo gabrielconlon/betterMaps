@@ -236,9 +236,6 @@ class RoutingViewModel {
         origin: CLLocationCoordinate2D,
         destination: CLLocationCoordinate2D
     ) -> [TransitStop] {
-        let originLoc = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
-        let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
-
         struct ModeConfig {
             let types: [TransitStop.TransitStopType]
             let radiusMeters: Double
@@ -254,11 +251,15 @@ class RoutingViewModel {
 
         var selectedIds = Set<String>()
 
-        for loc in [originLoc, destLoc] {
+        // Use Haversine math (no CoreLocation) — this loop runs over all
+        // 14k stops twice per search; the old CLLocation.distance approach
+        // tripped the kernel's CoreLocation rate limit (24k/sec) on
+        // multi-search sessions and stalled the main thread for ~60s.
+        for loc in [origin, destination] {
             for config in configs {
                 let modeStops = allStops
                     .filter { config.types.contains($0.type) }
-                    .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: loc)) }
+                    .map { (stop: $0, dist: WaypointGraph.meters($0.coordinate, loc)) }
                     .filter { $0.dist <= config.radiusMeters }
                     .sorted { $0.dist < $1.dist }
                     .prefix(config.maxCount)
@@ -268,9 +269,8 @@ class RoutingViewModel {
             }
 
             // Catch-all: closest stops of ANY type within 1000m.
-            // Ensures misclassified stops (e.g. Luas stop tagged as bus) are still considered.
             let closest = allStops
-                .map { (stop: $0, dist: CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: loc)) }
+                .map { (stop: $0, dist: WaypointGraph.meters($0.coordinate, loc)) }
                 .filter { $0.dist <= 1000 }
                 .sorted { $0.dist < $1.dist }
                 .prefix(3)

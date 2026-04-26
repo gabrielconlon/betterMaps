@@ -144,10 +144,8 @@ class TransitMapState {
 
     /// Check if a stop is within threshold meters of any existing stop (same type)
     func isNearExistingStop(_ stop: TransitStop, in stops: [TransitStop], thresholdMeters: Double) -> Bool {
-        let loc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-        return stops.contains { existing in
-            let existingLoc = CLLocation(latitude: existing.latitude, longitude: existing.longitude)
-            return existingLoc.distance(from: loc) < thresholdMeters
+        stops.contains { existing in
+            WaypointGraph.meters(existing.coordinate, stop.coordinate) < thresholdMeters
         }
     }
 

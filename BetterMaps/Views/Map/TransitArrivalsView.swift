@@ -340,10 +340,11 @@ struct TransitArrivalsView: View {
         // Check Irish Rail (only if stop type matches or unknown)
         if shouldCheckRail {
             let allStations = await railService.fetchStations()
-            let tapLoc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
             let nearbyStation = allStations.first { station in
-                let stationLoc = CLLocation(latitude: station.latitude, longitude: station.longitude)
-                return stationLoc.distance(from: tapLoc) < 800
+                WaypointGraph.meters(
+                    CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude),
+                    coordinate
+                ) < 800
             }
 
             if let station = nearbyStation {
@@ -358,15 +359,16 @@ struct TransitArrivalsView: View {
             // Ensure SQLite database is ready (instant if already built, downloads if first time)
             await GTFSScheduleService.shared.loadIfNeeded()
 
-            let tapLoc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-
             let loader = GTFSStopLoader()
             let gtfsStops = await loader.loadStops()
+            // Use WaypointGraph.meters (Haversine) to avoid creating a
+            // CLLocation per stop when scanning thousands of bus stops —
+            // that pattern was contributing to the kernel CoreLocation
+            // rate-limit warnings the user saw on cold start.
             let nearbyBusStop = gtfsStops
                 .filter { $0.type == .bus }
                 .map { stop in
-                    let stopLoc = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                    return (stop: stop, distance: stopLoc.distance(from: tapLoc))
+                    (stop: stop, distance: WaypointGraph.meters(stop.coordinate, coordinate))
                 }
                 .filter { $0.distance < 200 }
                 .min(by: { $0.distance < $1.distance })

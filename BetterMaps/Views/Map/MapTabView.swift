@@ -96,6 +96,23 @@ struct MapTabView: View {
         ZStack {
             mapView
             layersPanelOverlay
+            // Top status banner — loading state + data-age badge. Appears as
+            // a small floating pill in the top-right while transit data is
+            // still loading; switches to a dataAge readout once ready. The
+            // user reported a 60s "white screen" with no signal that work
+            // was happening; this gives an unambiguous "the app is alive,
+            // here's what's going on" anchor.
+            VStack {
+                HStack {
+                    Spacer()
+                    transitStatusBadge
+                        .padding(.trailing, 12)
+                        .padding(.top, 12)
+                }
+                Spacer()
+            }
+            .allowsHitTesting(false)
+            .zIndex(11)
             // UI overlays
             VStack(spacing: 0) {
                 Spacer()
@@ -857,6 +874,56 @@ struct MapTabView: View {
         }
     }
 
+    // MARK: - Transit Status Badge
+
+    /// Top-right floating pill: shows "Loading transit…" while loadTransitData
+    /// hasn't finished, otherwise shows the GTFS data's age (e.g. "Data: 3d
+    /// old"). User reported a 60-second white screen on cold start with no
+    /// signal — this gives them a visible anchor that the app is doing work,
+    /// and afterwards lets them see at a glance how stale the cached
+    /// timetable is. Non-interactive (allowsHitTesting=false on the parent)
+    /// so it doesn't compete for taps with the map.
+    @ViewBuilder
+    private var transitStatusBadge: some View {
+        if !searchState.transitDataReady {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading transit…")
+                    .font(.caption2.weight(.medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.1), radius: 2)
+        } else if let age = transitDataAge {
+            HStack(spacing: 4) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10))
+                Text(age)
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.ultraThinMaterial)
+            .clipShape(Capsule())
+            .opacity(0.85)
+        }
+    }
+
+    /// Pulled from the GTFS database file's mtime. Updated only when SQLite
+    /// is rebuilt, so it accurately reflects how old the schedule data is.
+    @State private var transitDataAge: String? = nil
+
+    /// `dataAge` returns "Updated 3h ago"; the badge is already labeled
+    /// "Data:" via the clock icon so trim the verbose prefix for a tighter
+    /// pill — "3h ago" is enough.
+    private func stripUpdatedPrefix(_ s: String) -> String {
+        s.replacingOccurrences(of: "Updated ", with: "")
+    }
+
     // MARK: - Bottom Bar
 
     private var bottomBar: some View {
@@ -1093,6 +1160,9 @@ struct MapTabView: View {
             detail: "\(dedupedStops.count) stops, luasRed=\(luasShapes.red.count) luasGreen=\(luasShapes.green.count) dart=\(dart.count) rail=\(rail.count)"
         )
 
+        // Refresh the visible "Data: Xd old" badge with the SQLite mtime.
+        transitDataAge = await GTFSScheduleService.shared.dataAge.map { stripUpdatedPrefix($0) }
+
         // Background graph build (independent of view rendering — does not block).
         Task.detached(priority: .utility) {
             let router = TransitRoutePlanner.shared.headwayRouter
@@ -1120,9 +1190,7 @@ struct MapTabView: View {
         var kept: [TransitStop] = []
         for stop in luasStops {
             let isDuplicate = kept.contains { existing in
-                let loc1 = CLLocation(latitude: stop.latitude, longitude: stop.longitude)
-                let loc2 = CLLocation(latitude: existing.latitude, longitude: existing.longitude)
-                if loc1.distance(from: loc2) < 250 { return true }
+                if WaypointGraph.meters(stop.coordinate, existing.coordinate) < 250 { return true }
                 let a = stop.name.lowercased().replacingOccurrences(of: " luas", with: "")
                     .replacingOccurrences(of: " stop", with: "").trimmingCharacters(in: .whitespaces)
                 let b = existing.name.lowercased().replacingOccurrences(of: " luas", with: "")
@@ -1147,9 +1215,8 @@ struct MapTabView: View {
         if let response = try? await broadSearch.start(),
            let closest = response.mapItems
             .sorted(by: {
-                let loc = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-                return loc.distance(from: CLLocation(latitude: $0.placemark.coordinate.latitude, longitude: $0.placemark.coordinate.longitude))
-                    < loc.distance(from: CLLocation(latitude: $1.placemark.coordinate.latitude, longitude: $1.placemark.coordinate.longitude))
+                WaypointGraph.meters($0.placemark.coordinate, coordinate)
+                    < WaypointGraph.meters($1.placemark.coordinate, coordinate)
             })
             .first {
             viewModel.showPOI(closest)
