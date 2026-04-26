@@ -82,6 +82,31 @@ class APILogger {
         return grouped.map { ($0.key, $0.value.count) }.sorted { $0.count > $1.count }
     }
 
+    /// Most recent successful (or cached) timestamp per service. Used by
+    /// the Settings "Data Sources" view to surface "Irish Rail: 12s ago"
+    /// per-source freshness alongside the GTFS schedule's mtime — the
+    /// architecture has tracked these in `entries` all along but never
+    /// surfaced them outside the API Log.
+    var lastSuccessByService: [String: Date] {
+        var result: [String: Date] = [:]
+        for entry in entries where entry.status != .failure {
+            if result[entry.service] == nil {
+                result[entry.service] = entry.timestamp
+            }
+        }
+        return result
+    }
+
+    /// Format a Date as "Xs / Xm / Xh / Xd ago" for compact UI labels.
+    static func relativeTimeString(_ date: Date) -> String {
+        let secs = Int(Date().timeIntervalSince(date))
+        if secs < 5 { return "just now" }
+        if secs < 60 { return "\(secs)s ago" }
+        if secs < 3600 { return "\(secs / 60)m ago" }
+        if secs < 86400 { return "\(secs / 3600)h ago" }
+        return "\(secs / 86400)d ago"
+    }
+
     func log(service: String, endpoint: String, status: APILogStatus, durationMs: Int, detail: String? = nil) {
         let entry = APILogEntry(
             timestamp: Date(),

@@ -28,6 +28,10 @@ struct HamburgerMenuView: View {
     @State private var editingLayer: Layer?
     @State private var showSettings = false
     @State private var editingWeatherKey = ""
+    @State private var showRefreshConfirm = false
+    /// Mirrors the AppStorage flag in ContentView. Setting this to false
+    /// returns the user to GTFSSetupView which re-downloads the GTFS feed.
+    @AppStorage("gtfsSetupComplete") private var gtfsSetupComplete = false
 
     var body: some View {
         NavigationStack {
@@ -172,6 +176,38 @@ struct HamburgerMenuView: View {
                         Label("Saved Routes (Offline)", systemImage: "arrow.down.circle")
                     }
 
+                    // Transit data freshness + manual refresh.
+                    HStack {
+                        Label("Transit Schedule", systemImage: "tram.fill")
+                        Spacer()
+                        if let age = GTFSDatabase.ageDescription {
+                            Text(age)
+                                .font(.caption)
+                                .foregroundStyle(GTFSDatabase.isFresh ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
+                        } else {
+                            Text("Not loaded")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    // Per-source last-fetched timestamps. Pulled from
+                    // APILogger.lastSuccessByService so each row shows the
+                    // age of the most recent successful (or cached) hit
+                    // for that data feed. Aligns with the architecture:
+                    // user can see at a glance which feeds are live and
+                    // which are stale.
+                    let lastFetched = APILogger.shared.lastSuccessByService
+                    perSourceRow("Bus (NTA)", systemImage: "bus.fill", date: lastFetched["NTA"])
+                    perSourceRow("Irish Rail", systemImage: "train.side.front.car", date: lastFetched["Irish Rail"])
+                    perSourceRow("Luas RTPI", systemImage: "tram.fill", date: lastFetched["Luas"])
+                    Button(action: { showRefreshConfirm = true }) {
+                        Label(
+                            GTFSDatabase.isFresh ? "Refresh Transit Data" : "Refresh Now (Stale)",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .foregroundStyle(GTFSDatabase.isFresh ? Color.blue : Color.red)
+                    }
+
                     NavigationLink(destination: APILogView()) {
                         HStack {
                             Label("API Logs", systemImage: "list.bullet.rectangle")
@@ -277,7 +313,54 @@ struct HamburgerMenuView: View {
                     LayerFormView(layer: layer)
                 }
             }
+            .confirmationDialog(
+                "Refresh Transit Data?",
+                isPresented: $showRefreshConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Re-download GTFS Feed", role: .destructive) {
+                    refreshTransitData()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Forces a fresh download of the Irish transit schedule (~65 MB). The map keeps working from cached stops while the new data loads.")
+            }
         }
+    }
+
+    /// Compact "X seconds ago" row for a live data source. nil date means
+    /// the source has never been successfully fetched in this session.
+    @ViewBuilder
+    private func perSourceRow(_ label: String, systemImage: String, date: Date?) -> some View {
+        HStack {
+            Label(label, systemImage: systemImage)
+                .font(.subheadline)
+            Spacer()
+            if let date {
+                Text(APILogger.relativeTimeString(date))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Not fetched")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// Reset the setup gate and clear caches that depend on the schedule.
+    /// The user is dropped back into GTFSSetupView (already familiar) which
+    /// re-downloads the GTFS feed and rebuilds SQLite. The stops cache stays
+    /// so the map keeps showing pins through the refresh.
+    private func refreshTransitData() {
+        // Remove cached schedule + ZIP so loadIfNeeded re-downloads.
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        for name in ["gtfs_schedule.sqlite", "gtfs_all_cache.zip", "transit_graph.json", "gtfs_shapes_cache.json"] {
+            try? FileManager.default.removeItem(at: caches.appendingPathComponent(name))
+        }
+        // Flip the gate so ContentView routes to GTFSSetupView.
+        gtfsSetupComplete = false
+        dismiss()
     }
 
     // MARK: - Layer Management View

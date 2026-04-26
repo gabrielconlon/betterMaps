@@ -20,6 +20,14 @@ struct TransitArrivalsView: View {
     @State private var hasLuas = false
     @State private var busFetchAttempted = false
     @State private var busRoutes: [(routeId: String, routeName: String)] = []
+    /// When the displayed arrivals were last refreshed. Drives the "Updated
+    /// Xs ago" header label so the user can see at a glance how fresh the
+    /// data is. nil = no successful fetch yet.
+    @State private var lastUpdated: Date? = nil
+    /// Drives the auto-refresh ticker so the header label updates from
+    /// "just now" → "30s ago" → ... while the sheet stays open.
+    @State private var refreshTick: Int = 0
+    @State private var isRefreshing: Bool = false
 
     private let railService = IrishRailService()
     private let luasService = LuasService()
@@ -67,6 +75,31 @@ struct TransitArrivalsView: View {
                     if let stopId {
                         FavoriteStopButton(stopId: stopId)
                     }
+                }
+
+                // Freshness header — when the sheet's arrivals were last
+                // pulled and a manual refresh button. Subtle, sub-headline,
+                // but always visible so the user knows whether they're
+                // looking at 5-second-old data or 5-minute-old data.
+                HStack(spacing: 8) {
+                    Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "clock")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(freshnessLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .id(refreshTick)  // force re-eval so the label ticks even without state change
+                    Spacer()
+                    Button(action: { Task { await refreshArrivals() } }) {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .font(.caption2)
+                            .labelStyle(.iconOnly)
+                            .padding(6)
+                            .background(.thinMaterial)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isRefreshing)
                 }
 
                 // Only show loading spinner when no data has arrived yet
@@ -128,13 +161,19 @@ struct TransitArrivalsView: View {
 
                                 Spacer()
 
-                                VStack(alignment: .trailing) {
+                                VStack(alignment: .trailing, spacing: 2) {
                                     Text(arrival.dueIn == 0 ? "DUE" : "\(arrival.dueIn) min")
                                         .font(.headline)
                                         .foregroundStyle(arrival.dueIn <= 3 ? .red : .primary)
                                     Text(arrival.expectedArrival)
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
+                                    // Irish Rail RTPI is always real-time;
+                                    // showing the badge here too keeps the
+                                    // visual language consistent across
+                                    // every transit type (user expects to
+                                    // see source on every row).
+                                    sourceBadge(isRealTime: true)
                                 }
                             }
                             .padding(10)
@@ -211,15 +250,17 @@ struct TransitArrivalsView: View {
 
                                     Spacer()
 
-                                    VStack(alignment: .trailing) {
+                                    VStack(alignment: .trailing, spacing: 2) {
                                         Text(dep.dueIn == 0 ? "DUE" : "\(dep.dueIn) min")
                                             .font(.headline)
                                             .foregroundStyle(dep.dueIn <= 3 ? .red : .primary)
-                                        if dep.isRealTime {
-                                            Text("Live")
-                                                .font(.caption2)
-                                                .foregroundStyle(.green)
-                                        }
+                                        // Loud per-row source badge — green
+                                        // "Live" for realtime feeds, gray
+                                        // "Schedule" for GTFS estimate.
+                                        // Aligns with the architecture
+                                        // intent: user always knows whether
+                                        // the time is current vs cached.
+                                        sourceBadge(isRealTime: dep.isRealTime)
                                     }
 
                                     if !dep.routeId.isEmpty {
@@ -286,6 +327,59 @@ struct TransitArrivalsView: View {
         .task {
             await loadArrivals()
         }
+        // Auto-refresh the freshness label every 5s without re-fetching, so
+        // "Updated just now" becomes "Updated 30s ago" naturally even if
+        // the user doesn't interact. refreshTick changes drive .id() on
+        // the freshness Text to force a re-render.
+        .task(id: lastUpdated) {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                if Task.isCancelled { break }
+                refreshTick &+= 1
+            }
+        }
+    }
+
+    /// "Live" (green) or "Schedule" (gray) pill — used inline next to each
+    /// arrival's time. The single visible signal that tells the user "this
+    /// number is from a real-time feed right now" vs "this number is the
+    /// scheduled departure from the GTFS timetable, which may not match
+    /// what's actually running today".
+    @ViewBuilder
+    private func sourceBadge(isRealTime: Bool) -> some View {
+        Text(isRealTime ? "Live" : "Schedule")
+            .font(.system(size: 9, weight: .bold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(isRealTime ? Color.green.opacity(0.18) : Color.secondary.opacity(0.15))
+            .foregroundStyle(isRealTime ? Color.green : Color.secondary)
+            .clipShape(Capsule())
+    }
+
+    /// Human-readable label for the lastUpdated timestamp. Drives the
+    /// "Updated Xs ago" header. Computed each render (cheap), uses
+    /// refreshTick as an indirect dependency so the auto-ticker can force
+    /// a re-evaluation as time passes.
+    private var freshnessLabel: String {
+        guard let lastUpdated else {
+            return isLoading ? "Loading…" : "Not loaded"
+        }
+        let secs = Int(Date().timeIntervalSince(lastUpdated))
+        _ = refreshTick  // dependency
+        if secs < 5 { return "Updated just now" }
+        if secs < 60 { return "Updated \(secs)s ago" }
+        if secs < 3600 { return "Updated \(secs / 60)m ago" }
+        return "Updated \(secs / 3600)h ago"
+    }
+
+    /// Re-fetch all live data sources for this stop. Triggered by the
+    /// header refresh button. Reuses loadArrivals; sets isRefreshing so
+    /// the icon spins and the button is disabled mid-flight.
+    private func refreshArrivals() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        await loadArrivals()
+        isRefreshing = false
     }
 
     @ViewBuilder
@@ -303,9 +397,15 @@ struct TransitArrivalsView: View {
                     Text(forecast.destination)
                         .font(.subheadline)
                     Spacer()
-                    Text(forecast.dueIn)
-                        .font(.headline)
-                        .foregroundStyle(forecast.dueMinutes == 0 ? .red : .primary)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(forecast.dueIn)
+                            .font(.headline)
+                            .foregroundStyle(forecast.dueMinutes == 0 ? .red : .primary)
+                        // Luas RTPI is real-time. Same badge language as
+                        // the other transit types — every row says where
+                        // its number comes from.
+                        sourceBadge(isRealTime: true)
+                    }
                 }
                 .padding(10)
                 .background(Color(.systemGray6))
@@ -413,6 +513,7 @@ struct TransitArrivalsView: View {
         }
 
         isLoading = false
+        lastUpdated = Date()
     }
 }
 
