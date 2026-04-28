@@ -217,6 +217,14 @@ struct MapTabView: View {
         ))
         .task { await loadTransitData() }
         .task(id: transitState.showLiveTransit) { await pollLiveTransit() }
+        .task {
+            // Stuck-detector — flips the loading pill to a diagnostic
+            // banner if Phase 1+2 don't complete within 8 seconds. Gives
+            // the user actionable info to report a hang without needing
+            // the Xcode console.
+            try? await Task.sleep(for: .seconds(8))
+            if !searchState.transitDataReady { loadIsStuck = true }
+        }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
         }
@@ -886,17 +894,25 @@ struct MapTabView: View {
     @ViewBuilder
     private var transitStatusBadge: some View {
         if !searchState.transitDataReady {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Loading transit…")
-                    .font(.caption2.weight(.medium))
+            if loadIsStuck {
+                // After 8s of no completion, switch from a quiet pill to a
+                // diagnostic banner. Shows which phase is in flight + the
+                // sizes of the on-disk caches so a user reporting "stuck"
+                // can read out concrete data without Xcode console.
+                stuckDiagnosticBanner
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(loadPhaseLabel)
+                        .font(.caption2.weight(.medium))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.1), radius: 2)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-            .clipShape(Capsule())
-            .shadow(color: .black.opacity(0.1), radius: 2)
         } else if let age = transitDataAge {
             HStack(spacing: 4) {
                 Image(systemName: "clock.arrow.circlepath")
@@ -917,11 +933,66 @@ struct MapTabView: View {
     /// is rebuilt, so it accurately reflects how old the schedule data is.
     @State private var transitDataAge: String? = nil
 
+    /// Phase string set by loadTransitData so the stuck-detector banner can
+    /// show which step is in flight when it fires. Helps diagnose hangs
+    /// without requiring Xcode console — the app itself reports where it's
+    /// stuck.
+    @State private var loadPhaseLabel: String = "Starting…"
+    /// Set true after 8 seconds if searchState.transitDataReady hasn't
+    /// flipped. Triggers the diagnostic banner over the regular loading
+    /// pill so the user has actionable info rather than a silent spinner.
+    @State private var loadIsStuck: Bool = false
+
     /// `dataAge` returns "Updated 3h ago"; the badge is already labeled
     /// "Data:" via the clock icon so trim the verbose prefix for a tighter
     /// pill — "3h ago" is enough.
     private func stripUpdatedPrefix(_ s: String) -> String {
         s.replacingOccurrences(of: "Updated ", with: "")
+    }
+
+    /// Diagnostic banner shown after 8 seconds without loadTransitData
+    /// completing. Always-readable text — phase name + on-disk cache
+    /// presence + a tap target to force-restart loading. The user reported
+    /// "white screen, nothing happens, can't describe it"; this gives them
+    /// concrete data to relay back without needing the Xcode console.
+    private var stuckDiagnosticBanner: some View {
+        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        func sizeKB(_ name: String) -> String {
+            let url = cachesURL.appendingPathComponent(name)
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let size = attrs[.size] as? Int else { return "missing" }
+            if size < 1024 { return "\(size) B" }
+            if size < 1_048_576 { return String(format: "%.0f KB", Double(size) / 1024.0) }
+            return String(format: "%.1f MB", Double(size) / 1_048_576.0)
+        }
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Loading slow")
+                    .font(.caption.bold())
+                Spacer()
+            }
+            Text("Phase: \(loadPhaseLabel)")
+                .font(.caption2)
+            Text("Stops cache: \(sizeKB("gtfs_stops_cache.json"))")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text("Schedule SQLite: \(sizeKB("gtfs_schedule.sqlite"))")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text("GTFS ZIP: \(sizeKB("gtfs_all_cache.zip"))")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text("Shapes cache: \(sizeKB("gtfs_shapes_cache.json"))")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: 220, alignment: .leading)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.15), radius: 3)
     }
 
     // MARK: - Bottom Bar
@@ -1042,6 +1113,10 @@ struct MapTabView: View {
 
     @MainActor
     private func loadTransitData() async {
+        // Boot-path log — the user reported a hang where the map shows
+        // white and none of the existing phase logs fire. Printing here
+        // confirms whether .task even entered the function.
+        print("[BetterMaps] loadTransitData() entered")
         // ARCHITECTURE — Two-phase load.
         //
         // The history of this function is a series of regressions where the user
@@ -1076,6 +1151,7 @@ struct MapTabView: View {
         // Both the stop JSON and the shape JSON are read synchronously (no
         // suspension). Map is populated within the first frame even if the
         // SQLite DB needs a 60s rebuild after this point.
+        loadPhaseLabel = "Loading stops cache"
         let phase1Start = Date()
         let loader = GTFSStopLoader()
         let stopsFromCache = await loader.loadStops()    // returns from JSON cache in ~100ms
@@ -1105,7 +1181,9 @@ struct MapTabView: View {
         // This may block on a 30–60s re-parse the first time after install or
         // after the cached DB is rejected for being incomplete. Phase 1 already
         // populated the map, so the user is not staring at nothing.
+        loadPhaseLabel = "Opening transit DB"
         await GTFSScheduleService.shared.loadIfNeeded()
+        loadPhaseLabel = "Classifying stops"
         let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
 
         var reclassified = stopsFromCache
@@ -1119,8 +1197,10 @@ struct MapTabView: View {
                                    type: newType, stopCode: stop.stopCode)
             }
         }
+        loadPhaseLabel = "Deduplicating stops"
         let dedupedStops = Self.deduplicateLuasStops(reclassified, classifiedIds: Set(classification.keys))
 
+        loadPhaseLabel = "Loading shapes"
         let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
         let luasStops = await GTFSScheduleService.shared.luasStopsByLine()
         let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()

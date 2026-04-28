@@ -12,15 +12,33 @@ struct CustomMapAppApp: App {
             UserProfile.self,
             FavoriteTransitRoute.self
         ])
-        let modelConfiguration = ModelConfiguration(
+        // Try CloudKit-backed first so saved places sync between the user's
+        // devices. If the cloud-side schema migration fails (which can hang
+        // ModelContainer.init indefinitely after a schema change like adding
+        // FavoriteTransitRoute / pathId / sortIndex / pathNamesJSON), fall
+        // back to a local-only store so the app still launches. The user
+        // reported a hard white-screen hang with no log progress past the
+        // initial GTFS route lookup — exactly the signature of a failed
+        // CloudKit init blocking the WindowGroup body.
+        let cloudConfig = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .automatic
         )
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(for: schema, configurations: [cloudConfig])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            print("[BetterMaps] CloudKit ModelContainer failed (\(error.localizedDescription)) — falling back to local-only")
+            let localConfig = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: false,
+                cloudKitDatabase: .none
+            )
+            do {
+                return try ModelContainer(for: schema, configurations: [localConfig])
+            } catch {
+                fatalError("Could not create local ModelContainer either: \(error)")
+            }
         }
     }()
 
