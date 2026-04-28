@@ -13,7 +13,17 @@ struct MapTabView: View {
     @State private var routingVM = RoutingViewModel()
     @State private var locationManager = LocationManager()
 
-    @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
+    /// Default to a fixed Dublin region rather than `.userLocation(fallback:)`.
+    /// `.userLocation` triggers continuous CoreLocation requests on every
+    /// body recompute — which under load (lots of @Observable mutations
+    /// during cold start) was hitting the kernel's 24k/sec rate limit and
+    /// leaving MapKit's CAMetalLayer stuck at 0×0, manifesting as the
+    /// white-screen hang the user reported. The MapUserLocationButton in
+    /// .mapControls still recenters on demand when the user taps it.
+    @State private var cameraPosition: MapCameraPosition = .region(MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
+        span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2)
+    ))
     @State private var selectedRouteId: UUID?
     @State private var selectedTransitOption: TransitRouteOption?
     @State private var transitState = TransitMapState()
@@ -195,6 +205,12 @@ struct MapTabView: View {
                     .zIndex(100)
             }
         }
+        // Pin the entire map ZStack to the full screen. Without this, the
+        // ZStack respects safe-area insets and — when MapKit's CAMetalLayer
+        // collapses to 0×0 under CoreLocation throttling — the parent layout
+        // can cascade to zero height, hiding every overlay including the
+        // BOOT OK probe and the loading pill.
+        .ignoresSafeArea()
         .onAppear {
             locationManager.requestPermission()
             // Restore persisted transit toggle states
@@ -239,13 +255,16 @@ struct MapTabView: View {
             selectedTransitOption: $selectedTransitOption,
             selectedRouteId: $selectedRouteId
         ))
-        .task { await loadTransitData() }
+        // Each .task gets an explicit id so SwiftUI's task scheduler
+        // disambiguates them. Stacking multiple .task modifiers without
+        // ids on the same view was preventing any of them from running on
+        // the user's device — the .onAppear log fired but no .task closure
+        // body ever entered.
+        .task(id: "loadTransitData") { await loadTransitData() }
         .task(id: transitState.showLiveTransit) { await pollLiveTransit() }
-        .task {
+        .task(id: "stuckDetector") {
             // Stuck-detector — flips the loading pill to a diagnostic
-            // banner if Phase 1+2 don't complete within 8 seconds. Gives
-            // the user actionable info to report a hang without needing
-            // the Xcode console.
+            // banner if Phase 1+2 don't complete within 8 seconds.
             try? await Task.sleep(for: .seconds(8))
             if !searchState.transitDataReady { loadIsStuck = true }
         }
