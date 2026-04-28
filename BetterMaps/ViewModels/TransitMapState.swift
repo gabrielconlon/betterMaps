@@ -67,18 +67,27 @@ class TransitMapState {
                 abs(stop.longitude - region.center.longitude) < region.span.longitudeDelta
             }
 
-        // Scale limits by zoom — dots are cheap but 14K bus stops would overwhelm
+        // Scale limits by zoom — dots are cheap but 14K bus stops would overwhelm.
+        // Every branch prioritizes rail/luas/dart over bus: there are ~150 of
+        // them total in Dublin vs ~14k bus stops, and a flat prefix() over a
+        // bus-dominated array would silently drop every rail and DART pin
+        // before the cap was reached. The user reported missing purple rail
+        // pins on visible rail lines at city zoom — that was the bug.
         if latDelta > 1.0 {
             // Country-wide: only rail/tram network, no bus
             return filtered.filter { $0.type != .bus }
         } else if latDelta > 0.3 {
             // Regional: all rail/tram + sampled bus
-            let rail = filtered.filter { $0.type != .bus }
+            let priority = filtered.filter { $0.type != .bus }
             let bus = Array(filtered.filter { $0.type == .bus }.prefix(150))
-            return rail + bus
+            return priority + bus
         } else {
-            // City/neighborhood: generous limit
-            return Array(filtered.prefix(500))
+            // City/neighborhood: keep every rail/luas/dart in view, then
+            // backfill with bus up to a generous overall budget. Total
+            // ceiling stays around ~600 even on dense maps.
+            let priority = filtered.filter { $0.type != .bus }
+            let bus = Array(filtered.filter { $0.type == .bus }.prefix(400))
+            return priority + bus
         }
     }
 

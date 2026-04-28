@@ -181,12 +181,6 @@ struct MapTabView: View {
                     .zIndex(100)
             }
         }
-        // Pin the entire map ZStack to the full screen. Without this, the
-        // ZStack respects safe-area insets and — when MapKit's CAMetalLayer
-        // collapses to 0×0 under CoreLocation throttling — the parent layout
-        // can cascade to zero height, hiding every overlay including the
-        // BOOT OK probe and the loading pill.
-        .ignoresSafeArea()
         .onAppear {
             locationManager.requestPermission()
             // Restore persisted transit toggle states
@@ -635,6 +629,12 @@ struct MapTabView: View {
                 }
             }
             .mapStyle(currentMapStyle)
+            // Map fills behind the status bar / home indicator so the
+            // map graphic looks edge-to-edge. Overlays (layer button,
+            // status pill, bottom bar) keep their default safe-area
+            // padding — the previous .ignoresSafeArea on the outer
+            // ZStack pushed the top controls under the OS status bar.
+            .ignoresSafeArea()
             .mapControls {
                 MapUserLocationButton()
                 MapCompass()
