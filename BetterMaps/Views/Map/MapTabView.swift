@@ -93,7 +93,31 @@ struct MapTabView: View {
     }
 
     var body: some View {
-        ZStack {
+        // Body-execution probe: prints once per recompute so we can confirm
+        // from console whether MapTabView's body even runs when the user
+        // reports a white-screen hang. SwiftUI body is called as part of
+        // pure value semantics, so this is fine.
+        let _ = print("[BetterMaps] MapTabView.body computed (places=\(places.count), layers=\(layers.count))")
+        return ZStack {
+            // Top-of-stack BOOT indicator — guaranteed to render the
+            // moment body returns, even before Map lays out. If the user
+            // sees this on screen, body executed and SwiftUI is rendering;
+            // if they don't, body itself is hanging or the @Query
+            // properties never resolved (likely SwiftData/CloudKit).
+            VStack {
+                Text("BOOT OK")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.green)
+                    .clipShape(Capsule())
+                Spacer()
+            }
+            .padding(.top, 60)  // below the status bar
+            .zIndex(999)
+            .allowsHitTesting(false)
+
             mapView
             layersPanelOverlay
             // Top status banner — loading state + data-age badge. Appears as
