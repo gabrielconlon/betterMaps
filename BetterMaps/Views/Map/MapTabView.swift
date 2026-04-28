@@ -106,12 +106,11 @@ struct MapTabView: View {
         ZStack {
             mapView
             layersPanelOverlay
-            // Top status banner — loading state + data-age badge. Appears as
-            // a small floating pill in the top-right while transit data is
-            // still loading; switches to a dataAge readout once ready. The
-            // user reported a 60s "white screen" with no signal that work
-            // was happening; this gives an unambiguous "the app is alive,
-            // here's what's going on" anchor.
+            // Top status banner — loading state + data-age badge. The pill
+            // is tappable when data has loaded so the user can jump to the
+            // hamburger menu's Services section (per-source freshness +
+            // refresh button). When still loading or stuck, it's a
+            // non-interactive status indicator.
             VStack {
                 HStack {
                     Spacer()
@@ -121,7 +120,6 @@ struct MapTabView: View {
                 }
                 Spacer()
             }
-            .allowsHitTesting(false)
             .zIndex(11)
             // UI overlays
             VStack(spacing: 0) {
@@ -629,12 +627,12 @@ struct MapTabView: View {
                 }
             }
             .mapStyle(currentMapStyle)
-            // Map fills behind the status bar / home indicator so the
-            // map graphic looks edge-to-edge. Overlays (layer button,
-            // status pill, bottom bar) keep their default safe-area
-            // padding — the previous .ignoresSafeArea on the outer
-            // ZStack pushed the top controls under the OS status bar.
-            .ignoresSafeArea()
+            // Intentionally NOT using .ignoresSafeArea(). Even when applied
+            // to the Map alone, SwiftUI propagates the Map's larger frame
+            // to its sibling overlays in a parent ZStack — which dragged
+            // our layer-toggle button up behind the OS status bar. The
+            // map respects the safe area; mapControls and overlays sit
+            // where users expect them.
             .mapControls {
                 MapUserLocationButton()
                 MapCompass()
@@ -933,18 +931,25 @@ struct MapTabView: View {
                 .shadow(color: .black.opacity(0.1), radius: 2)
             }
         } else if let age = transitDataAge {
-            HStack(spacing: 4) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 10))
-                Text(age)
-                    .font(.caption2)
+            // Tap → open the hamburger menu so the user can see per-source
+            // last-fetched timestamps and hit "Refresh Transit Data" if
+            // the schedule is stale. The pill itself reads "3d ago"; the
+            // tap is the discoverability path to a deeper view.
+            Button(action: { viewModel.showLayerSidebar() }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 10))
+                    Text(age)
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+                .opacity(0.85)
             }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.ultraThinMaterial)
-            .clipShape(Capsule())
-            .opacity(0.85)
+            .buttonStyle(.plain)
         }
     }
 
@@ -1248,11 +1253,20 @@ struct MapTabView: View {
             luasGreenStops: transitState.luasGreenStopIds
         )
 
+        // Type breakdown of dedupedStops so we can see whether the SQLite
+        // classification actually populated rail/dart buckets — the user
+        // reported missing purple rail pins on visible rail lines, which
+        // is consistent with stops staying classified as bus from the
+        // initial name-based pass.
+        let busCount = dedupedStops.filter { $0.type == .bus }.count
+        let luasCount = dedupedStops.filter { $0.type == .luas }.count
+        let dartCount = dedupedStops.filter { $0.type == .dart }.count
+        let railCount = dedupedStops.filter { $0.type == .rail || $0.type == .suburban }.count
         APILogger.shared.log(
             service: "BetterMaps", endpoint: "loadTransitData phase2 (SQLite)",
             status: (luasShapes.red.isEmpty && luasShapes.green.isEmpty && dart.isEmpty && rail.isEmpty) ? .failure : .success,
             durationMs: 0,
-            detail: "\(dedupedStops.count) stops, luasRed=\(luasShapes.red.count) luasGreen=\(luasShapes.green.count) dart=\(dart.count) rail=\(rail.count)"
+            detail: "\(dedupedStops.count) stops [bus=\(busCount) luas=\(luasCount) dart=\(dartCount) rail=\(railCount)] | shapes luasRed=\(luasShapes.red.count) luasGreen=\(luasShapes.green.count) dart=\(dart.count) rail=\(rail.count)"
         )
 
         // Refresh the visible "Data: Xd old" badge with the SQLite mtime.
