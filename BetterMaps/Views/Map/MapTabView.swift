@@ -106,17 +106,18 @@ struct MapTabView: View {
         ZStack {
             mapView
             layersPanelOverlay
-            // Top status banner — loading state + data-age badge. The pill
-            // is tappable when data has loaded so the user can jump to the
-            // hamburger menu's Services section (per-source freshness +
-            // refresh button). When still loading or stuck, it's a
-            // non-interactive status indicator.
+            // Top status banner — loading state + data-age badge. Pinned
+            // top-trailing but offset down so it stacks BELOW SwiftUI Map's
+            // MapUserLocationButton (which also lives top-trailing via
+            // .mapControls). Top-trailing keeps it visually associated
+            // with map status, the offset prevents the two pills from
+            // sitting on top of each other.
             VStack {
                 HStack {
                     Spacer()
                     transitStatusBadge
                         .padding(.trailing, 12)
-                        .padding(.top, 12)
+                        .padding(.top, 64)
                 }
                 Spacer()
             }
