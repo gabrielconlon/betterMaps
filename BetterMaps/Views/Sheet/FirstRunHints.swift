@@ -19,15 +19,15 @@ struct FirstRunHints: Equatable, Sendable {
         var text: String {
             switch self {
             case .savePlace: return "Long-press the map to save a place"
-            case .toggleLayer: return "Tap a layer chip to show or hide it"
-            case .overlap: return "Show two layers, then tap Overlap only to see places in both"
+            case .toggleLayer: return "Tap Layers to choose what's on the map"
+            case .overlap: return "Pick two tags and choose All to see places that have both"
             }
         }
 
         var systemImage: String {
             switch self {
             case .savePlace: return "hand.tap"
-            case .toggleLayer: return "circle.lefthalf.filled"
+            case .toggleLayer: return "square.3.layers.3d"
             case .overlap: return "circle.grid.cross"
             }
         }
@@ -54,7 +54,7 @@ struct FirstRunHints: Equatable, Sendable {
 
     /// The hint to show now: the first incomplete one, except that "save a
     /// place" is left to the sheet's own empty state while there are no
-    /// layers (it says the same thing), and no other hint jumps the queue.
+    /// tags (it says the same thing), and no other hint jumps the queue.
     func current(hasLayers: Bool) -> Hint? {
         guard let first = Hint.allCases.first(where: { !isDone($0) }) else { return nil }
         if first == .savePlace && !hasLayers { return nil }
@@ -66,9 +66,9 @@ struct FirstRunHints: Equatable, Sendable {
     }
 
     /// Marks hints whose action the user has already performed: any saved
-    /// place completes "save a place". Visible layers alone never complete
-    /// "overlap": only turning on Overlap only (or tapping an overlap pin)
-    /// does, via `markDone(.overlap)`.
+    /// place completes "save a place". Having tags never completes
+    /// "overlap": only choosing All with two tags picked (or tapping an
+    /// overlap pin) does, via `markDone(.overlap)`.
     mutating func update(placeCount: Int, visibleLayerCount _: Int) {
         if placeCount > 0 { markDone(.savePlace) }
     }
@@ -78,7 +78,7 @@ struct FirstRunHints: Equatable, Sendable {
 
 /// One dismissible one-line hint shown at the top of the sheet's medium
 /// content. Renders nothing once every hint is done, and nothing while the
-/// "No layers yet" empty state already says the same thing.
+/// "No tags yet" empty state already says the same thing.
 struct FirstRunHintsView: View {
     @Binding var hints: FirstRunHints
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

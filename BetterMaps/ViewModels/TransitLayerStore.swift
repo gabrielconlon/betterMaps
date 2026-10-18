@@ -74,10 +74,16 @@ final class TransitLayerStore {
     private(set) var isLoading = false
     private(set) var isLoaded = false
 
-    /// Settled map region; drives the visible subset.
-    var region: MKCoordinateRegion {
+    /// Settled map region (set when a camera move ends); drives the visible
+    /// subset. Not observed: views read `zoomBucket` and the visible arrays,
+    /// never the raw region.
+    @ObservationIgnored var region: MKCoordinateRegion {
         didSet { scheduleVisibleRecompute() }
     }
+
+    /// Pin sizes for the span `visibleStops` was culled for. Assigned only
+    /// when a size threshold is crossed.
+    private(set) var zoomBucket: TransitZoomBucket
 
     /// Mirrors `TransitLayerSettings.enabledKinds` (MapScreen keeps them in step).
     var enabledKinds: Set<TransitLayerKind> = [] {
@@ -86,6 +92,11 @@ final class TransitLayerStore {
 
     private(set) var visibleStops: [TransitStop] = []
     private(set) var visibleLines: [TransitLine] = []
+
+    /// Bumped whenever anything the map draws changes (visible stops,
+    /// lines, zoom bucket, highlighted route), so the map can coalesce this
+    /// store's and `MapContentStore`'s publishes into one redraw.
+    private(set) var version = 0
 
     /// Polylines (one per direction) of the route picked from a favorite chip.
     private(set) var highlightedRoute: [[CLLocationCoordinate2D]]?
@@ -103,6 +114,7 @@ final class TransitLayerStore {
             span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2))) {
         self.bundle = bundle
         self.region = region
+        self.zoomBucket = TransitZoomBucket(latitudeDelta: region.span.latitudeDelta)
     }
 
     // MARK: - Loading
@@ -153,14 +165,18 @@ final class TransitLayerStore {
     private func scheduleVisibleRecompute() {
         visibleTask?.cancel()
         guard isLoaded, !enabledKinds.isEmpty else {
-            if !visibleStops.isEmpty { visibleStops = [] }
-            if !visibleLines.isEmpty { visibleLines = [] }
+            if !visibleStops.isEmpty || !visibleLines.isEmpty {
+                visibleStops = []
+                visibleLines = []
+                version &+= 1
+            }
             return
         }
         let grid = grid
         let lines = lines
         let enabled = enabledKinds
         let viewport = GeoBox(region: region)
+        let bucket = TransitZoomBucket(latitudeDelta: region.span.latitudeDelta)
         visibleTask = Task { [weak self] in
             try? await Task.sleep(for: Self.debounce)
             guard !Task.isCancelled else { return }
@@ -169,10 +185,25 @@ final class TransitLayerStore {
                  TransitViewportCuller.visibleLines(lines, viewport: viewport, enabled: enabled))
             }.value
             guard !Task.isCancelled, let self else { return }
-            self.visibleStops = stops
-            if self.visibleLines != visibleLines { self.visibleLines = visibleLines }
+            // Publish only what changed: an unchanged pan must not
+            // invalidate the map content. Everything lands in one turn (one
+            // map pass); per-frame batching was measured to add a full-cost
+            // map pass per batch.
+            var changed = false
+            if self.zoomBucket != bucket { self.zoomBucket = bucket; changed = true }
+            if self.visibleStops != stops { self.visibleStops = stops; changed = true }
+            if self.visibleLines != visibleLines { self.visibleLines = visibleLines; changed = true }
+            if changed { self.version &+= 1 }
+            #if DEBUG
+            self.debugLastSettle = ContinuousClock.now
+            #endif
         }
     }
+
+    #if DEBUG
+    /// When the last visible-subset recompute finished; `PerfHarness` only.
+    @ObservationIgnored private(set) var debugLastSettle: ContinuousClock.Instant?
+    #endif
 
     // MARK: - Lookups
 
@@ -181,6 +212,15 @@ final class TransitLayerStore {
     func nearestStop(to coordinate: CLLocationCoordinate2D) -> TransitStop? {
         grid.nearest(to: coordinate, within: 400, where: { $0.kind != .bus }).first
             ?? grid.nearest(to: coordinate, within: 200).first
+    }
+
+    /// The nearest stop drawn as a dot (dots ignore touches) within `meters`
+    /// of a map tap, so tapping a far-zoom dot still opens its arrivals.
+    func nearestDotStop(to coordinate: CLLocationCoordinate2D, within meters: Double) -> TransitStop? {
+        let bucket = zoomBucket
+        let dotIds = Set(visibleStops.lazy.filter { bucket.size(for: $0.kind) == .dot }.map(\.id))
+        guard !dotIds.isEmpty else { return nil }
+        return grid.nearest(to: coordinate, within: meters, where: { dotIds.contains($0.id) }).first
     }
 
     func stop(id: String) -> TransitStop? {
@@ -200,6 +240,7 @@ final class TransitLayerStore {
         }
         highlightedRouteId = routeId
         highlightedRoute = nil
+        version &+= 1
         highlightTask = Task { [weak self] in
             let service = BusTimetableService.shared
             if case .ready = await service.currentState() {
@@ -221,6 +262,7 @@ final class TransitLayerStore {
             }
             guard !Task.isCancelled, let self, self.highlightedRouteId == routeId else { return }
             self.highlightedRoute = shapes.isEmpty ? nil : shapes
+            self.version &+= 1
         }
     }
 
@@ -228,5 +270,6 @@ final class TransitLayerStore {
         highlightTask?.cancel()
         highlightedRouteId = nil
         highlightedRoute = nil
+        version &+= 1
     }
 }

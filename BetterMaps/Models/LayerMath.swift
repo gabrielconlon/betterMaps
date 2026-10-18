@@ -17,9 +17,11 @@ struct LayerLite: Sendable, Hashable, Identifiable {
     let isVisible: Bool
     let kind: LayerKind
     let sortOrder: Int
+    /// Pinned to the top of the layers panel.
+    let isFavorite: Bool
 
     init(id: UUID, name: String, colorHex: String = "#FF3B30", symbolName: String = "mappin",
-         isVisible: Bool = true, kind: LayerKind = .places, sortOrder: Int = 0) {
+         isVisible: Bool = true, kind: LayerKind = .places, sortOrder: Int = 0, isFavorite: Bool = false) {
         self.id = id
         self.name = name
         self.colorHex = colorHex
@@ -27,6 +29,7 @@ struct LayerLite: Sendable, Hashable, Identifiable {
         self.isVisible = isVisible
         self.kind = kind
         self.sortOrder = sortOrder
+        self.isFavorite = isFavorite
     }
 }
 
@@ -35,7 +38,7 @@ struct PlaceLite: Sendable, Hashable, Identifiable {
     let name: String
     let latitude: Double
     let longitude: Double
-    /// Ids of every layer this place belongs to (visible or not).
+    /// Ids of every layer (tag or trail group) this place belongs to.
     let layerIds: [UUID]
     /// Mirrors `Place.isWaypointEndpoint`.
     let isEndpoint: Bool
@@ -57,67 +60,118 @@ struct PlaceLite: Sendable, Hashable, Identifiable {
     }
 }
 
-/// A place that passed the layer filter, annotated with how many visible
-/// *place* layers it belongs to and which layer should style its pin.
-struct MatchedPlace: Sendable, Identifiable {
-    let place: PlaceLite
-    /// Number of visible place-kind layers the place is a member of.
-    /// Trail layers never count. A trail-only endpoint has matchCount 0.
-    let matchCount: Int
-    /// The visible layer with the lowest `sortOrder` that the place is in.
-    /// Place layers are preferred over trail layers so a pin that is both a
-    /// saved place and a trail endpoint is styled as the place.
-    let primaryLayerId: UUID?
-    var id: UUID { place.id }
+/// How a tag selection matches places.
+enum TagMatch: String, CaseIterable, Identifiable, Sendable {
+    /// A place shows when it has at least one selected tag.
+    case any
+    /// A place shows only when it has every selected tag.
+    case all
+
+    var id: String { rawValue }
+
+    /// User-facing label ("Any" / "All"); the stored value is `rawValue`.
+    var title: String {
+        switch self {
+        case .any: return "Any"
+        case .all: return "All"
+        }
+    }
 }
 
-/// One row of the "shared by" legend: e.g. "Brunch + Favourites · 4".
-struct LegendEntry: Sendable, Hashable, Identifiable {
-    /// The visible place-layer ids this group is shared by, in sortOrder order.
-    let layerIds: [UUID]
-    /// Layer names joined with " + " in sortOrder order.
-    let label: String
-    let count: Int
-    var id: String { layerIds.map(\.uuidString).joined(separator: "|") }
+/// Everything that decides which saved places and trails are drawn: the tag
+/// selection and the two always-available layer switches.
+struct PlaceFilter: Sendable, Equatable {
+    /// Selected tag ids (place-kind layers). Empty shows every place.
+    var tagIds: Set<UUID> = []
+    var match: TagMatch = .any
+    /// The Places layer. Off hides every place pin, trail endpoints included.
+    var showPlaces = true
+    /// The Trails layer. Off hides every trail and its endpoints.
+    var showTrails = true
+
+    static let showAll = PlaceFilter()
+}
+
+/// A place that passed the filter, annotated with how many selected tags it
+/// has and which layer styles its pin.
+struct MatchedPlace: Sendable, Identifiable, Equatable {
+    let place: PlaceLite
+    /// Number of *selected* tags the place has. 0 with no selection and for
+    /// a trail-only endpoint.
+    let matchCount: Int
+    /// The tag that colours the pin: the lowest-`sortOrder` selected tag the
+    /// place has, or with no selection its lowest-`sortOrder` tag. A
+    /// trail-only endpoint is styled by its trail group.
+    let pinLayerId: UUID?
+    /// Draw the overlap ring: Match Any with two or more selected tags. In
+    /// Match All every shown place has every selected tag, so a ring would
+    /// be noise.
+    let showsOverlap: Bool
+    var id: UUID { place.id }
+
+    init(place: PlaceLite, matchCount: Int, pinLayerId: UUID?, showsOverlap: Bool = false) {
+        self.place = place
+        self.matchCount = matchCount
+        self.pinLayerId = pinLayerId
+        self.showsOverlap = showsOverlap
+    }
 }
 
 // MARK: - LayerMath
 
-/// Pure layer-filtering math. No SwiftData, no actors, no state.
+/// Pure tag and layer filtering math. No SwiftData, no actors, no state.
+///
+/// Layers of kind `.places` are **tags** (many-to-many with places); layers
+/// of kind `.waypointPath` are **trail groups**. A tag's `isVisible` no
+/// longer filters anything: the selection in `PlaceFilter` does.
 enum LayerMath {
 
-    /// Ids of visible layers of kind `.places`.
-    static func visiblePlaceLayerIds(_ layers: [LayerLite]) -> Set<UUID> {
-        Set(layers.filter { $0.kind == .places && $0.isVisible }.map(\.id))
+    /// Ids of every tag (layer of kind `.places`).
+    static func tagIds(_ layers: [LayerLite]) -> Set<UUID> {
+        Set(layers.filter { $0.kind == .places }.map(\.id))
     }
 
-    /// Ids of visible layers of kind `.waypointPath` (trails).
-    static func visibleTrailLayerIds(_ layers: [LayerLite]) -> Set<UUID> {
-        Set(layers.filter { $0.kind == .waypointPath && $0.isVisible }.map(\.id))
+    /// Ids of every trail group (layer of kind `.waypointPath`).
+    static func trailGroupIds(_ layers: [LayerLite]) -> Set<UUID> {
+        Set(layers.filter { $0.kind == .waypointPath }.map(\.id))
     }
 
-    /// How many of `visible` the place belongs to.
-    static func matchCount(_ place: PlaceLite, visible: Set<UUID>) -> Int {
-        place.layerIds.reduce(0) { visible.contains($1) ? $0 + 1 : $0 }
+    /// Ids of trail groups that are drawn: the group is visible and the
+    /// Trails layer is on.
+    static func visibleTrailLayerIds(_ layers: [LayerLite], showTrails: Bool = true) -> Set<UUID> {
+        guard showTrails else { return [] }
+        return Set(layers.filter { $0.kind == .waypointPath && $0.isVisible }.map(\.id))
     }
 
-    /// Applies the layer filter.
+    /// The selection with ids of deleted (or non-tag) layers removed.
+    static func effectiveSelection(_ filter: PlaceFilter, layers: [LayerLite]) -> Set<UUID> {
+        filter.tagIds.isEmpty ? [] : filter.tagIds.intersection(tagIds(layers))
+    }
+
+    /// How many of `ids` the place belongs to.
+    static func matchCount(_ place: PlaceLite, visible ids: Set<UUID>) -> Int {
+        place.layerIds.reduce(0) { ids.contains($1) ? $0 + 1 : $0 }
+    }
+
+    /// Applies the tag filter and the layer switches.
     ///
-    /// - `.union`: a place shows if it is in any visible place layer.
-    /// - `.intersection`: a place shows if it is in *every* visible place layer.
-    ///   Trail (waypoint-path) layers are never counted — turning on a trail
-    ///   must not empty the map in intersection mode.
-    /// - Trail rule (ported from MapTabView.filteredPlaces): a place whose only
-    ///   visible memberships are trail layers is drawn only if it is an
-    ///   endpoint. Intermediate waypoints feed the polyline, not the pin set.
-    ///   A visible trail's endpoint always shows, in either mode.
+    /// - Places layer off: nothing is returned.
+    /// - No tags selected: every place shows, untagged ones included.
+    /// - `.any`: places with at least one selected tag.
+    /// - `.all`: places with every selected tag.
+    /// - Untagged places are hidden while a selection exists.
+    /// - Trail rule: a place whose layers are all trail groups is a trail
+    ///   point, not a saved place. It is drawn only when it is an endpoint of
+    ///   a visible trail group with the Trails layer on, whatever the tag
+    ///   selection. Intermediate waypoints feed the polyline, not the pins.
     ///
     /// Input order is preserved.
-    static func filter(_ places: [PlaceLite], layers: [LayerLite], mode: FilterMode) -> [MatchedPlace] {
-        let placeIds = visiblePlaceLayerIds(layers)
-        let trailIds = visibleTrailLayerIds(layers)
-        guard !placeIds.isEmpty || !trailIds.isEmpty else { return [] }
-
+    static func filter(_ places: [PlaceLite], layers: [LayerLite], filter: PlaceFilter) -> [MatchedPlace] {
+        guard filter.showPlaces else { return [] }
+        let tags = tagIds(layers)
+        let trailGroups = trailGroupIds(layers)
+        let selected = effectiveSelection(filter, layers: layers)
+        let visibleTrails = visibleTrailLayerIds(layers, showTrails: filter.showTrails)
         let sortOrderById: [UUID: Int] = Dictionary(layers.map { ($0.id, $0.sortOrder) },
                                                     uniquingKeysWith: { first, _ in first })
 
@@ -125,92 +179,67 @@ enum LayerMath {
         result.reserveCapacity(places.count)
 
         for place in places {
-            let placeMatches = matchCount(place, visible: placeIds)
-            let trailMatches = matchCount(place, visible: trailIds)
+            let passesTags = passesTagRule(place, tags: tags, trailGroups: trailGroups,
+                                           selected: selected, match: filter.match)
+            let passesTrail = place.isEndpoint && matchCount(place, visible: visibleTrails) > 0
+            guard passesTags || passesTrail else { continue }
 
-            let passesPlaceRule: Bool
-            switch mode {
-            case .union:
-                passesPlaceRule = placeMatches > 0
-            case .intersection:
-                passesPlaceRule = !placeIds.isEmpty && placeMatches == placeIds.count
-            }
-            let passesTrailRule = trailMatches > 0 && place.isEndpoint
-            guard passesPlaceRule || passesTrailRule else { continue }
-
+            let selectedCount = matchCount(place, visible: selected)
+            let pin = lowest(of: place, in: selected.isEmpty ? tags : selected, sortOrderById: sortOrderById)
+                ?? lowest(of: place, in: tags, sortOrderById: sortOrderById)
+                ?? lowest(of: place, in: visibleTrails, sortOrderById: sortOrderById)
             result.append(MatchedPlace(
                 place: place,
-                matchCount: placeMatches,
-                primaryLayerId: primaryLayer(for: place, placeIds: placeIds, trailIds: trailIds,
-                                             sortOrderById: sortOrderById)
+                matchCount: selectedCount,
+                pinLayerId: pin,
+                showsOverlap: filter.match == .any && selectedCount >= 2
             ))
         }
         return result
     }
 
-    /// Groups places shared by two or more visible place layers by their
-    /// exact visible-membership set and returns the `limit` largest groups.
-    /// Ties on count break by label so the output is deterministic.
-    static func intersectionLegend(_ matched: [MatchedPlace], layers: [LayerLite], limit: Int = 3) -> [LegendEntry] {
-        guard limit > 0 else { return [] }
-        let placeIds = visiblePlaceLayerIds(layers)
-        let visibleLayers = layers
-            .filter { placeIds.contains($0.id) }
-            .sorted { ($0.sortOrder, $0.name, $0.id.uuidString) < ($1.sortOrder, $1.name, $1.id.uuidString) }
-        let orderIndex: [UUID: Int] = Dictionary(uniqueKeysWithValues: visibleLayers.enumerated().map { ($1.id, $0) })
-        let nameById: [UUID: String] = Dictionary(uniqueKeysWithValues: visibleLayers.map { ($0.id, $0.name) })
-
-        var counts: [[UUID]: Int] = [:]
-        for m in matched where m.matchCount >= 2 {
-            let key = Set(m.place.layerIds)
-                .filter { placeIds.contains($0) }
-                .sorted { (orderIndex[$0] ?? .max) < (orderIndex[$1] ?? .max) }
-            guard key.count >= 2 else { continue }
-            counts[key, default: 0] += 1
+    /// Number of saved places the tag selection matches, ignoring the
+    /// Places switch and trail endpoints (for "N places match").
+    static func matchingPlaceCount(_ places: [PlaceLite], layers: [LayerLite], filter: PlaceFilter) -> Int {
+        let tags = tagIds(layers)
+        let trailGroups = trailGroupIds(layers)
+        let selected = effectiveSelection(filter, layers: layers)
+        return places.reduce(0) {
+            passesTagRule($1, tags: tags, trailGroups: trailGroups, selected: selected, match: filter.match)
+                ? $0 + 1 : $0
         }
-
-        let entries = counts.map { ids, count in
-            LegendEntry(layerIds: ids,
-                        label: ids.compactMap { nameById[$0] }.joined(separator: " + "),
-                        count: count)
-        }
-        .sorted { lhs, rhs in
-            if lhs.count != rhs.count { return lhs.count > rhs.count }
-            return lhs.label < rhs.label
-        }
-        return Array(entries.prefix(limit))
     }
 
-    /// How many places are in *every* visible place layer. Trail layers
-    /// never count. 0 when no place layer is visible.
-    static func overlapCount(_ places: [PlaceLite], layers: [LayerLite]) -> Int {
-        let placeIds = visiblePlaceLayerIds(layers)
-        guard !placeIds.isEmpty else { return 0 }
-        return places.reduce(0) { matchCount($1, visible: placeIds) == placeIds.count ? $0 + 1 : $0 }
-    }
-
-    /// In "Overlap only" mode with two or more visible place layers and no
-    /// place in all of them, the number of those layers (for "No places in
-    /// all 3 layers"). `nil` otherwise.
-    static func emptyOverlapLayerCount(_ places: [PlaceLite], layers: [LayerLite], mode: FilterMode) -> Int? {
-        guard mode == .intersection else { return nil }
-        let count = visiblePlaceLayerIds(layers).count
-        guard count >= 2, overlapCount(places, layers: layers) == 0 else { return nil }
-        return count
+    /// The lowest-`sortOrder` tag (selected first) the place has.
+    static func pinTag(for place: PlaceLite, layers: [LayerLite], filter: PlaceFilter) -> UUID? {
+        let sortOrderById: [UUID: Int] = Dictionary(layers.map { ($0.id, $0.sortOrder) },
+                                                    uniquingKeysWith: { first, _ in first })
+        let selected = effectiveSelection(filter, layers: layers)
+        let tags = tagIds(layers)
+        return lowest(of: place, in: selected.isEmpty ? tags : selected, sortOrderById: sortOrderById)
+            ?? lowest(of: place, in: tags, sortOrderById: sortOrderById)
     }
 
     // MARK: Private
 
-    private static func primaryLayer(for place: PlaceLite,
-                                     placeIds: Set<UUID>,
-                                     trailIds: Set<UUID>,
-                                     sortOrderById: [UUID: Int]) -> UUID? {
-        func lowest(in visible: Set<UUID>) -> UUID? {
-            place.layerIds
-                .filter { visible.contains($0) }
-                .min { (sortOrderById[$0] ?? .max, $0.uuidString) < (sortOrderById[$1] ?? .max, $1.uuidString) }
+    private static func passesTagRule(_ place: PlaceLite, tags: Set<UUID>, trailGroups: Set<UUID>,
+                                      selected: Set<UUID>, match: TagMatch) -> Bool {
+        let tagCount = matchCount(place, visible: tags)
+        // Only in trail groups: a trail point, handled by the trail rule.
+        if tagCount == 0, matchCount(place, visible: trailGroups) > 0 { return false }
+        if selected.isEmpty { return true }
+        let selectedCount = matchCount(place, visible: selected)
+        switch match {
+        case .any: return selectedCount > 0
+        case .all: return selectedCount == selected.count
         }
-        return lowest(in: placeIds) ?? lowest(in: trailIds)
+    }
+
+    private static func lowest(of place: PlaceLite, in ids: Set<UUID>, sortOrderById: [UUID: Int]) -> UUID? {
+        guard !ids.isEmpty else { return nil }
+        return place.layerIds
+            .filter { ids.contains($0) }
+            .min { (sortOrderById[$0] ?? .max, $0.uuidString) < (sortOrderById[$1] ?? .max, $1.uuidString) }
     }
 }
 
@@ -225,7 +254,8 @@ extension LayerLite {
                   symbolName: layer.symbolName,
                   isVisible: layer.isVisible,
                   kind: layer.kind,
-                  sortOrder: layer.sortOrder)
+                  sortOrder: layer.sortOrder,
+                  isFavorite: layer.isFavorite)
     }
 }
 

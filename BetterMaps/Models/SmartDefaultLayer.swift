@@ -8,17 +8,15 @@ enum SmartDefaultLayer {
     static let fallbackPlaceLayerName = "Favourites"
     static let fallbackTrailLayerName = "Trails"
 
-    /// The place layer a dropped pin is saved to: the last used layer when it
-    /// is still a visible place layer, else the first visible place layer,
-    /// else the first place layer. `nil` means none exists and the caller
-    /// creates "Favourites".
+    /// The tag a dropped pin is saved with: the last used tag while it still
+    /// exists, else the first tag by sortOrder. `nil` means no tag exists and
+    /// the caller creates "Favourites".
     static func placeLayer(in layers: [LayerLite], lastUsedLayerId: UUID?) -> UUID? {
-        let placeLayers = layers.filter { $0.kind == .places }.sorted { $0.sortOrder < $1.sortOrder }
-        if let lastUsedLayerId,
-           let last = placeLayers.first(where: { $0.id == lastUsedLayerId }), last.isVisible {
-            return last.id
+        let tags = layers.filter { $0.kind == .places }.sorted { $0.sortOrder < $1.sortOrder }
+        if let lastUsedLayerId, tags.contains(where: { $0.id == lastUsedLayerId }) {
+            return lastUsedLayerId
         }
-        return placeLayers.first(where: \.isVisible)?.id ?? placeLayers.first?.id
+        return tags.first?.id
     }
 
     /// The trail layer a new trail from the "+" menu goes in: the last used

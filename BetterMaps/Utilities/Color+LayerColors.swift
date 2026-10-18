@@ -17,6 +17,18 @@ extension Color {
         )
     }
 
+    /// Light fills (yellow, the pastel transit colours) take dark text.
+    static func prefersDarkText(hex: String) -> Bool {
+        let clean = hex.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "#", with: "")
+        guard clean.count == 6, let rgb = UInt64(clean, radix: 16) else { return false }
+        func lin(_ c: UInt64) -> Double {
+            let v = Double(c) / 255
+            return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        let l = 0.2126 * lin((rgb >> 16) & 0xFF) + 0.7152 * lin((rgb >> 8) & 0xFF) + 0.0722 * lin(rgb & 0xFF)
+        return l > 0.4
+    }
+
     func toHex() -> String {
         guard let components = UIColor(self).cgColor.components, components.count >= 3 else {
             return "#FF3B30"

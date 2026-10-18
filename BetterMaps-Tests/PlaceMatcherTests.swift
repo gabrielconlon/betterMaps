@@ -64,9 +64,9 @@ final class PlaceMatcherTests: XCTestCase {
     }
 
     func testSavedMessage() {
-        XCTAssertEqual(PlaceFormView.savedMessage(layerNames: ["Brunch"]), "Saved to Brunch")
-        XCTAssertEqual(PlaceFormView.savedMessage(layerNames: ["Brunch", "Favourites"]), "Saved to Brunch + Favourites")
-        XCTAssertEqual(PlaceFormView.savedMessage(layerNames: ["A", "B", "C"]), "Saved to 3 layers")
+        XCTAssertEqual(PlaceFormView.savedMessage(layerNames: ["Brunch"]), "Saved with Brunch")
+        XCTAssertEqual(PlaceFormView.savedMessage(layerNames: ["Brunch", "Favourites"]), "Saved with Brunch + Favourites")
+        XCTAssertEqual(PlaceFormView.savedMessage(layerNames: ["A", "B", "C"]), "Saved with 3 tags")
         XCTAssertEqual(PlaceFormView.savedMessage(layerNames: []), "Place saved")
     }
 }

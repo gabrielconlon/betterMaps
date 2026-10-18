@@ -95,7 +95,7 @@ struct POIAddToLayerView: View {
                 }
 
                 PlaceActionRow(name: placeName, coordinate: mapItem.placemark.coordinate,
-                               primaryTitle: "Add to layer", primarySystemImage: "plus",
+                               primaryTitle: "Add tags", primarySystemImage: "tag",
                                onPrimary: { showAddToLayer = true },
                                extra: arrivalsAction)
 
@@ -343,7 +343,7 @@ struct AddToLayerSheet: View {
     @State private var existingPlace: Place?
     @State private var didResolve = false
 
-    /// Only place layers; trails are never offered.
+    /// Tags only; trail groups are never offered.
     private var placeLayers: [Layer] { layers.filter { $0.kind == .places } }
 
     var body: some View {
@@ -351,7 +351,7 @@ struct AddToLayerSheet: View {
             Form {
                 Section {
                     if placeLayers.isEmpty {
-                        Text("No layers yet. Create one below.")
+                        Text("No tags yet. Create one below.")
                             .foregroundStyle(.secondary)
                     } else {
                         LayerMembershipChips(layers: placeLayers, selected: selectedLayerIDs) { layer in
@@ -361,13 +361,13 @@ struct AddToLayerSheet: View {
                     }
 
                     Button(action: { showCreateLayer = true }) {
-                        Label("Create New Layer", systemImage: "plus.circle")
+                        Label("New tag", systemImage: "plus.circle")
                     }
                 } header: {
-                    Text("Layers")
+                    Text("Tags")
                 } footer: {
                     if existingPlace != nil {
-                        Text("Already saved. Pick more layers to see it where they overlap.")
+                        Text("Already saved. Add more tags to find it with Match All.")
                     }
                 }
 
@@ -379,7 +379,7 @@ struct AddToLayerSheet: View {
                     }
                 }
             }
-            .navigationTitle(existingPlace == nil ? "Add to Layer" : "Layers")
+            .navigationTitle("Add tags")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -406,7 +406,7 @@ struct AddToLayerSheet: View {
         }
     }
 
-    /// Finds the already-saved place, if any, and ticks its layers.
+    /// Finds the already-saved place, if any, and ticks its tags.
     private func resolveExisting() {
         guard !didResolve else { return }
         didResolve = true
@@ -431,8 +431,8 @@ struct AddToLayerSheet: View {
                 }
             }
             try? modelContext.save()
-            toastCenter?.show(added.isEmpty ? "Layers updated"
-                                            : "Added to " + added.map(\.name).joined(separator: " + "))
+            toastCenter?.show(added.isEmpty ? "Tags updated"
+                                            : "Tagged " + added.map(\.name).joined(separator: " + "))
         } else {
             insertPlace(into: chosen)
         }

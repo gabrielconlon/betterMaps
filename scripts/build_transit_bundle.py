@@ -4,7 +4,8 @@
 Outputs (all deterministic, sorted by id so git diffs stay stable):
 
   <out-dir>/transit_stops.json    Dublin-bbox stops with kind/line/code
-  <out-dir>/transit_lines.json    one representative polyline per Luas/DART/rail line
+  <out-dir>/transit_lines.json    Luas/DART/rail polylines: each line's longest shape plus
+                                  one entry per branch other shapes add (ids dart, dart-2, ...)
   <out-dir>/transit_routes.json   routes that serve at least one Dublin-bbox stop
   <timetable-out>                 integer-coded SQLite timetable (+ .gz next to it)
 
@@ -43,6 +44,19 @@ DP_TOLERANCE_DEG = 0.00007  # ~8 m, in degrees of latitude
 LINE_TRIM_MARGIN_DEG = 0.05  # polylines are trimmed to bbox expanded by this (~5 km)
 LUAS_DEDUPE_METRES = 250.0
 KIND_PRIORITY = {"dart": 0, "rail": 1, "luas": 2, "bus": 3}
+# transit_lines.json: every shape of a line is considered, longest first. A
+# shape's stretches within LINE_COVER_METRES of what is already kept are
+# dropped (reversed duplicates, short workings, sub-sections); a leftover
+# stretch is emitted only if it strays more than LINE_BRANCH_METRES from the
+# kept network somewhere, so a parallel track a few metres over is not drawn twice.
+LINE_COVER_METRES = 15.0
+LINE_BRANCH_METRES = 40.0
+LINE_SAMPLE_METRES = 20.0
+# Coverage gate: every DART / rail / Luas station must be this close to a line
+# of its kind (Luas: of its own Red/Green line) or the build fails.
+COVERAGE_MAX_METRES = 150.0
+GATED_KINDS = ("dart", "luas", "rail")
+M_PER_DEG = 6371000.0 * math.pi / 180.0
 
 T0 = time.monotonic()
 
@@ -202,6 +216,89 @@ def round_coords(points: list[tuple[float, float]]) -> list[list[float]]:
     return out
 
 
+class SegmentIndex:
+    """Polyline segments on a uniform grid in local equirectangular metres.
+
+    `nearest(p, radius)` returns the distance from `p` to the closest segment
+    if one is within `radius`, else infinity. Only cells overlapping the
+    search square are visited, so queries stay cheap however many lines exist.
+    """
+
+    def __init__(self, ref_lat: float, cell_m: float = 250.0):
+        self.cosl = math.cos(math.radians(ref_lat))
+        self.cell = cell_m
+        self.grid: dict[tuple[int, int], list[tuple[float, float, float, float]]] = {}
+        self.segments: list[tuple[float, float, float, float]] = []
+
+    def xy(self, lat: float, lon: float) -> tuple[float, float]:
+        return lon * self.cosl * M_PER_DEG, lat * M_PER_DEG
+
+    def add(self, pts: list[tuple[float, float]]) -> None:
+        c = self.cell
+        xy = [self.xy(la, lo) for la, lo in pts]
+        for (ax, ay), (bx, by) in zip(xy, xy[1:]):
+            seg = (ax, ay, bx, by)
+            self.segments.append(seg)
+            for gx in range(math.floor(min(ax, bx) / c), math.floor(max(ax, bx) / c) + 1):
+                for gy in range(math.floor(min(ay, by) / c), math.floor(max(ay, by) / c) + 1):
+                    self.grid.setdefault((gx, gy), []).append(seg)
+
+    @staticmethod
+    def _seg_dist(px: float, py: float, seg: tuple[float, float, float, float]) -> float:
+        ax, ay, bx, by = seg
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 == 0.0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
+        return math.hypot(px - ax - t * dx, py - ay - t * dy)
+
+    def nearest(self, p: tuple[float, float], radius: float) -> float:
+        px, py = p
+        c = self.cell
+        best = math.inf
+        for gx in range(math.floor((px - radius) / c), math.floor((px + radius) / c) + 1):
+            for gy in range(math.floor((py - radius) / c), math.floor((py + radius) / c) + 1):
+                for seg in self.grid.get((gx, gy), ()):
+                    d = self._seg_dist(px, py, seg)
+                    if d < best:
+                        best = d
+        return best if best <= radius else math.inf
+
+    def nearest_exact(self, p: tuple[float, float]) -> float:
+        """Brute-force distance to the closest segment (for reporting)."""
+        return min((self._seg_dist(p[0], p[1], s) for s in self.segments), default=math.inf)
+
+
+def novel_runs(pts: list[tuple[float, float]], index: SegmentIndex) -> list[list[tuple[float, float]]]:
+    """The stretches of `pts` that `index` does not already cover.
+
+    A segment is covered when sample points every LINE_SAMPLE_METRES along it
+    are all within LINE_COVER_METRES of the index. Maximal runs of uncovered
+    segments are returned (each run starts and ends on the vertex where it
+    leaves / rejoins the kept network), keeping only runs that stray more than
+    LINE_BRANCH_METRES from it somewhere.
+    """
+    xy = [index.xy(la, lo) for la, lo in pts]
+    probe = LINE_BRANCH_METRES + 1.0
+    runs: list[list[tuple[float, float]]] = []
+    start = None
+    run_max = 0.0
+    for i in range(len(pts) - 1):
+        (ax, ay), (bx, by) = xy[i], xy[i + 1]
+        n = max(1, math.ceil(math.hypot(bx - ax, by - ay) / LINE_SAMPLE_METRES))
+        seg_max = max(index.nearest((ax + (bx - ax) * k / n, ay + (by - ay) * k / n), probe) for k in range(n + 1))
+        if seg_max > LINE_COVER_METRES:
+            if start is None:
+                start, run_max = i, 0.0
+            run_max = max(run_max, seg_max)
+        elif start is not None:
+            if run_max > LINE_BRANCH_METRES:
+                runs.append(pts[start : i + 1])
+            start = None
+    if start is not None and run_max > LINE_BRANCH_METRES:
+        runs.append(pts[start:])
+    return runs
+
+
 # --------------------------------------------------------------------------- #
 # Small parsers
 # --------------------------------------------------------------------------- #
@@ -255,11 +352,18 @@ def luas_line(short: str, long: str) -> str | None:
     return None
 
 
-def dump_json(path: str, obj) -> int:
-    data = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
-    with open(path, "w", encoding="utf-8") as f:
+def encode_json(obj) -> bytes:
+    return (json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+
+
+def write_bytes(path: str, data: bytes) -> int:
+    with open(path, "wb") as f:
         f.write(data)
-    return len(data.encode("utf-8"))
+    return len(data)
+
+
+def dump_json(path: str, obj) -> int:
+    return write_bytes(path, encode_json(obj))
 
 
 def human(n: int) -> str:
@@ -590,7 +694,29 @@ def main(argv: list[str] | None = None) -> int:
     rep_shape: dict[tuple[int, int], str] = {}
     for key, uses in shape_use.items():
         rep_shape[key] = sorted(uses.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
-    needed_shapes = set(rep_shape.values())
+
+    # transit_lines.json keys: "luas-red" / "luas-green" / "dart" / "rail-<route id>".
+    # Every distinct shape of an active trip counts, not just the dominant one
+    # per direction: DART branches (Howth), Luas spurs (Saggart, Broombridge)
+    # and rail short workings (M3 Parkway, Docklands) only exist as minority shapes.
+    line_meta: dict[str, dict] = {}
+    line_shapes: dict[str, set[str]] = {}
+    for (rt, _), uses in shape_use.items():
+        rid = route_tmp_rev[rt]
+        short, long, _, kind, lline = route_info[rid]
+        if kind == "luas" and lline:
+            lkey = f"luas-{lline}"
+            line_meta[lkey] = {"id": lkey, "kind": "luas", "line": lline, "name": f"Luas {lline.capitalize()} Line"}
+        elif kind == "dart":
+            lkey = "dart"
+            line_meta[lkey] = {"id": lkey, "kind": "dart", "name": "DART"}
+        elif kind == "rail":
+            lkey = f"rail-{rid}"
+            line_meta[lkey] = {"id": lkey, "kind": "rail", "name": long or short or rid}
+        else:
+            continue
+        line_shapes.setdefault(lkey, set()).update(uses)
+    needed_shapes = set(rep_shape.values()).union(*line_shapes.values())
     shape_pts: dict[str, list[tuple[float, float, float]]] = {s: [] for s in needed_shapes}
     if needed_shapes and src.has("shapes.txt"):
         idx, rows, f = src.reader("shapes.txt", ("shape_id", "shape_pt_lat", "shape_pt_lon"))
@@ -607,7 +733,8 @@ def main(argv: list[str] | None = None) -> int:
             except (IndexError, ValueError):
                 continue
         f.close()
-        log(f"shapes: {n_shape_rows:,} rows read for {len(needed_shapes)} representative shapes")
+        log(f"shapes: {n_shape_rows:,} rows read for {len(needed_shapes)} shapes "
+            f"(per-route representatives + every Luas/DART/rail shape)")
     elif needed_shapes:
         log("shapes.txt missing: no polylines will be emitted")
 
@@ -718,7 +845,9 @@ def main(argv: list[str] | None = None) -> int:
         if not e["kind"]:
             raise SystemExit(f"stop {e['id']} has empty kind")
     stops_json = {"version": 1, "built": built, "feedVersion": feed_version, "stops": stops_out}
-    stops_bytes = dump_json(os.path.join(args.out_dir, "transit_stops.json"), stops_json)
+    # The three JSONs are written together after the coverage gate passes.
+    stops_data = encode_json(stops_json)
+    stops_bytes = len(stops_data)
     mark("stops_json", t)
     log(f"transit_stops.json: {len(stops_out)} stops, {human(stops_bytes)}; kinds {kind_counts}; "
         f"{len(merged_away)} Luas platforms merged")
@@ -730,52 +859,98 @@ def main(argv: list[str] | None = None) -> int:
         short, long, rtype, _, _ = route_info[rid]
         routes_out.append({"id": rid, "short": short, "long": long, "type": rtype})
     routes_out.sort(key=lambda e: e["id"])
-    routes_bytes = dump_json(os.path.join(args.out_dir, "transit_routes.json"), {"version": 1, "routes": routes_out})
+    routes_data = encode_json({"version": 1, "routes": routes_out})
+    routes_bytes = len(routes_data)
     mark("routes_json", t)
     log(f"transit_routes.json: {len(routes_out)} routes, {human(routes_bytes)}")
 
     # ---- transit_lines.json ----------------------------------------------- #
     t = time.monotonic()
 
-    def longest(shape_ids: list[str]) -> list[tuple[float, float]] | None:
-        best, best_len = None, -1.0
-        for s in sorted(shape_ids):
-            pts = simplified.get(s)
-            if not pts:
-                continue
-            ln = polyline_length_m(pts)
-            if ln > best_len:
-                best, best_len = pts, ln
-        return best
+    # Dedupe scope: each Luas line on its own, the DART, and all rail routes
+    # together (Irish Rail publishes inbound and outbound as separate routes
+    # over the same track). Within a scope, shapes go longest first; each one
+    # contributes only the stretches nothing kept so far already covers, so a
+    # branch becomes its own short entry that starts at the junction.
+    ref_lat = (min_lat + max_lat) / 2
 
-    by_line: dict[str, list[str]] = {}  # "luas-red" / "luas-green" / "dart" / "rail-<id>" -> shape ids
-    line_meta: dict[str, dict] = {}
-    for (rt, d), shape_id in rep_shape.items():
-        rid = route_tmp_rev[rt]
-        short, long, _, kind, lline = route_info[rid]
-        if kind == "luas" and lline:
-            key = f"luas-{lline}"
-            line_meta[key] = {"id": key, "kind": "luas", "line": lline, "name": f"Luas {lline.capitalize()} Line"}
-        elif kind == "dart":
-            key = "dart"
-            line_meta[key] = {"id": key, "kind": "dart", "name": "DART"}
-        elif kind == "rail":
-            key = f"rail-{rid}"
-            line_meta[key] = {"id": key, "kind": "rail", "name": long or short or rid}
-        else:
-            continue
-        by_line.setdefault(key, []).append(shape_id)
+    def scope_of(lkey: str) -> str:
+        return "rail" if lkey.startswith("rail-") else lkey
+
+    candidates: dict[str, list[tuple[float, str, str]]] = {}  # scope -> [(length, line key, shape id)]
+    for lkey, sids in line_shapes.items():
+        for sid in sids:
+            pts = simplified.get(sid)
+            if pts:
+                candidates.setdefault(scope_of(lkey), []).append((polyline_length_m(pts), lkey, sid))
+    pieces: dict[str, list[list[list[float]]]] = {}  # line key -> rounded polylines, in acceptance order
+    n_shapes_used = 0
+    for scope in sorted(candidates):
+        index = SegmentIndex(ref_lat)
+        for _, lkey, sid in sorted(candidates[scope], key=lambda c: (-c[0], c[1], c[2])):
+            runs = novel_runs(simplified[sid], index)
+            if runs:
+                n_shapes_used += 1
+            for run in runs:
+                coords = round_coords(run)
+                if len(coords) < 2:
+                    continue
+                index.add([(la, lo) for la, lo in coords])
+                pieces.setdefault(lkey, []).append(coords)
     lines_out = []
-    for key in sorted(by_line):
-        pts = longest(by_line[key])
-        if not pts:
-            continue
-        entry = dict(line_meta[key])
-        entry["coords"] = round_coords(pts)
-        lines_out.append(entry)
-    lines_bytes = dump_json(os.path.join(args.out_dir, "transit_lines.json"), {"version": 1, "lines": lines_out})
+    for lkey in sorted(pieces):
+        for n, coords in enumerate(pieces[lkey], start=1):
+            entry = dict(line_meta[lkey])
+            if n > 1:
+                entry["id"] = f"{lkey}-{n}"
+            entry["coords"] = coords
+            lines_out.append(entry)
+    line_ids = [e["id"] for e in lines_out]
+    if len(set(line_ids)) != len(line_ids):
+        raise SystemExit("duplicate line id in transit_lines.json")
+    lines_data = encode_json({"version": 1, "lines": lines_out})
+    lines_bytes = len(lines_data)
+    n_line_points = sum(len(e["coords"]) for e in lines_out)
     mark("lines_json", t)
-    log(f"transit_lines.json: {len(lines_out)} lines, {human(lines_bytes)}")
+    log(f"transit_lines.json: {len(lines_out)} entries from {n_shapes_used} of "
+        f"{sum(len(c) for c in candidates.values())} shapes, {n_line_points:,} points, {human(lines_bytes)}")
+
+    # ---- coverage gate ----------------------------------------------------- #
+    # Every DART / rail / Luas station must sit within COVERAGE_MAX_METRES of a
+    # line of its kind (a Luas stop: of its own Red/Green line), otherwise the
+    # map shows stations with no track and the build fails. Stops are inside
+    # the bbox and lines are only trimmed outside bbox + LINE_TRIM_MARGIN_DEG,
+    # so no station is legitimately off its line.
+    gate_index: dict[str, SegmentIndex] = {}
+    for e in lines_out:
+        for gk in {e["kind"], f"luas-{e['line']}" if e["kind"] == "luas" and e.get("line") else e["kind"]}:
+            gate_index.setdefault(gk, SegmentIndex(ref_lat)).add([(la, lo) for la, lo in e["coords"]])
+    coverage_max: dict[str, float] = {}
+    offenders = []
+    for e in stops_out:
+        kind = e["kind"]
+        if kind not in GATED_KINDS:
+            continue
+        gk = f"luas-{e['line']}" if kind == "luas" and e.get("line") in ("red", "green") else kind
+        index = gate_index.get(gk)
+        p = index.xy(e["lat"], e["lon"]) if index else (0.0, 0.0)
+        d = index.nearest(p, COVERAGE_MAX_METRES) if index else math.inf
+        if d == math.inf and index is not None:
+            d = index.nearest_exact(p)
+        coverage_max[gk] = max(coverage_max.get(gk, 0.0), d)
+        if d > COVERAGE_MAX_METRES:
+            offenders.append((d, gk, e["id"], e["name"]))
+    log("coverage: max station-to-line distance " +
+        ", ".join(f"{k}={v:.0f} m" for k, v in sorted(coverage_max.items())))
+    if offenders:
+        for d, gk, sid, name in sorted(offenders, key=lambda o: (-o[0], o[2])):
+            sys.stderr.write(f"  uncovered {gk:10s} {sid:14s} {name}: {d:,.0f} m from the nearest line\n")
+        raise SystemExit(f"coverage gate failed: {len(offenders)} station(s) more than "
+                         f"{COVERAGE_MAX_METRES:.0f} m from a line of their kind; nothing written")
+
+    stops_bytes = write_bytes(os.path.join(args.out_dir, "transit_stops.json"), stops_data)
+    routes_bytes = write_bytes(os.path.join(args.out_dir, "transit_routes.json"), routes_data)
+    lines_bytes = write_bytes(os.path.join(args.out_dir, "transit_lines.json"), lines_data)
 
     # ---- SQLite timetable -------------------------------------------------- #
     tt_bytes = gz_bytes = 0
@@ -878,7 +1053,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  stops            {len(stops_out)} emitted ({', '.join(f'{k}={v}' for k, v in sorted(kind_counts.items()))}); "
           f"{len(served_ids)} served ids in bbox; {len(merged_away)} Luas platforms merged")
     print(f"  routes           {len(routes_out)}")
-    print(f"  lines            {len(lines_out)}")
+    print(f"  lines            {len(lines_out)} entries ({n_line_points:,} points); coverage max "
+          + ", ".join(f"{k}={v:.0f} m" for k, v in sorted(coverage_max.items())))
     print(f"  trips            {len(trips_final_tmp)} active in bbox -> {len(rep_tmps)} unique patterns "
           f"(services {len(services_sorted)}, service_days {n_service_days})")
     print(f"  stop_times       {n_rows:,} read -> {n_kept:,} departures ({n_dropoff_only:,} drop-off-only dropped)")

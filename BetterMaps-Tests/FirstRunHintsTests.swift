@@ -76,4 +76,9 @@ final class FirstRunHintsTests: XCTestCase {
         later.markDone(.toggleLayer)
         XCTAssertEqual(later.current(hasLayers: true), .overlap)
     }
+
+    func testHintWordingUsesLayersAndTags() {
+        XCTAssertEqual(FirstRunHints.Hint.toggleLayer.text, "Tap Layers to choose what's on the map")
+        XCTAssertEqual(FirstRunHints.Hint.overlap.text, "Pick two tags and choose All to see places that have both")
+    }
 }

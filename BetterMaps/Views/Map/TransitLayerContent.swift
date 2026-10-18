@@ -7,8 +7,8 @@ struct TransitLayerContent: MapContent {
     let stops: [TransitStop]
     let lines: [TransitLine]
     let highlightedRoute: [[CLLocationCoordinate2D]]?
-    /// Span the visible stops were culled for; picks each stop's pin size.
-    let latitudeDelta: Double
+    /// Pin sizes for the span the visible stops were culled for.
+    let zoomBucket: TransitZoomBucket
     let onTapStop: (TransitStop) -> Void
 
     var body: some MapContent {
@@ -24,32 +24,21 @@ struct TransitLayerContent: MapContent {
             }
         }
 
-        // Only full pins carry a title. Dots stay tappable — the pin itself
-        // provides a 24pt hit area.
+        // Dots: no title, no gesture, no hit area (taps near one are
+        // resolved by the map's tap handler). Only full pins carry a title.
         ForEach(stops) { stop in
-            let size = TransitViewportCuller.pinSize(for: stop.kind, latitudeDelta: latitudeDelta)
-            Annotation(size == .full ? stop.name : "", coordinate: stop.coordinate) {
-                TransitStopPin(stop: stop, size: size)
-                    .onTapGesture { onTapStop(stop) }
+            let size = zoomBucket.size(for: stop.kind)
+            if size == .dot {
+                Annotation("", coordinate: stop.coordinate) {
+                    TransitStopPin(stop: stop, size: .dot)
+                }
+                .annotationTitles(.hidden)
+            } else {
+                Annotation(size == .full ? stop.name : "", coordinate: stop.coordinate) {
+                    TransitStopPin(stop: stop, size: size)
+                        .onTapGesture { onTapStop(stop) }
+                }
             }
-        }
-    }
-}
-
-extension TransitLayerContent {
-    /// Value snapshot of the transit store the canvas draws.
-    struct Inputs {
-        var stops: [TransitStop] = []
-        var lines: [TransitLine] = []
-        var highlightedRoute: [[CLLocationCoordinate2D]]?
-        var latitudeDelta: Double = 0.2
-
-        @MainActor
-        init(_ store: TransitLayerStore) {
-            stops = store.visibleStops
-            lines = store.visibleLines
-            highlightedRoute = store.highlightedRoute
-            latitudeDelta = store.region.span.latitudeDelta
         }
     }
 }

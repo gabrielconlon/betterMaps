@@ -80,11 +80,11 @@ struct PlaceDetailSheet: View {
                                primaryTitle: "Edit", primarySystemImage: "pencil",
                                onPrimary: { showEditForm = true })
 
-                // Layers: tap to add or remove; a place in two layers is an
-                // overlap on the map.
+                // Tags: tap to add or remove; pick two tags with Match All
+                // in the layers panel to find places that have both.
                 if !placeKindLayers.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Layers")
+                        Text("Tags")
                             .font(.subheadline.bold())
                             .foregroundStyle(.secondary)
                         LayerMembershipChips(layers: placeKindLayers,
@@ -244,7 +244,7 @@ struct PlaceDetailSheet: View {
         .sheet(isPresented: $showEditForm) {
             PlaceFormView(place: place)
         }
-        .confirmationDialog("Remove from all layers?", isPresented: $confirmDeleteOnLastLayer,
+        .confirmationDialog("Remove its last tag?", isPresented: $confirmDeleteOnLastLayer,
                             titleVisibility: .visible) {
             Button("Delete place", role: .destructive, action: deletePlace)
             Button("Keep", role: .cancel) {}

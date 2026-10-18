@@ -21,16 +21,6 @@ enum MapStyleOption: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The style the map-chrome toggle switches to next:
-    /// standard → hybrid → satellite → standard. Muted joins the cycle at hybrid.
-    var next: MapStyleOption {
-        switch self {
-        case .standard, .muted: return .hybrid
-        case .hybrid: return .satellite
-        case .satellite: return .standard
-        }
-    }
-
     var mapStyle: MapStyle {
         switch self {
         case .standard:

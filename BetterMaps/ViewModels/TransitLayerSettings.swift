@@ -1,8 +1,10 @@
 import Foundation
 import Observation
 
-/// Which transit networks the user has switched on, and their pinned stops.
+/// The six map layers' switches (Places, Trails and the four transit
+/// networks) and the user's pinned stops.
 ///
+/// - `layers.showPlaces` / `layers.showTrails`: Bools, default true.
 /// - `transit.enabledKinds`: JSON array of `TransitLayerKind` raw values,
 ///   stored as a string (`["bus","luas"]`).
 /// - `transit.pinnedStopIds`: comma-joined stop ids (the format
@@ -19,6 +21,10 @@ final class TransitLayerSettings {
     nonisolated static let enabledKindsKey = "transit.enabledKinds"
     nonisolated static let pinnedStopIdsKey = "transit.pinnedStopIds"
     nonisolated static let legacyEnabledKey = "savedTransitStops"
+    nonisolated static let showPlacesKey = "layers.showPlaces"
+    nonisolated static let showTrailsKey = "layers.showTrails"
+    /// The kinds that were on when "Hide transit" turned them all off.
+    nonisolated static let hiddenKindsKey = "transit.hiddenKinds"
 
     private(set) var enabledKinds: Set<TransitLayerKind> {
         didSet { if enabledKinds != oldValue { persistEnabledKinds() } }
@@ -28,11 +34,23 @@ final class TransitLayerSettings {
         didSet { if pinnedStopIds != oldValue { persistPinned() } }
     }
 
+    /// The Places layer (saved place pins). Default on.
+    var showPlaces: Bool {
+        didSet { if showPlaces != oldValue { defaults.set(showPlaces, forKey: Self.showPlacesKey) } }
+    }
+
+    /// The Trails layer (trail lines and their endpoints). Default on.
+    var showTrails: Bool {
+        didSet { if showTrails != oldValue { defaults.set(showTrails, forKey: Self.showTrailsKey) } }
+    }
+
     @ObservationIgnored private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.pinnedStopIds = Self.decodePinned(defaults.string(forKey: Self.pinnedStopIdsKey) ?? "")
+        self.showPlaces = defaults.object(forKey: Self.showPlacesKey) as? Bool ?? true
+        self.showTrails = defaults.object(forKey: Self.showTrailsKey) as? Bool ?? true
 
         if let stored = Self.readEnabledKinds(from: defaults) {
             self.enabledKinds = stored
@@ -61,6 +79,25 @@ final class TransitLayerSettings {
     }
 
     func disableAll() { enabledKinds = [] }
+
+    var isAnyTransitOn: Bool { !enabledKinds.isEmpty }
+
+    /// "Hide transit": turns every network off and remembers which were on.
+    func hideAllTransit() {
+        guard !enabledKinds.isEmpty else { return }
+        let raw = enabledKinds.map(\.rawValue).sorted().joined(separator: ",")
+        defaults.set(raw, forKey: Self.hiddenKindsKey)
+        enabledKinds = []
+    }
+
+    /// "Show transit": restores the networks "Hide transit" turned off, or
+    /// all four when nothing was remembered.
+    func showTransit() {
+        let remembered = Set((defaults.string(forKey: Self.hiddenKindsKey) ?? "")
+            .split(separator: ",").compactMap { TransitLayerKind(rawValue: String($0)) })
+        enabledKinds = remembered.isEmpty ? Set(TransitLayerKind.allCases) : remembered
+        defaults.removeObject(forKey: Self.hiddenKindsKey)
+    }
 
     // MARK: - Pinned stops
 

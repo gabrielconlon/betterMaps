@@ -43,15 +43,31 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.gabrielconlon.CustomMapAppTests
 
+  CustomMapAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: BetterMaps-UITests
+    dependencies:
+      - target: CustomMapApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.gabrielconlon.CustomMapAppUITests
+        TEST_TARGET_NAME: CustomMapApp
+
 schemes:
   CustomMapApp:
     build:
       targets:
         CustomMapApp: all
         CustomMapAppTests: [test]
+        CustomMapAppUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - CustomMapAppTests
+        - CustomMapAppUITests

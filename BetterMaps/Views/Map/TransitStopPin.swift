@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// A transit stop pin. Tappable at every zoom: the far-zoom dot sits in a
-/// 24pt hit area, the larger sizes keep the 44pt HIG target.
+/// A transit stop pin. The far-zoom dot is a bare 6pt circle that ignores
+/// touches, so hundreds of them never swallow a pan; a map tap near one is
+/// resolved by `TransitLayerStore.nearestDotStop`. The larger sizes keep the
+/// 44pt HIG target and their own tap.
 struct TransitStopPin: View {
     let stop: TransitStop
     let size: AnnotationSize
@@ -14,9 +16,8 @@ struct TransitStopPin: View {
         case .dot:
             Circle()
                 .fill(color)
-                .frame(width: 8, height: 8)
-                .frame(width: 24, height: 24)
-                .contentShape(Circle())
+                .frame(width: 6, height: 6)
+                .allowsHitTesting(false)
         case .compact:
             Image(systemName: stop.kind.systemImage)
                 .font(.system(size: 12, weight: .bold))

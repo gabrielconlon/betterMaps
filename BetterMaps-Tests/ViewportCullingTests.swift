@@ -1,4 +1,6 @@
 import XCTest
+import MapKit
+import Observation
 @testable import CustomMapApp
 
 /// `MapContentStore.cull` is pure, so these tests need no SwiftData.
@@ -20,9 +22,9 @@ final class ViewportCullingTests: XCTestCase {
         PlaceLite(id: UUID(), name: name, latitude: lat, longitude: lon, layerIds: layerIds)
     }
 
-    func cull(_ places: [PlaceLite], trails: [TrailLite] = [], mode: FilterMode = .union,
+    func cull(_ places: [PlaceLite], trails: [TrailLite] = [], filter: PlaceFilter = .showAll,
               viewport: GeoBox, size: CGSize = CGSize(width: 390, height: 844)) -> CullOutput {
-        MapContentStore.cull(places: places, layers: layers, trails: trails, mode: mode,
+        MapContentStore.cull(places: places, layers: layers, trails: trails, filter: filter,
                              viewport: viewport, mapWidth: size.width, mapHeight: size.height)
     }
 
@@ -47,13 +49,18 @@ final class ViewportCullingTests: XCTestCase {
         XCTAssertEqual(launch.annotationSize, .dot)
     }
 
-    func testHiddenLayerPlacesAreFilteredOut() {
-        let hidden = LayerLite(id: UUID(), name: "Hidden", isVisible: false)
-        let p = place("p", lat: 53.35, lon: -6.26, in: [hidden.id])
-        let out = MapContentStore.cull(places: [p], layers: [hidden], trails: [], mode: .union,
-                                       viewport: cityViewport, mapWidth: 390, mapHeight: 844)
-        XCTAssertTrue(out.places.isEmpty)
-        XCTAssertEqual(out.visibleLayerCount, 0)
+    func testTagSelectionFiltersAndPlacesSwitchHidesAll() {
+        let b = place("b", lat: 53.35, lon: -6.26, in: [brunch.id])
+        let f = place("f", lat: 53.351, lon: -6.26, in: [favorites.id])
+        let onlyBrunch = PlaceFilter(tagIds: [brunch.id], match: .any)
+        XCTAssertEqual(cull([b, f], filter: onlyBrunch, viewport: cityViewport).places.map(\.id), [b.id])
+        XCTAssertEqual(cull([b, f], filter: onlyBrunch, viewport: cityViewport).matchingPlaceCount, 1)
+
+        var off = PlaceFilter.showAll
+        off.showPlaces = false
+        let hidden = cull([b, f], filter: off, viewport: cityViewport)
+        XCTAssertTrue(hidden.places.isEmpty)
+        XCTAssertEqual(hidden.matchingPlaceCount, 2, "the count ignores the Places switch")
     }
 
     // MARK: - Clustering
@@ -74,7 +81,7 @@ final class ViewportCullingTests: XCTestCase {
                        "every input place is either a single pin or counted in exactly one cluster")
         XCTAssertTrue(out.clusters.allSatisfy { $0.count >= 2 })
 
-        // Cluster color comes from the first member's primary layer.
+        // Cluster color comes from the first member's pin tag.
         let brunchCluster = out.clusters.first { $0.count == 5 }
         XCTAssertEqual(brunchCluster?.colorHex, brunch.colorHex)
         XCTAssertEqual(brunchCluster.map { $0.latitude }!, 53.3402, accuracy: 0.0001, "mean coordinate")
@@ -113,6 +120,11 @@ final class ViewportCullingTests: XCTestCase {
 
         let out = cull([], trails: [crossing, touching, far, hidden], viewport: launchViewport)
         XCTAssertEqual(Set(out.trails.map(\.id)), [crossing.id, touching.id])
+
+        var noTrails = PlaceFilter.showAll
+        noTrails.showTrails = false
+        XCTAssertTrue(cull([], trails: [crossing, touching], filter: noTrails, viewport: launchViewport).trails.isEmpty,
+                      "the Trails switch hides every trail")
     }
 
     func testTrailLiteBBoxCoversEverySegment() {
@@ -126,23 +138,83 @@ final class ViewportCullingTests: XCTestCase {
                                name: "empty", segments: []))
     }
 
-    // MARK: - Legend
+    // MARK: - Match count
 
-    func testLegendPassesThroughLayerMathForWholeFilteredSet() {
+    func testMatchingCountCoversWholeMapNotJustViewport() {
         let shared1 = place("s1", lat: 53.35, lon: -6.26, in: [brunch.id, favorites.id])
         let shared2 = place("s2", lat: 53.351, lon: -6.261, in: [brunch.id, favorites.id])
         let offscreenShared = place("s3", lat: 54.5, lon: -6.26, in: [brunch.id, favorites.id])
         let single = place("single", lat: 53.352, lon: -6.262, in: [brunch.id])
         let places = [shared1, shared2, offscreenShared, single]
 
-        let out = cull(places, mode: .intersection, viewport: cityViewport)
-        let expected = LayerMath.intersectionLegend(
-            LayerMath.filter(places, layers: layers, mode: .intersection), layers: layers)
-        XCTAssertEqual(out.legend, expected)
-        XCTAssertEqual(out.legend.first?.label, "Brunch + Favorites")
-        XCTAssertEqual(out.legend.first?.count, 3, "legend counts the whole filtered set, not just the viewport")
-        XCTAssertEqual(out.places.map(\.id), [shared1.id, shared2.id], "intersection drops the single, viewport drops s3")
-        XCTAssertEqual(out.visibleLayerCount, 3)
+        let all = PlaceFilter(tagIds: [brunch.id, favorites.id], match: .all)
+        let out = cull(places, filter: all, viewport: cityViewport)
+        XCTAssertEqual(out.matchingPlaceCount, 3, "counts the whole filtered set, not just the viewport")
+        XCTAssertEqual(out.places.map(\.id), [shared1.id, shared2.id], "All drops the single, viewport drops s3")
+        XCTAssertFalse(out.places.contains(where: \.showsOverlap), "no ring in All")
+
+        let any = cull(places, filter: PlaceFilter(tagIds: [brunch.id, favorites.id], match: .any),
+                       viewport: cityViewport)
+        XCTAssertEqual(any.places.filter(\.showsOverlap).map(\.id), [shared1.id, shared2.id])
+        XCTAssertEqual(any.matchingPlaceCount, 4)
+    }
+
+    /// Changing the filter on the store republishes with the new places.
+    @MainActor
+    func testStoreFilterChangeRecomputes() async throws {
+        let store = MapContentStore(region: MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+        store.mapSize = CGSize(width: 390, height: 844)
+        let b = place("b", lat: 53.35, lon: -6.26, in: [brunch.id])
+        let f = place("f", lat: 53.3501, lon: -6.2601, in: [favorites.id])
+        store.update(places: [b, f], layers: layers, trails: [])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.output.places.count, 2)
+        XCTAssertEqual(store.matchingPlaceCount, 2)
+
+        store.filter = PlaceFilter(tagIds: [favorites.id], match: .any)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.output.places.map(\.id), [f.id])
+        XCTAssertEqual(store.matchingPlaceCount, 1)
+    }
+
+    // MARK: - Store publishing
+
+    func testCullOutputEquality() {
+        let p = place("p", lat: 53.35, lon: -6.26, in: [brunch.id])
+        XCTAssertEqual(cull([p], viewport: cityViewport), cull([p], viewport: cityViewport))
+        XCTAssertNotEqual(cull([p], viewport: cityViewport), cull([], viewport: cityViewport))
+    }
+
+    /// Recomputing with identical inputs (a settle at the same camera) must
+    /// not replace `output` or notify observers.
+    @MainActor
+    func testIdenticalRecomputeDoesNotPublish() async throws {
+        let store = MapContentStore(region: MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+        store.mapSize = CGSize(width: 390, height: 844)
+        let places = [place("p", lat: 53.35, lon: -6.26, in: [brunch.id])]
+        store.update(places: places, layers: layers, trails: [])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.output.places.count, 1)
+        let published = store.debugPublishCount
+
+        let changed = ChangeFlag()
+        withObservationTracking { _ = store.output } onChange: { changed.set() }
+        store.update(places: places, layers: layers, trails: [])
+        let sameRegion = store.region
+        store.region = sameRegion
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.debugPublishCount, published)
+        XCTAssertFalse(changed.isSet, "an identical recompute must not publish")
+
+        // A real change still publishes.
+        store.update(places: [], layers: layers, trails: [])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.debugPublishCount, published + 1)
+        XCTAssertTrue(changed.isSet)
     }
 
     // MARK: - GeoBox

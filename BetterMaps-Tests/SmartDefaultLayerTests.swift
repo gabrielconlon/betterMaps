@@ -17,25 +17,23 @@ final class SmartDefaultLayerTests: XCTestCase {
         ]
     }
 
-    func testLastUsedVisiblePlaceLayerWins() {
+    func testLastUsedTagWins() {
         XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers(), lastUsedLayerId: brunch), brunch)
     }
 
-    func testHiddenLastUsedFallsBackToFirstVisiblePlaceLayer() {
+    func testTagVisibilityNoLongerMatters() {
         XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers(brunchVisible: false), lastUsedLayerId: brunch),
-                       favorites)
+                       brunch, "a tag's isVisible does not filter, so the last-used tag still wins")
+        XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers(), lastUsedLayerId: hidden), hidden)
     }
 
     func testTrailLayerIsNeverAPlaceDefault() {
-        XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers(), lastUsedLayerId: walks), favorites)
+        XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers(), lastUsedLayerId: walks), hidden)
     }
 
-    func testUnknownOrMissingLastUsedUsesFirstVisibleBySortOrder() {
-        XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers(), lastUsedLayerId: UUID()), favorites)
-        XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers().reversed(), lastUsedLayerId: nil), favorites)
-    }
-
-    func testAllPlaceLayersHiddenUsesFirstPlaceLayer() {
+    func testUnknownOrMissingLastUsedUsesFirstTagBySortOrder() {
+        XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers(), lastUsedLayerId: UUID()), hidden)
+        XCTAssertEqual(SmartDefaultLayer.placeLayer(in: layers().reversed(), lastUsedLayerId: nil), hidden)
         let all = layers(brunchVisible: false, favoritesVisible: false)
         XCTAssertEqual(SmartDefaultLayer.placeLayer(in: all, lastUsedLayerId: nil), hidden)
     }

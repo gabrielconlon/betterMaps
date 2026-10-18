@@ -32,7 +32,7 @@ struct AddPlaceToLayerView: View {
                     ContentUnavailableView(
                         "No Places Yet",
                         systemImage: "mappin",
-                        description: Text("Create your first place to add it to this layer.")
+                        description: Text("Save your first place, then tag it here.")
                     )
                 } else if availablePlaces.isEmpty && !searchText.isEmpty {
                     ContentUnavailableView.search(text: searchText)
@@ -40,7 +40,7 @@ struct AddPlaceToLayerView: View {
                     ContentUnavailableView(
                         "All Places Added",
                         systemImage: "checkmark.circle",
-                        description: Text("Every place is already in this layer.")
+                        description: Text("Every place already has this tag.")
                     )
                 } else {
                     List(availablePlaces) { place in
@@ -62,7 +62,7 @@ struct AddPlaceToLayerView: View {
                 }
             }
             .searchable(text: $searchText, prompt: "Search places")
-            .navigationTitle("Add to \(layer.name)")
+            .navigationTitle("Tag places \(layer.name)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

@@ -1,41 +1,29 @@
 import SwiftUI
 import MapKit
 
-/// Floating map chrome: the legend top-left (with the trail-draft resume
-/// chip and the bus zoom prompt under it) and a top-right control stack
-/// (user location, map style, compass). Both sit at the top so they never
-/// meet the bottom sheet; they fade out while the sheet is expanded and
-/// covers them.
+/// Floating map chrome: the round Layers button top-left (with the
+/// trail-draft resume chip under it) and the locate button and compass
+/// top-right. Both sit at the top so they never meet the bottom sheet; they
+/// fade out while the sheet is expanded and covers them. No text floats over
+/// the map: everything here is a control.
 struct MapChrome: View {
     let mapScope: Namespace.ID
-    let mapStyle: MapStyleOption
-    let legendLayers: [LayerLite]
-    let legendEntries: [LegendEntry]
-    /// Overlap only found nothing shared by this many visible layers.
-    var emptyOverlapLayerCount: Int? = nil
     let isHidden: Bool
+    let isLayersOpen: Bool
+    let onToggleLayers: () -> Void
     /// Shown while a kept trail draft exists.
     var draftChip: DraftResumeChip? = nil
-    /// Bus is on but the camera is too far out for bus stops to draw.
-    var showsBusZoomPrompt: Bool = false
     /// Location access granted: the system location button can centre the
     /// map. Otherwise a plain button asks for access first.
     var canLocateUser: Bool = true
-    var onZoomForBus: () -> Void = {}
     var onRequestLocation: () -> Void = {}
-    let onCycleMapStyle: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
-                LegendStrip(layers: legendLayers, entries: legendEntries,
-                            emptyOverlapLayerCount: emptyOverlapLayerCount)
-                if let draftChip {
+                LayersButton(isOpen: isLayersOpen, action: onToggleLayers)
+                if let draftChip, !isLayersOpen {
                     draftChip
-                        .transition(.opacity)
-                }
-                if showsBusZoomPrompt {
-                    busZoomPrompt
                         .transition(.opacity)
                 }
             }
@@ -49,45 +37,13 @@ struct MapChrome: View {
         .allowsHitTesting(!isHidden)
         .accessibilityHidden(isHidden)
         .animation(.easeInOut(duration: 0.2), value: isHidden)
-        .animation(.easeInOut(duration: 0.2), value: showsBusZoomPrompt)
-    }
-
-    /// Bus stops are culled when zoomed out; say so and offer the fix.
-    private var busZoomPrompt: some View {
-        Button(action: onZoomForBus) {
-            Label("Zoom in to see bus stops", systemImage: "plus.magnifyingglass")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 12)
-                .frame(minHeight: 44)
-                .background(.regularMaterial, in: Capsule())
-                .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Zooms the map in so bus stops appear")
     }
 
     private var controls: some View {
         VStack(spacing: 10) {
-            VStack(spacing: 0) {
-                locateButton
-                Divider().frame(width: 44)
-                Button(action: onCycleMapStyle) {
-                    Image(systemName: mapStyle.next.icon)
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Map style")
-                .accessibilityValue(mapStyle.rawValue)
-                .accessibilityHint("Switches to \(mapStyle.next.rawValue)")
-            }
-            .buttonBorderShape(.roundedRectangle(radius: 0))
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-            .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
+            locateButton
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
 
             MapCompass(scope: mapScope)
                 .mapControlVisibility(.automatic)
