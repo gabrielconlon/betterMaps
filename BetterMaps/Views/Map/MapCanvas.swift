@@ -38,6 +38,10 @@ struct MapCanvas: View {
     /// `MapContentSync`). The body reads only this, never the stores, so the
     /// two stores' publishes after a camera move cost one map pass, not two.
     @State private var shown = MapCanvasContent()
+    #if DEBUG
+    /// Settled centre for the UI-test probe (`-UITestMapProbe` only).
+    @State private var probeCenter = "none"
+    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -80,7 +84,12 @@ struct MapCanvas: View {
                 // point, then convert it through the MapReader proxy. It fires on the
                 // drag's first change — the moment the press is recognised — so the pin
                 // and haptic land while the finger is still down.
-                .gesture(
+                //
+                // Must be `.simultaneousGesture`, not `.gesture`: attached with
+                // `.gesture`, any `.onChanged` on this sequence (even an empty one)
+                // stops one-finger drags from panning the map at all. Pinned by
+                // `MapPanUITests.testOneFingerDragPansMap`.
+                .simultaneousGesture(
                     LongPressGesture(minimumDuration: 0.5)
                         .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
                         .onChanged { value in
@@ -98,6 +107,9 @@ struct MapCanvas: View {
                     if store.mapSize != geo.size { store.mapSize = geo.size }
                     store.region = context.region
                     onCameraSettled(context.region)
+                    #if DEBUG
+                    if MapCenterProbe.isEnabled { probeCenter = MapCenterProbe.format(context.region.center) }
+                    #endif
                 }
                 .onAppear {
                     store.mapSize = geo.size
@@ -110,8 +122,38 @@ struct MapCanvas: View {
         .background {
             MapContentSync(store: store, transitStore: transitStore, shown: $shown)
         }
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            if MapCenterProbe.isEnabled { MapCenterProbe(value: probeCenter) }
+        }
+        #endif
     }
 }
+
+#if DEBUG
+/// UI-test probe: an invisible, untouchable 1×1 accessibility element whose
+/// value is the settled map centre ("lat,lon", 4 decimals). Present only
+/// when launched with `-UITestMapProbe`.
+struct MapCenterProbe: View {
+    let value: String
+
+    static let isEnabled = ProcessInfo.processInfo.arguments.contains("-UITestMapProbe")
+
+    static func format(_ c: CLLocationCoordinate2D) -> String {
+        String(format: "%.4f,%.4f", c.latitude, c.longitude)
+    }
+
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+            .accessibilityElement()
+            .accessibilityLabel("Map centre")
+            .accessibilityIdentifier("debug.mapCenter")
+            .accessibilityValue(value)
+    }
+}
+#endif
 
 /// Value snapshot of everything the map content draws.
 struct MapCanvasContent {

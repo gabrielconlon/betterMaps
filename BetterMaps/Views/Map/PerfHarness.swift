@@ -55,8 +55,9 @@ enum PerfHarness {
                                settings: TransitLayerSettings,
                                modelContext: ModelContext) async {
         let args = ProcessInfo.processInfo.arguments
-        guard args.contains("-PerfPan") else { return }
+        // Seeding also works without the benchmark (UI tests use it alone).
         if args.contains("-PerfSeed") { seedIfNeeded(in: modelContext) }
+        guard args.contains("-PerfPan") else { return }
 
         // Restored when the run ends so the user's transit settings survive.
         let previousKinds = settings.enabledKinds
