@@ -36,3 +36,29 @@ targets:
         CODE_SIGN_ENTITLEMENTS: BetterMaps/BetterMaps.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.gabrielconlon.CustomMapApp
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  CustomMapAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: BetterMaps-Tests
+    dependencies:
+      - target: CustomMapApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.gabrielconlon.CustomMapAppTests
+
+schemes:
+  CustomMapApp:
+    build:
+      targets:
+        CustomMapApp: all
+        CustomMapAppTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - CustomMapAppTests

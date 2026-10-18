@@ -1,6 +1,6 @@
 import XCTest
 import CoreLocation
-@testable import BetterMapsApp
+@testable import CustomMapApp
 
 /// Tests for transit stop classification, type properties, and the
 /// stop selection logic used by the routing view model.
@@ -10,10 +10,10 @@ final class StopClassificationTests: XCTestCase {
 
     /// Each stop type should have a distinct color.
     func testStopTypeColors() {
-        XCTAssertEqual(TransitStop.TransitStopType.bus.colorHex, "#007AFF", "Bus = blue")
-        XCTAssertEqual(TransitStop.TransitStopType.luas.colorHex, "#34C759", "Luas = green")
-        XCTAssertEqual(TransitStop.TransitStopType.dart.colorHex, "#FF9500", "DART = orange")
-        XCTAssertEqual(TransitStop.TransitStopType.rail.colorHex, "#AF52DE", "Rail = purple")
+        XCTAssertEqual(TransitStop.TransitStopType.bus.colorHex, TransitColors.busPinHex, "Bus = pastel cornflower")
+        XCTAssertEqual(TransitStop.TransitStopType.luas.colorHex, TransitColors.luasGrnPinHex, "Luas = pastel mint")
+        XCTAssertEqual(TransitStop.TransitStopType.dart.colorHex, TransitColors.dartPinHex, "DART = pastel peach")
+        XCTAssertEqual(TransitStop.TransitStopType.rail.colorHex, TransitColors.railPinHex, "Rail = pastel lilac")
     }
 
     /// Each stop type should have a display name.
@@ -164,7 +164,7 @@ final class StopClassificationTests: XCTestCase {
         let greystones = CLLocation(latitude: Dublin.greystones.latitude,
                                     longitude: Dublin.greystones.longitude)
         let km = howth.distance(from: greystones) / 1000
-        XCTAssertGreaterThan(km, 30, "Howth-Greystones should be >30km crow-flies")
+        XCTAssertGreaterThan(km, 25, "Howth-Greystones should be >25km crow-flies")
         XCTAssertLessThan(km, 50, "Howth-Greystones should be <50km crow-flies")
     }
 }

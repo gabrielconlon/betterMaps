@@ -1,5 +1,5 @@
 import CoreLocation
-@testable import BetterMapsApp
+@testable import CustomMapApp
 
 /// Real Dublin coordinates for scenario-based routing tests.
 /// All coordinates verified against actual locations.
