@@ -1,167 +1,58 @@
 import SwiftUI
+import MapKit
 
-// Bottom bar and layers-panel overlay, moved out of MapTabView unchanged.
-// Phase 5 replaces this chrome.
-
-/// [settings] [search capsule] [overlap toggle]
-struct MapBottomBar: View {
-    @Bindable var searchState: SearchState
-    @Bindable var filterVM: LayerFilterViewModel
-    var isSearchFocused: FocusState<Bool>.Binding
-    let activeLayerCount: Int
-    let onOpenMenu: () -> Void
-    let onSearchTextChanged: () -> Void
-
-    private var isOverlapMode: Bool {
-        filterVM.filterMode == .intersection && activeLayerCount > 1
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // Settings (full hamburger menu)
-            Button(action: onOpenMenu) {
-                Image(systemName: "gearshape.fill")
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .padding(10)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Circle())
-            }
-
-            // Search field — floating style
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search stops, routes, places...", text: $searchState.searchText)
-                    .textFieldStyle(.plain)
-                    .focused(isSearchFocused)
-                    .onChange(of: searchState.searchText) { _, _ in onSearchTextChanged() }
-                    .onSubmit { isSearchFocused.wrappedValue = false }
-                if !searchState.searchText.isEmpty {
-                    Button(action: {
-                        searchState.clearSearch()
-                        isSearchFocused.wrappedValue = false
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial)
-            .clipShape(Capsule())
-            .overlay {
-                // Tap catcher — only when TextField is NOT focused.
-                // Catches the first tap before the map's gesture recognizer can steal it.
-                // Color.clear (not Capsule().fill(.clear)) — a clear-filled shape can fail
-                // hit testing even with .contentShape; Color.clear is always hit-testable.
-                if !isSearchFocused.wrappedValue {
-                    Color.clear
-                        .contentShape(Capsule())
-                        .onTapGesture { isSearchFocused.wrappedValue = true }
-                }
-            }
-
-            // Overlap toggle — only visible when 2+ layers active
-            if activeLayerCount > 1 {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        filterVM.filterMode = filterVM.filterMode == .union ? .intersection : .union
-                    }
-                }) {
-                    Image(systemName: isOverlapMode ? "circle.grid.cross.fill" : "square.grid.2x2")
-                        .font(.body)
-                        .padding(10)
-                        .background(isOverlapMode
-                            ? AnyShapeStyle(Color.purple.opacity(0.2))
-                            : AnyShapeStyle(.ultraThinMaterial))
-                        .foregroundStyle(isOverlapMode ? .purple : .primary)
-                        .clipShape(Circle())
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-    }
-}
-
-/// Top-left layers button, the FavoritesPanel it opens, and the legend strip
-/// shown beneath the button while the panel is closed.
-struct MapLayersOverlay: View {
-    @Binding var showFavoritesPanel: Bool
-    let transitSettings: TransitLayerSettings
-    let highlightedRouteId: String?
-    @Binding var mapStyleOption: MapStyleOption
+/// Floating map chrome: the legend top-left and a top-right control stack
+/// (user location, map style, compass). Both sit at the top so they never
+/// meet the bottom sheet; they fade out while the sheet is expanded and
+/// covers them.
+struct MapChrome: View {
+    let mapScope: Namespace.ID
+    let mapStyle: MapStyleOption
     let legendLayers: [LayerLite]
     let legendEntries: [LegendEntry]
-    /// A favorite-route chip was tapped (draws / clears it on the map).
-    let onSelectRoute: (FavoriteTransitRoute) -> Void
-
-    /// Reserve enough vertical room for the bottom bar (search field + buttons).
-    /// 56pt button stack + 8pt bottom padding + ~12pt buffer above the search bar.
-    private static let panelBottomReserve: CGFloat = 76
+    let isHidden: Bool
+    let onCycleMapStyle: () -> Void
 
     var body: some View {
-        // ZStack must claim the full screen so its alignment(.topLeading) actually
-        // pins the toggle button to the corner. The dimmer view (only shown when
-        // the panel is open) is what catches outside taps to dismiss.
-        ZStack(alignment: .topLeading) {
-            if showFavoritesPanel {
-                Color.black.opacity(0.001)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { close() }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    toggleButton
-                    FavoritesPanel(
-                        transitSettings: transitSettings,
-                        highlightedRouteId: highlightedRouteId,
-                        isPresented: $showFavoritesPanel,
-                        mapStyle: $mapStyleOption,
-                        onSelectRoute: onSelectRoute
-                    )
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-                }
-                .padding(.leading, 12)
-                .padding(.top, 10)
-                .padding(.bottom, Self.panelBottomReserve)
-                .frame(maxHeight: .infinity, alignment: .top)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    toggleButton
-                    LegendStrip(layers: legendLayers, entries: legendEntries)
-                }
-                .padding(.leading, 12)
-                .padding(.top, 10)
-            }
+        HStack(alignment: .top, spacing: 8) {
+            LegendStrip(layers: legendLayers, entries: legendEntries)
+            Spacer(minLength: 0)
+            controls
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .zIndex(10)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .opacity(isHidden ? 0 : 1)
+        .allowsHitTesting(!isHidden)
+        .accessibilityHidden(isHidden)
+        .animation(.easeInOut(duration: 0.2), value: isHidden)
     }
 
-    private func close() {
-        withAnimation(.easeInOut(duration: 0.25)) { showFavoritesPanel = false }
-    }
-
-    private var toggleButton: some View {
-        Button(action: {
-            withAnimation(.easeInOut(duration: 0.25)) { showFavoritesPanel.toggle() }
-        }) {
-            Image(systemName: "square.3.layers.3d")
-                .font(.body)
-                .padding(10)
-                .background {
-                    if showFavoritesPanel {
-                        Circle().fill(Color.blue.opacity(0.2))
-                    } else {
-                        Circle().fill(.ultraThinMaterial)
-                    }
+    private var controls: some View {
+        VStack(spacing: 10) {
+            VStack(spacing: 0) {
+                MapUserLocationButton(scope: mapScope)
+                    .frame(width: 44, height: 44)
+                    .tint(.accentColor)
+                Divider().frame(width: 44)
+                Button(action: onCycleMapStyle) {
+                    Image(systemName: mapStyle.next.icon)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
-                .foregroundStyle(showFavoritesPanel ? .blue : .primary)
-                .clipShape(Circle())
-                .shadow(color: .black.opacity(0.1), radius: 2)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Map style")
+                .accessibilityValue(mapStyle.rawValue)
+                .accessibilityHint("Switches to \(mapStyle.next.rawValue)")
+            }
+            .buttonBorderShape(.roundedRectangle(radius: 0))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
+
+            MapCompass(scope: mapScope)
+                .mapControlVisibility(.automatic)
         }
     }
 }

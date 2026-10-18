@@ -11,6 +11,13 @@ class SearchState {
     var transitSearchResults: [TransitStop] = []
     var routeSearchResults: [TransitRoute] = []
     var showSearchResults: Bool = false
+    /// True from the first keystroke of a query until its results land.
+    var isSearching: Bool = false
+
+    var hasAnyResults: Bool {
+        !placeSearchResults.isEmpty || !transitSearchResults.isEmpty
+            || !routeSearchResults.isEmpty || !searchResults.isEmpty
+    }
 
     /// Cancellable task for debounced live search
     private var liveSearchTask: Task<Void, Never>?
@@ -99,12 +106,15 @@ class SearchState {
         let text = searchText
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
             showSearchResults = false
+            isSearching = false
             return
         }
+        isSearching = true
         liveSearchTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await performSearch(places: places, transit: transit, userLocation: userLocation)
+            if !Task.isCancelled { isSearching = false }
         }
     }
 
@@ -152,6 +162,8 @@ class SearchState {
     // MARK: - Clear
 
     func clearSearch() {
+        liveSearchTask?.cancel()
+        isSearching = false
         searchText = ""
         searchResults = []
         placeSearchResults = []

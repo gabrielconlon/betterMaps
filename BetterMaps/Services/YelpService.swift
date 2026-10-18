@@ -131,6 +131,40 @@ actor YelpService {
         !apiKey.isEmpty
     }
 
+    /// Outcome of looking a place up, so callers can tell "Yelp has no match"
+    /// (show nothing) from "the request failed" (offer a retry).
+    enum Lookup: Sendable {
+        case found(YelpBusiness, reviews: [YelpReview])
+        case noMatch
+        case failed
+    }
+
+    /// Business details plus top reviews for the place nearest `coordinate`.
+    func lookup(name: String, coordinate: CLLocationCoordinate2D) async -> Lookup {
+        guard YelpService.isConfigured else { return .noMatch }
+        var components = URLComponents(string: "https://api.yelp.com/v3/businesses/search")!
+        components.queryItems = [
+            URLQueryItem(name: "term", value: name),
+            URLQueryItem(name: "latitude", value: String(coordinate.latitude)),
+            URLQueryItem(name: "longitude", value: String(coordinate.longitude)),
+            URLQueryItem(name: "limit", value: "1"),
+            URLQueryItem(name: "radius", value: "200"),
+        ]
+        guard let url = components.url else { return .failed }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .failed }
+            let decoded = try JSONDecoder().decode(YelpSearchResponse.self, from: data)
+            guard let match = decoded.businesses.first else { return .noMatch }
+            guard let business = await fetchBusinessDetails(id: match.id) else { return .failed }
+            return .found(business, reviews: await fetchReviews(businessId: business.id))
+        } catch {
+            return .failed
+        }
+    }
+
     func searchBusiness(name: String, coordinate: CLLocationCoordinate2D) async -> YelpBusiness? {
         guard YelpService.isConfigured else { return nil }
 

@@ -9,6 +9,9 @@ struct MapCanvas: View {
     let store: MapContentStore
     let layersById: [UUID: LayerLite]
     let mapStyle: MapStyle
+    /// Shared with `MapChrome` so its standalone location button and compass
+    /// drive this map.
+    let mapScope: Namespace.ID
     let transit: TransitLayerContent.Inputs
 
     let onTapPlace: (UUID) -> Void
@@ -26,7 +29,7 @@ struct MapCanvas: View {
     var body: some View {
         GeometryReader { geo in
             MapReader { proxy in
-                Map(position: $cameraPosition) {
+                Map(position: $cameraPosition, scope: mapScope) {
                     UserAnnotation()
                     PlacesLayerContent(places: store.output.places,
                                        clusters: store.output.clusters,
@@ -38,7 +41,7 @@ struct MapCanvas: View {
                     TransitLayerContent(stops: transit.stops,
                                         lines: transit.lines,
                                         highlightedRoute: transit.highlightedRoute,
-                                        size: store.output.annotationSize,
+                                        latitudeDelta: transit.latitudeDelta,
                                         onTapStop: onTapStop)
                 }
                 .mapStyle(mapStyle)
@@ -46,11 +49,9 @@ struct MapCanvas: View {
                 // to the Map alone, SwiftUI propagates the Map's larger frame
                 // to its sibling overlays in a parent ZStack — which dragged
                 // our layer-toggle button up behind the OS status bar.
-                .mapControls {
-                    MapUserLocationButton()
-                    MapCompass()
-                    MapScaleView()
-                }
+                // Controls live in MapChrome (top-right stack) so they can
+                // stay clear of the bottom sheet.
+                .mapControls { }
                 .onTapGesture { screenPoint in
                     onTap(screenPoint, proxy.convert(screenPoint, from: .local))
                 }

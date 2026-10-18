@@ -5,6 +5,7 @@ struct AddPlaceToLayerView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Place.name) private var allPlaces: [Place]
+    @Environment(\.mapCenter) private var mapCenter
 
     let layer: Layer
 
@@ -74,7 +75,7 @@ struct AddPlaceToLayerView: View {
                 }
             }
             .sheet(isPresented: $showNewPlaceForm) {
-                PlaceFormView(layer: layer)
+                PlaceFormView(layer: layer, mapCenter: mapCenter)
             }
         }
     }

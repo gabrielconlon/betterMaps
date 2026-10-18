@@ -3,9 +3,10 @@ import MapKit
 import SwiftData
 
 /// The map screen: owns the SwiftData queries, view models and the
-/// `MapContentStore`, routes sheets, and composes `MapCanvas` with the
-/// chrome. Everything the `Map` draws comes from `store.output` or value
-/// arrays — SwiftData objects never reach the map content.
+/// `MapContentStore`, routes sheets, and composes `MapCanvas`, the map
+/// chrome and the persistent layers sheet. Everything the `Map` draws comes
+/// from `store.output` or value arrays — SwiftData objects never reach the
+/// map content.
 struct MapScreen: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var layers: [Layer]
@@ -16,12 +17,15 @@ struct MapScreen: View {
     @State private var locationManager = LocationManager()
     @State private var store = MapContentStore(region: Self.launchRegion)
     @State private var trailSnapshotter = TrailSnapshotter()
+    @State private var toastCenter = ToastCenter()
+    @State private var timetable = BusTimetableModel()
+    @Namespace private var mapScope
 
     /// Default to a fixed Dublin region rather than `.userLocation(fallback:)`.
     /// `.userLocation` triggers continuous CoreLocation requests on every
     /// body recompute, which under load was hitting the kernel's 24k/sec rate
     /// limit and leaving MapKit's CAMetalLayer stuck at 0×0 (white-screen
-    /// hang). The MapUserLocationButton still recenters on demand.
+    /// hang). The location button still recenters on demand.
     private static let launchRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
         span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2)
@@ -31,11 +35,18 @@ struct MapScreen: View {
     @State private var transitSettings = TransitLayerSettings.shared
     @State private var searchState = SearchState()
     @FocusState private var isSearchFocused: Bool
-    @State private var showFavoritesPanel = false
-    @State private var mapStyleOption: MapStyleOption = .standard
-    @AppStorage("hasSeenCoachMarks") private var hasSeenCoachMarks = false
-    @State private var showCoachMarks = false
+    @AppStorage(MapStyleOption.storageKey) private var mapStyleOption: MapStyleOption = .standard
+    @State private var sheetDetent: SheetDetent = Self.initialDetent
+    /// Settled sheet height above the bottom safe area; toasts sit on top of it.
+    @State private var sheetHeight: CGFloat = SheetLayout.collapsedContentHeight
     @State private var poiSearchTask: Task<Void, Never>?
+
+    private static var initialDetent: SheetDetent {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-sheetMedium") { return .medium }
+        #endif
+        return .collapsed
+    }
 
     // MARK: - Snapshots
 
@@ -54,21 +65,12 @@ struct MapScreen: View {
         Dictionary(layers.map { (LayerLite($0).id, LayerLite($0)) }, uniquingKeysWith: { first, _ in first })
     }
 
-    private var visibleLayerLites: [LayerLite] {
-        layers.filter(\.isVisible).sorted { $0.sortOrder < $1.sortOrder }.map(LayerLite.init)
+    private var sortedLayers: [Layer] {
+        layers.sorted { $0.sortOrder < $1.sortOrder }
     }
 
-    private var currentMapStyle: MapStyle {
-        switch mapStyleOption {
-        case .standard:
-            return .standard(elevation: .realistic, pointsOfInterest: .all, showsTraffic: false)
-        case .muted:
-            return .standard(elevation: .realistic, emphasis: .muted, pointsOfInterest: .all, showsTraffic: false)
-        case .satellite:
-            return .imagery(elevation: .realistic)
-        case .hybrid:
-            return .hybrid(elevation: .realistic, pointsOfInterest: .all, showsTraffic: false)
-        }
+    private var visibleLayerLites: [LayerLite] {
+        sortedLayers.filter(\.isVisible).map(LayerLite.init)
     }
 
     // MARK: - Body
@@ -79,7 +81,8 @@ struct MapScreen: View {
                 cameraPosition: $cameraPosition,
                 store: store,
                 layersById: layersById,
-                mapStyle: currentMapStyle,
+                mapStyle: mapStyleOption.mapStyle,
+                mapScope: mapScope,
                 transit: TransitLayerContent.Inputs(transitStore),
                 onTapPlace: { id in
                     if let place = places.first(where: { $0.id == id }) { viewModel.selectPlace(place) }
@@ -90,80 +93,44 @@ struct MapScreen: View {
                 onLongPress: handleLongPress,
                 onCameraSettled: { region in
                     transitStore.region = region
-                    // Dismiss keyboard when user pans the map
                     if isSearchFocused { isSearchFocused = false }
                 }
             )
+            .ignoresSafeArea(.keyboard)
 
-            MapLayersOverlay(
-                showFavoritesPanel: $showFavoritesPanel,
-                transitSettings: transitSettings,
-                highlightedRouteId: transitStore.highlightedRouteId,
-                mapStyleOption: $mapStyleOption,
-                legendLayers: visibleLayerLites,
-                legendEntries: store.output.legend,
-                onSelectRoute: { route in transitStore.toggleHighlightedRoute(route.routeId) }
-            )
+            MapChrome(mapScope: mapScope,
+                      mapStyle: mapStyleOption,
+                      legendLayers: visibleLayerLites,
+                      legendEntries: store.output.legend,
+                      isHidden: sheetDetent == .expanded,
+                      onCycleMapStyle: cycleMapStyle)
 
-            VStack(spacing: 0) {
-                Spacer()
-                MapSearchResults(
-                    searchState: searchState,
-                    onSelectPlace: { place in
-                        dismissSearch()
-                        focus(on: place.coordinate)
-                        viewModel.selectPlace(place)
-                    },
-                    onSelectStop: { stop in
-                        dismissSearch()
-                        focus(on: stop.coordinate)
-                        viewModel.showTransitArrivals(for: stop)
-                    },
-                    onSelectRoute: { route in
-                        dismissSearch()
-                        transitStore.toggleHighlightedRoute(route.id)
-                    },
-                    onSelectPOI: { item in
-                        viewModel.showPOI(item)
-                        dismissSearch()
-                        focus(on: item.placemark.coordinate)
-                    }
-                )
-                MapBottomBar(
-                    searchState: searchState,
-                    filterVM: filterVM,
-                    isSearchFocused: $isSearchFocused,
-                    activeLayerCount: store.output.visibleLayerCount,
-                    onOpenMenu: { viewModel.showLayerSidebar() },
-                    onSearchTextChanged: {
-                        searchState.debouncedSearch(places: places, transit: transitStore,
-                                                    userLocation: locationManager.userLocation)
-                    }
-                )
-            }
+            BottomSheet(detent: $sheetDetent,
+                        onSettledHeightChange: { sheetHeight = $0 },
+                        header: { sheetHeader },
+                        content: { sheetContent })
 
-            if showCoachMarks {
-                CoachMarkOverlay(isPresented: $showCoachMarks)
-                    .zIndex(100)
-            }
+            // Toast host: clear and untouchable itself, its toast sits just
+            // above the sheet.
+            Color.clear
+                .allowsHitTesting(false)
+                .toasts(toastCenter)
+                .padding(.bottom, sheetHeight)
         }
-        .onAppear {
-            locationManager.requestPermission()
-
-            // Show one-time coach marks for first-time users
-            if !hasSeenCoachMarks {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    withAnimation(.easeIn(duration: 0.3)) { showCoachMarks = true }
-                }
-            }
-        }
+        .mapScope(mapScope)
+        .environment(toastCenter)
+        .environment(\.mapCenter, transitStore.region.center)
+        .onAppear { locationManager.requestPermission() }
         .onChange(of: snapshot, initial: true) { _, new in feedStore(new) }
         .onChange(of: filterVM.filterMode, initial: true) { _, mode in store.filterMode = mode }
         .onChange(of: transitSettings.enabledKinds, initial: true) { _, kinds in
             transitStore.enabledKinds = kinds
         }
-        .onChange(of: showCoachMarks) { _, newValue in
-            if !newValue { hasSeenCoachMarks = true }
+        .onChange(of: isSearchFocused) { _, focused in
+            if focused { sheetDetent = .expanded }
+        }
+        .onChange(of: sheetDetent) { _, detent in
+            if detent == .collapsed, isSearchFocused { isSearchFocused = false }
         }
         // Transit data is decoded only once a transit layer is on; a user
         // with every transit kind off does no transit work at launch.
@@ -174,7 +141,70 @@ struct MapScreen: View {
         }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
+                .environment(toastCenter)
+                .environment(\.mapCenter, transitStore.region.center)
         }
+        // TRAIL HOOK: swap DrawTrailPlaceholder for the trail editor.
+        .fullScreenCover(item: $viewModel.drawTrailRequest) { request in
+            DrawTrailPlaceholder(request: request)
+                .environment(toastCenter)
+        }
+    }
+
+    // MARK: - Sheet
+
+    private var sheetHeader: some View {
+        LayersSheetHeader(
+            layers: sortedLayers,
+            searchState: searchState,
+            isSearchFocused: $isSearchFocused,
+            detent: sheetDetent,
+            transitSettings: transitSettings,
+            onSearchTextChanged: {
+                searchState.debouncedSearch(places: places, transit: transitStore,
+                                            userLocation: locationManager.userLocation)
+            },
+            onCancelSearch: {
+                dismissSearch()
+                sheetDetent = .collapsed
+            },
+            onAddPlace: { viewModel.startNewPlace(at: nil) },
+            onDrawTrail: { viewModel.requestDrawTrail(in: nil) },
+            onNewLayer: { viewModel.activeSheet = .newLayer },
+            onOpenSettings: { viewModel.activeSheet = .settings }
+        )
+    }
+
+    private var sheetContent: some View {
+        LayersSheetContent(
+            layers: sortedLayers,
+            placeCount: places.count,
+            viewModel: viewModel,
+            filterVM: filterVM,
+            searchState: searchState,
+            transitSettings: transitSettings,
+            transitStore: transitStore,
+            timetable: timetable,
+            searchActions: SheetSearchActions(
+                onSelectPlace: { place in
+                    showResult(at: place.coordinate)
+                    viewModel.selectPlace(place)
+                },
+                onSelectStop: { stop in
+                    showResult(at: stop.coordinate)
+                    viewModel.showTransitArrivals(for: stop)
+                },
+                onSelectRoute: { route in
+                    dismissSearch()
+                    sheetDetent = .collapsed
+                    transitStore.toggleHighlightedRoute(route.id)
+                },
+                onSelectPOI: { item in
+                    showResult(at: item.placemark.coordinate)
+                    viewModel.showPOI(item)
+                }
+            )
+        )
     }
 
     // MARK: - Store feeding
@@ -187,15 +217,16 @@ struct MapScreen: View {
     // MARK: - Gestures
 
     private func handleTap(_ screenPoint: CGPoint, _ coordinate: CLLocationCoordinate2D?) {
-        // Dismiss keyboard if searching
+        // First tap on the map only dismisses the keyboard.
         if isSearchFocused {
             isSearchFocused = false
-            searchState.clearSearch()
             return
         }
         // If a sheet is already showing (from a previous tap), don't POI search
         if viewModel.activeSheet != nil { return }
         guard let coordinate else { return }
+        // TRAIL HOOK: hit-test trails here (TrailHitTester) and call
+        // `viewModel.showTrailDetail(trailId)` before falling back to POIs.
         poiSearchTask?.cancel()
         poiSearchTask = Task {
             try? await Task.sleep(for: .milliseconds(150))
@@ -229,9 +260,22 @@ struct MapScreen: View {
         ))
     }
 
+    /// A search result was picked: close search, drop the sheet and centre it.
+    private func showResult(at coordinate: CLLocationCoordinate2D) {
+        dismissSearch()
+        sheetDetent = .collapsed
+        focus(on: coordinate)
+    }
+
     private func dismissSearch() {
-        searchState.showSearchResults = false
-        searchState.searchText = ""
+        isSearchFocused = false
+        searchState.clearSearch()
+    }
+
+    private func cycleMapStyle() {
+        let next = mapStyleOption.next
+        mapStyleOption = next
+        toastCenter.show(next.rawValue, systemImage: next.icon, duration: .seconds(1.2))
     }
 
     // MARK: - Sheet Router
@@ -242,33 +286,17 @@ struct MapScreen: View {
         case .placeDetail(let place):
             PlaceDetailSheet(place: place)
                 .presentationDetents([.fraction(0.25), .medium, .large])
-                .presentationDragIndicator(.hidden)
+                .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
 
         case .poiDetail(let mapItem):
             POIAddToLayerView(mapItem: mapItem, onDismiss: { viewModel.dismissSheet() })
                 .presentationDetents([.fraction(0.25), .medium, .large])
-                .presentationDragIndicator(.hidden)
+                .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
 
-        case .layerSidebar:
-            HamburgerMenuView(
-                filterMode: $filterVM.filterMode,
-                transitSettings: transitSettings,
-                mapStyleOption: $mapStyleOption,
-                onSelectPlace: { place in
-                    viewModel.activeSheet = nil
-                    focus(on: place.coordinate)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        viewModel.selectPlace(place)
-                    }
-                }
-            )
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-
         case .newPlace(let coordinate):
-            PlaceFormView(coordinate: coordinate)
+            PlaceFormView(coordinate: coordinate, mapCenter: transitStore.region.center)
 
         case .transitArrivals(let stop):
             TransitArrivalsView(stop: stop,
@@ -276,6 +304,44 @@ struct MapScreen: View {
                 .presentationDetents([.fraction(0.3), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+
+        case .layerDetail(let id):
+            if let layer = layers.first(where: { $0.id == id }) {
+                NavigationStack {
+                    LayerDetailView(layer: layer)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") { viewModel.dismissSheet() }
+                            }
+                        }
+                }
+            } else {
+                missingLayer
+            }
+
+        case .newLayer:
+            LayerFormView(layer: nil)
+
+        case .editLayer(let id):
+            if let layer = layers.first(where: { $0.id == id }) {
+                LayerFormView(layer: layer)
+            } else {
+                missingLayer
+            }
+
+        case .trailDetail(let id):
+            // TRAIL HOOK: swap the placeholder for the trail detail view.
+            TrailDetailPlaceholder(trailId: id)
+                .presentationDetents([.medium, .large])
+
+        case .settings:
+            SettingsView()
         }
+    }
+
+    private var missingLayer: some View {
+        StatusView(status: .empty(title: "This layer was deleted", hint: nil,
+                                  systemImage: "square.3.layers.3d", action: nil))
+            .presentationDetents([.fraction(0.25)])
     }
 }

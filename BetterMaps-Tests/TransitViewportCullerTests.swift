@@ -43,7 +43,7 @@ final class TransitViewportCullerTests: XCTestCase {
         let result = TransitViewportCuller.visibleStops(grid: grid, viewport: viewport(span: 0.01),
                                                        enabled: Set(TransitLayerKind.allCases))
         XCTAssertEqual(result.filter { $0.kind != .bus }.count, 30, "every rail/DART/Luas stop survives")
-        XCTAssertEqual(result.filter { $0.kind == .bus }.count, TransitViewportCuller.busBudgetCity)
+        XCTAssertEqual(result.filter { $0.kind == .bus }.count, TransitViewportCuller.busBudgetStreet)
         // Rail-before-bus priority.
         XCTAssertTrue(result.prefix(30).allSatisfy { $0.kind != .bus })
     }
@@ -54,6 +54,12 @@ final class TransitViewportCullerTests: XCTestCase {
 
         let city = TransitViewportCuller.visibleStops(grid: grid, viewport: viewport(span: 0.03), enabled: [.bus])
         XCTAssertEqual(city.count, TransitViewportCuller.busBudgetCity)
+        XCTAssertEqual(TransitViewportCuller.busBudgetCity, 250, "city view (0.012–0.04) is capped at 250 bus stops")
+
+        // Just inside the top of the city band (viewport deltas are
+        // recomputed from edges, so stay clear of the exact boundary).
+        let cityEdge = TransitViewportCuller.visibleStops(grid: grid, viewport: viewport(span: 0.0399), enabled: [.bus])
+        XCTAssertEqual(cityEdge.count, TransitViewportCuller.busBudgetCity)
 
         let regional = TransitViewportCuller.visibleStops(grid: grid, viewport: viewport(span: 0.06), enabled: [.bus])
         XCTAssertEqual(regional.count, TransitViewportCuller.busBudgetRegional)
@@ -71,6 +77,40 @@ final class TransitViewportCullerTests: XCTestCase {
         XCTAssertFalse(droppedInView.isEmpty)
         let farthestKept = regional.map(d2).max() ?? 0
         XCTAssertTrue(droppedInView.allSatisfy { d2($0) >= farthestKept })
+    }
+
+    func testStreetBudgetBelowCityBand() {
+        let dense = TransitSpatialGrid(stops: stops(.bus, count: 2000, radius: 0.006, prefix: "s"))
+        let street = TransitViewportCuller.visibleStops(grid: dense, viewport: viewport(span: 0.0119), enabled: [.bus])
+        XCTAssertEqual(street.count, TransitViewportCuller.busBudgetStreet)
+        let justAbove = TransitViewportCuller.visibleStops(grid: dense, viewport: viewport(span: 0.0121), enabled: [.bus])
+        XCTAssertEqual(justAbove.count, TransitViewportCuller.busBudgetCity)
+    }
+
+    func testBusBudgetBands() {
+        XCTAssertEqual(TransitViewportCuller.busBudget(latDelta: 0.005), TransitViewportCuller.busBudgetStreet)
+        XCTAssertEqual(TransitViewportCuller.busBudget(latDelta: 0.012), TransitViewportCuller.busBudgetStreet)
+        XCTAssertEqual(TransitViewportCuller.busBudget(latDelta: 0.02), TransitViewportCuller.busBudgetCity)
+        XCTAssertEqual(TransitViewportCuller.busBudget(latDelta: 0.04), TransitViewportCuller.busBudgetCity)
+        XCTAssertEqual(TransitViewportCuller.busBudget(latDelta: 0.06), TransitViewportCuller.busBudgetRegional)
+    }
+
+    func testBusPinSizeByZoom() {
+        func size(_ d: Double) -> AnnotationSize { TransitViewportCuller.pinSize(for: .bus, latitudeDelta: d) }
+        XCTAssertEqual(size(0.04), .dot, "city zoom: dots, not a carpet of icons")
+        XCTAssertEqual(size(0.012), .dot)
+        XCTAssertEqual(size(0.0119), .compact)
+        XCTAssertEqual(size(0.005), .compact)
+        XCTAssertEqual(size(0.0049), .full)
+    }
+
+    func testRailPinsSwitchOneLevelEarlier() {
+        for kind in [TransitLayerKind.luas, .dart, .rail] {
+            XCTAssertEqual(TransitViewportCuller.pinSize(for: kind, latitudeDelta: 0.2), .dot)
+            XCTAssertEqual(TransitViewportCuller.pinSize(for: kind, latitudeDelta: 0.04), .compact)
+            XCTAssertEqual(TransitViewportCuller.pinSize(for: kind, latitudeDelta: 0.012), .compact)
+            XCTAssertEqual(TransitViewportCuller.pinSize(for: kind, latitudeDelta: 0.008), .full)
+        }
     }
 
     func testDisabledKindsAndMultiKindStops() {

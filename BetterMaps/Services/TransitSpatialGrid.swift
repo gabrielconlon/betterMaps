@@ -77,17 +77,44 @@ struct TransitSpatialGrid: Sendable {
 enum TransitViewportCuller {
     /// Bus stops are hidden above this latitude span.
     static let busMaxLatDelta = 0.08
-    /// At or below this span the city bus budget applies, above it the
-    /// regional one.
+    /// Above this span (up to `busMaxLatDelta`) the regional bus budget applies.
     static let cityLatDelta = 0.04
-    static let busBudgetCity = 400
+    /// At or below this span the street budget applies; between it and
+    /// `cityLatDelta`, the city one.
+    static let streetLatDelta = 0.012
+    static let busBudgetStreet = 400
+    static let busBudgetCity = 250
     static let busBudgetRegional = 150
     /// Each side of the viewport is grown by this fraction before querying,
     /// so small pans don't pop stops in at the edge.
     static let padding = 0.25
 
     static func busBudget(latDelta: Double) -> Int {
-        latDelta <= cityLatDelta ? busBudgetCity : busBudgetRegional
+        if latDelta <= streetLatDelta { return busBudgetStreet }
+        return latDelta <= cityLatDelta ? busBudgetCity : busBudgetRegional
+    }
+
+    // MARK: Pin size by zoom
+
+    /// Bus stops: `.dot` until the span drops below this, then `.compact`.
+    static let busCompactBelow = 0.012
+    /// Bus stops: `.full` (icon pin + name) only below this span.
+    static let busFullBelow = 0.005
+    /// Luas/DART/rail switch one level earlier: compact below the point bus
+    /// stops appear, full where bus turns compact.
+    static let railCompactBelow = busMaxLatDelta
+    static let railFullBelow = busCompactBelow
+
+    /// Pin presentation for a stop of `kind` at `latitudeDelta`. Keeps a city
+    /// view of hundreds of bus stops to small dots instead of a carpet of
+    /// overlapping icons.
+    static func pinSize(for kind: TransitLayerKind, latitudeDelta: Double) -> AnnotationSize {
+        let (compactBelow, fullBelow) = kind == .bus
+            ? (busCompactBelow, busFullBelow)
+            : (railCompactBelow, railFullBelow)
+        if latitudeDelta < fullBelow { return .full }
+        if latitudeDelta < compactBelow { return .compact }
+        return .dot
     }
 
     /// Visible stops for `viewport`: Luas/DART/rail first and uncapped, then

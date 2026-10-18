@@ -22,7 +22,7 @@ struct POIAddToLayerView: View {
     @State private var arrivalsStop: TransitStop?
     @State private var yelpBusiness: YelpBusiness?
     @State private var yelpReviews: [YelpReview] = []
-    @State private var isLoadingYelp = false
+    @State private var yelpStatus: InlineStatus?
 
     var isTransitPOI: Bool {
         guard let cat = mapItem.pointOfInterestCategory else { return false }
@@ -73,9 +73,9 @@ struct POIAddToLayerView: View {
                         // Open/closed status from Yelp
                         if let biz = yelpBusiness {
                             if let isOpen = biz.isCurrentlyOpen {
-                                Text(isOpen ? "Open Now" : "Closed")
+                                Text(isOpen ? "Open now" : "Closed")
                                     .font(.caption.bold())
-                                    .foregroundStyle(isOpen ? .green : .red)
+                                    .foregroundStyle(isOpen ? .green : .secondary)
                             }
                             if let price = biz.price {
                                 Text(price)
@@ -92,27 +92,12 @@ struct POIAddToLayerView: View {
                     }
 
                     Spacer()
-
-                    HStack(spacing: 10) {
-                        if isTransitPOI, let nearbyStop {
-                            Button(action: { arrivalsStop = nearbyStop }) {
-                                Image(systemName: "clock.badge")
-                                    .font(.title)
-                                    .foregroundStyle(.purple)
-                            }
-                        }
-                        Button(action: { showAddToLayer = true }) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title)
-                                .foregroundStyle(.blue)
-                        }
-                        Button(action: openInAppleMaps) {
-                            Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
-                                .font(.title)
-                                .foregroundStyle(.green)
-                        }
-                    }
                 }
+
+                PlaceActionRow(name: placeName, coordinate: mapItem.placemark.coordinate,
+                               primaryTitle: "Add to layer", primarySystemImage: "plus",
+                               onPrimary: { showAddToLayer = true },
+                               extra: arrivalsAction)
 
                 // --- Extended details (visible when swiped up) ---
 
@@ -204,38 +189,10 @@ struct POIAddToLayerView: View {
                     }
                 }
 
-                if isLoadingYelp {
-                    HStack {
-                        Spacer()
-                        ProgressView("Loading details...")
-                            .font(.caption)
-                        Spacer()
+                if let yelpStatus {
+                    StatusView(status: yelpStatus) { _ in
+                        Task { await loadYelpData() }
                     }
-                }
-
-                if !YelpService.isConfigured {
-                    Text("Add a Yelp API key in Settings for hours, photos & reviews.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 4)
-                }
-
-                // Action buttons
-                HStack(spacing: 12) {
-                    Button(action: { showAddToLayer = true }) {
-                        Label("Add to Layer", systemImage: "plus.circle.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button(action: openInAppleMaps) {
-                        Label("Open in Apple Maps", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
                 }
             }
             .padding(.horizontal)
@@ -267,27 +224,27 @@ struct POIAddToLayerView: View {
         }
     }
 
-    /// Hand off to Apple Maps with walking directions to this POI.
-    private func openInAppleMaps() {
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: mapItem.placemark.coordinate))
-        item.name = placeName
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
+    /// "Arrivals" for a transit POI once its stop is resolved.
+    private var arrivalsAction: PlaceActionRow.Extra? {
+        guard isTransitPOI, let nearbyStop else { return nil }
+        return PlaceActionRow.Extra(title: "Arrivals", systemImage: "clock") { arrivalsStop = nearbyStop }
     }
 
     // MARK: - Yelp
 
     private func loadYelpData() async {
         guard YelpService.isConfigured else { return }
-        isLoadingYelp = true
-        let service = YelpService()
-        if let biz = await service.searchBusiness(
-            name: placeName,
-            coordinate: mapItem.placemark.coordinate
-        ) {
-            yelpBusiness = biz
-            yelpReviews = await service.fetchReviews(businessId: biz.id)
+        yelpStatus = .loading("Loading reviews…")
+        switch await YelpService().lookup(name: placeName, coordinate: mapItem.placemark.coordinate) {
+        case .found(let business, let reviews):
+            yelpBusiness = business
+            yelpReviews = reviews
+            yelpStatus = nil
+        case .noMatch:
+            yelpStatus = nil
+        case .failed:
+            yelpStatus = .failed(message: "Couldn't load reviews right now", retryId: "yelp")
         }
-        isLoadingYelp = false
     }
 
     @ViewBuilder

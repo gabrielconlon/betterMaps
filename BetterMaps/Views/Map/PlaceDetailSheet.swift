@@ -9,10 +9,9 @@ struct PlaceDetailSheet: View {
     @Bindable var place: Place
 
     @State private var showEditForm = false
-    @State private var showAddToLayer = false
     @State private var yelpBusiness: YelpBusiness?
     @State private var yelpReviews: [YelpReview] = []
-    @State private var isLoadingYelp = false
+    @State private var yelpStatus: InlineStatus?
     @State private var mapItem: MKMapItem?
 
     var placeLayers: [Layer] {
@@ -44,9 +43,9 @@ struct PlaceDetailSheet: View {
 
                         // Open/closed from Yelp
                         if let biz = yelpBusiness, let isOpen = biz.isCurrentlyOpen {
-                            Text(isOpen ? "Open Now" : "Closed")
+                            Text(isOpen ? "Open now" : "Closed")
                                 .font(.caption.bold())
-                                .foregroundStyle(isOpen ? .green : .red)
+                                .foregroundStyle(isOpen ? .green : .secondary)
                         }
 
                         if !place.tags.isEmpty {
@@ -57,20 +56,11 @@ struct PlaceDetailSheet: View {
                     }
 
                     Spacer()
-
-                    HStack(spacing: 10) {
-                        Button(action: { showAddToLayer = true }) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title)
-                                .foregroundStyle(.blue)
-                        }
-                        Button(action: openInAppleMaps) {
-                            Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
-                                .font(.title)
-                                .foregroundStyle(.green)
-                        }
-                    }
                 }
+
+                PlaceActionRow(name: place.name, coordinate: place.coordinate,
+                               primaryTitle: "Edit", primarySystemImage: "pencil",
+                               onPrimary: { showEditForm = true })
 
                 // --- Extended details ---
                 Divider()
@@ -225,33 +215,11 @@ struct PlaceDetailSheet: View {
                     }
                 }
 
-                if isLoadingYelp {
-                    HStack { Spacer(); ProgressView("Loading details...").font(.caption); Spacer() }
-                }
-
-                // Action buttons
-                HStack(spacing: 12) {
-                    Button(action: { showAddToLayer = true }) {
-                        Label("Add to Layer", systemImage: "plus.circle.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
+                if let yelpStatus {
+                    StatusView(status: yelpStatus) { _ in
+                        Task { await loadYelpData() }
                     }
-                    .buttonStyle(.borderedProminent)
-
-                    Button(action: openInAppleMaps) {
-                        Label("Open in Apple Maps", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
                 }
-
-                Button(action: { showEditForm = true }) {
-                    Label("Edit", systemImage: "pencil")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
             }
             .padding(.horizontal)
             .padding(.bottom)
@@ -263,16 +231,6 @@ struct PlaceDetailSheet: View {
         .sheet(isPresented: $showEditForm) {
             PlaceFormView(place: place)
         }
-        .sheet(isPresented: $showAddToLayer) {
-            SavedPlaceLayerSheet(place: place)
-        }
-    }
-
-    /// Hand off to Apple Maps with walking directions to this place.
-    private func openInAppleMaps() {
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: place.coordinate))
-        item.name = place.name
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
     }
 
     private func loadMapItem() async {
@@ -312,16 +270,17 @@ struct PlaceDetailSheet: View {
 
     private func loadYelpData() async {
         guard YelpService.isConfigured else { return }
-        isLoadingYelp = true
-        let service = YelpService()
-        if let biz = await service.searchBusiness(
-            name: place.name,
-            coordinate: place.coordinate
-        ) {
-            yelpBusiness = biz
-            yelpReviews = await service.fetchReviews(businessId: biz.id)
+        yelpStatus = .loading("Loading reviews…")
+        switch await YelpService().lookup(name: place.name, coordinate: place.coordinate) {
+        case .found(let business, let reviews):
+            yelpBusiness = business
+            yelpReviews = reviews
+            yelpStatus = nil
+        case .noMatch:
+            yelpStatus = nil
+        case .failed:
+            yelpStatus = .failed(message: "Couldn't load reviews right now", retryId: "yelp")
         }
-        isLoadingYelp = false
     }
 
     @ViewBuilder
@@ -332,81 +291,6 @@ struct PlaceDetailSheet: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
-        }
-    }
-}
-
-// MARK: - Manage layers for an existing saved place
-
-struct SavedPlaceLayerSheet: View {
-    @Environment(\.modelContext) private var modelContext
-    @Environment(\.dismiss) private var dismiss
-    @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
-    @Bindable var place: Place
-
-    @State private var showCreateLayer = false
-
-    var placeLayerIDs: Set<UUID> {
-        Set((place.layers ?? []).map { $0.id })
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Current Layers") {
-                    if placeLayerIDs.isEmpty {
-                        Text("Not in any layers yet.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("All Layers") {
-                    ForEach(allLayers) { layer in
-                        Button(action: { toggleLayer(layer) }) {
-                            HStack {
-                                Image(systemName: layer.symbolName)
-                                    .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
-                                    .frame(width: 24)
-                                Text(layer.name)
-                                Spacer()
-                                if placeLayerIDs.contains(layer.id) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.blue)
-                                } else {
-                                    Image(systemName: "circle")
-                                        .foregroundStyle(.gray.opacity(0.4))
-                                }
-                            }
-                        }
-                        .tint(.primary)
-                    }
-
-                    Button(action: { showCreateLayer = true }) {
-                        Label("Create New Layer", systemImage: "plus.circle")
-                    }
-                }
-            }
-            .navigationTitle("Manage Layers")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .sheet(isPresented: $showCreateLayer) {
-                LayerFormView(layer: nil)
-            }
-        }
-    }
-
-    private func toggleLayer(_ layer: Layer) {
-        if placeLayerIDs.contains(layer.id) {
-            // Remove from layer
-            layer.places?.removeAll { $0.id == place.id }
-        } else {
-            // Add to layer
-            if layer.places == nil { layer.places = [] }
-            layer.places?.append(place)
         }
     }
 }

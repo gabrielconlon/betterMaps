@@ -7,7 +7,8 @@ struct TransitLayerContent: MapContent {
     let stops: [TransitStop]
     let lines: [TransitLine]
     let highlightedRoute: [[CLLocationCoordinate2D]]?
-    let size: AnnotationSize
+    /// Span the visible stops were culled for; picks each stop's pin size.
+    let latitudeDelta: Double
     let onTapStop: (TransitStop) -> Void
 
     var body: some MapContent {
@@ -23,10 +24,11 @@ struct TransitLayerContent: MapContent {
             }
         }
 
-        // Dots carry no title but stay tappable — the pin itself provides a
-        // 24pt hit area.
+        // Only full pins carry a title. Dots stay tappable — the pin itself
+        // provides a 24pt hit area.
         ForEach(stops) { stop in
-            Annotation(size == .dot ? "" : stop.name, coordinate: stop.coordinate) {
+            let size = TransitViewportCuller.pinSize(for: stop.kind, latitudeDelta: latitudeDelta)
+            Annotation(size == .full ? stop.name : "", coordinate: stop.coordinate) {
                 TransitStopPin(stop: stop, size: size)
                     .onTapGesture { onTapStop(stop) }
             }
@@ -40,12 +42,14 @@ extension TransitLayerContent {
         var stops: [TransitStop] = []
         var lines: [TransitLine] = []
         var highlightedRoute: [[CLLocationCoordinate2D]]?
+        var latitudeDelta: Double = 0.2
 
         @MainActor
         init(_ store: TransitLayerStore) {
             stops = store.visibleStops
             lines = store.visibleLines
             highlightedRoute = store.highlightedRoute
+            latitudeDelta = store.region.span.latitudeDelta
         }
     }
 }

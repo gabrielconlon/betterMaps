@@ -28,6 +28,21 @@ struct TransitBundle: Sendable {
     private struct LinesFile: Decodable { let lines: [TransitLine] }
     private struct RoutesFile: Decodable { let routes: [TransitRoute] }
 
+    /// Build date of the bundled stops file (`"built":"YYYY-MM-DD"` near its
+    /// start), read from the first bytes only so Settings never decodes the
+    /// whole bundle.
+    static func builtDate(in bundle: Bundle) -> Date? {
+        guard let url = bundle.url(forResource: "transit_stops", withExtension: "json"),
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 512),
+              case let text = String(decoding: head, as: UTF8.self),
+              let range = text.range(of: #""built":"(\d{4}-\d{2}-\d{2})""#, options: .regularExpression)
+        else { return nil }
+        let day = text[range].dropFirst(9).prefix(10)
+        return BusTimetableService.isoDay(String(day))
+    }
+
     static func load(_ urls: URLs) throws -> TransitBundle {
         let decoder = JSONDecoder()
         return TransitBundle(
