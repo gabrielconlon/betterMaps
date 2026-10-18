@@ -1,8 +1,9 @@
 import SwiftUI
 import MapKit
 
-/// Floating map chrome: the legend top-left and a top-right control stack
-/// (user location, map style, compass). Both sit at the top so they never
+/// Floating map chrome: the legend top-left (with the trail-draft resume
+/// chip under it) and a top-right control stack (user location, map style,
+/// compass). Both sit at the top so they never
 /// meet the bottom sheet; they fade out while the sheet is expanded and
 /// covers them.
 struct MapChrome: View {
@@ -11,11 +12,19 @@ struct MapChrome: View {
     let legendLayers: [LayerLite]
     let legendEntries: [LegendEntry]
     let isHidden: Bool
+    /// Shown while a kept trail draft exists.
+    var draftChip: DraftResumeChip? = nil
     let onCycleMapStyle: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            LegendStrip(layers: legendLayers, entries: legendEntries)
+            VStack(alignment: .leading, spacing: 8) {
+                LegendStrip(layers: legendLayers, entries: legendEntries)
+                if let draftChip {
+                    draftChip
+                        .transition(.opacity)
+                }
+            }
             Spacer(minLength: 0)
             controls
         }

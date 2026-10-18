@@ -82,7 +82,7 @@ struct LayerCard: View {
     let layer: Layer
     let onOpen: () -> Void
     let onToggle: () -> Void
-    /// TRAIL HOOK: starts the trail editor in this layer.
+    /// Starts the trail editor in this layer.
     let onDraw: () -> Void
 
     private var isTrailLayer: Bool { layer.kind == .waypointPath }

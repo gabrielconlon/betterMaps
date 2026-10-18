@@ -11,14 +11,17 @@ struct TrailDetailSheet: View {
 
     let trail: Trail
     let onEdit: () -> Void
+    /// Called after the trail has been deleted from the context.
+    let onDelete: (() -> Void)?
 
     @State private var confirmDelete = false
     /// Set before deleting so no further body pass reads the deleted model.
     @State private var isDeleted = false
 
-    init(trail: Trail, onEdit: @escaping () -> Void) {
+    init(trail: Trail, onEdit: @escaping () -> Void, onDelete: (() -> Void)? = nil) {
         self.trail = trail
         self.onEdit = onEdit
+        self.onDelete = onDelete
     }
 
     private var places: [Place] {
@@ -147,8 +150,10 @@ struct TrailDetailSheet: View {
         }
         isDeleted = true
         dismiss()
+        let onDelete = onDelete
         Task { @MainActor in
             TrailCommitter.delete(target, in: modelContext)
+            onDelete?()
         }
     }
 

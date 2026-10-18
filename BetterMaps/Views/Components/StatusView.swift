@@ -92,7 +92,7 @@ struct StatusView: View {
     }
 }
 
-/// Placeholder rows to hold a list's shape while it loads.
+/// Skeleton rows to hold a list's shape while it loads.
 struct SkeletonRows: View {
     let count: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

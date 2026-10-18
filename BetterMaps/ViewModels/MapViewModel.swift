@@ -7,8 +7,11 @@ import Observation
 enum ActiveSheet: Identifiable {
     case placeDetail(Place)
     case poiDetail(MKMapItem)
-    /// New place form. `nil` coordinate starts the pin at the map centre.
-    case newPlace(CLLocationCoordinate2D?)
+    /// New place form. `nil` coordinate starts the pin at the map centre;
+    /// `name` and `layerId` prefill it (from the quick-add sheet).
+    case newPlace(CLLocationCoordinate2D?, name: String? = nil, layerId: UUID? = nil)
+    /// Long-press fast capture: name + one-tap "Add to <layer>".
+    case quickAdd(CLLocationCoordinate2D)
     case transitArrivals(TransitStop)
     case layerDetail(UUID)
     case newLayer
@@ -21,6 +24,7 @@ enum ActiveSheet: Identifiable {
         case .placeDetail(let place): return "place-\(place.id)"
         case .poiDetail(let item): return "poi-\(item.name ?? "unknown")-\(item.placemark.coordinate.latitude)"
         case .newPlace: return "newPlace"
+        case .quickAdd(let c): return "quickAdd-\(c.latitude),\(c.longitude)"
         case .transitArrivals(let stop): return "transit-\(stop.id)"
         case .layerDetail(let id): return "layer-\(id)"
         case .newLayer: return "newLayer"
@@ -33,17 +37,20 @@ enum ActiveSheet: Identifiable {
 
 /// A request to open the trail editor. `layerId` is the trail layer the user
 /// started from (a LayerCard "Draw" button); `nil` when started from the
-/// sheet's "+" menu, where the editor picks or creates the layer.
-///
-/// TRAIL HOOK: MapScreen observes `MapViewModel.drawTrailRequest`; the trail
-/// editor is wired in after the Trails work merges.
+/// sheet's "+" menu, where MapScreen picks or creates the layer before
+/// presenting. `trailId` edits an existing trail; `resuming` reopens a kept
+/// draft.
 struct DrawTrailRequest: Identifiable, Equatable, Sendable {
     let id: UUID
     let layerId: UUID?
+    let trailId: UUID?
+    let resuming: TrailDraft?
 
-    init(layerId: UUID?) {
+    init(layerId: UUID?, trailId: UUID? = nil, resuming: TrailDraft? = nil) {
         self.id = UUID()
         self.layerId = layerId
+        self.trailId = trailId
+        self.resuming = resuming
     }
 }
 
@@ -53,7 +60,8 @@ class MapViewModel {
     var selectedPlace: Place?
     var activeSheet: ActiveSheet?
     var longPressCoordinate: CLLocationCoordinate2D?
-    /// TRAIL HOOK: non-nil while the trail editor should be open.
+    /// Non-nil while the trail editor is open. MapScreen clears it when the
+    /// editor finishes.
     var drawTrailRequest: DrawTrailRequest?
 
     func selectPlace(_ place: Place) {
@@ -70,6 +78,12 @@ class MapViewModel {
         activeSheet = .newPlace(coordinate)
     }
 
+    /// Long-press capture: the quick-add sheet for a dropped pin.
+    func startQuickAdd(at coordinate: CLLocationCoordinate2D) {
+        longPressCoordinate = coordinate
+        activeSheet = .quickAdd(coordinate)
+    }
+
     func showTransitArrivals(for stop: TransitStop) {
         activeSheet = .transitArrivals(stop)
     }
@@ -78,14 +92,19 @@ class MapViewModel {
         activeSheet = .layerDetail(layerId)
     }
 
-    /// TRAIL HOOK: a trail was tapped (map hit-test or list row).
+    /// A trail was tapped (map hit-test or list row).
     func showTrailDetail(_ trailId: UUID) {
         activeSheet = .trailDetail(trailId)
     }
 
-    /// TRAIL HOOK: open the trail editor, optionally inside `layerId`.
-    func requestDrawTrail(in layerId: UUID?) {
-        drawTrailRequest = DrawTrailRequest(layerId: layerId)
+    /// Open the trail editor, optionally inside `layerId` / on `trailId`.
+    func requestDrawTrail(in layerId: UUID?, trailId: UUID? = nil, resuming: TrailDraft? = nil) {
+        drawTrailRequest = DrawTrailRequest(layerId: layerId, trailId: trailId, resuming: resuming)
+    }
+
+    var isQuickAddOpen: Bool {
+        if case .quickAdd = activeSheet { return true }
+        return false
     }
 
     func dismissSheet() {

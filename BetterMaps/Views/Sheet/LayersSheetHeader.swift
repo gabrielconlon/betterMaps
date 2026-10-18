@@ -12,7 +12,7 @@ struct LayersSheetHeader: View {
     let onSearchTextChanged: () -> Void
     let onCancelSearch: () -> Void
     let onAddPlace: () -> Void
-    /// TRAIL HOOK: opens the trail editor with no layer chosen.
+    /// Opens the trail editor; MapScreen picks or creates the trail layer.
     let onDrawTrail: () -> Void
     let onNewLayer: () -> Void
     let onOpenSettings: () -> Void

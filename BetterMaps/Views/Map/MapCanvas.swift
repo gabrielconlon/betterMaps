@@ -13,18 +13,27 @@ struct MapCanvas: View {
     /// drive this map.
     let mapScope: Namespace.ID
     let transit: TransitLayerContent.Inputs
+    /// Long-press pin shown while the quick-add sheet is open.
+    let droppedPin: CLLocationCoordinate2D?
 
     let onTapPlace: (UUID) -> Void
     let onTapCluster: (ClusterLite) -> Void
     let onTapStop: (TransitStop) -> Void
-    /// Single tap on empty map: screen point and its coordinate (nil if the
-    /// proxy could not convert it).
-    let onTap: (CGPoint, CLLocationCoordinate2D?) -> Void
-    /// Long press on the map; same payload as `onTap`.
+    /// Single tap on empty map: screen point, its coordinate (nil if the
+    /// proxy could not convert it) and the map proxy for screen-space hit
+    /// testing (trails).
+    let onTap: (CGPoint, CLLocationCoordinate2D?, MapProxy) -> Void
+    /// Long press on the map, fired as soon as the press is recognised (not
+    /// on release): screen point and coordinate.
     let onLongPress: (CGPoint, CLLocationCoordinate2D?) -> Void
+    /// Every camera change while it moves (cancels in-flight tap lookups).
+    var onCameraChange: (MKCoordinateRegion) -> Void = { _ in }
     /// Fires once when a camera gesture settles (keyboard dismissal, transit
     /// viewport refresh).
     let onCameraSettled: (MKCoordinateRegion) -> Void
+
+    /// True once the current long press has fired, until the finger lifts.
+    @State private var longPressFired = false
 
     var body: some View {
         GeometryReader { geo in
@@ -43,6 +52,12 @@ struct MapCanvas: View {
                                         highlightedRoute: transit.highlightedRoute,
                                         latitudeDelta: transit.latitudeDelta,
                                         onTapStop: onTapStop)
+                    if let droppedPin {
+                        Annotation("Dropped Pin", coordinate: droppedPin, anchor: .bottom) {
+                            DroppedPinAnnotation()
+                        }
+                        .annotationTitles(.hidden)
+                    }
                 }
                 .mapStyle(mapStyle)
                 // Intentionally NOT using .ignoresSafeArea(). Even when applied
@@ -53,22 +68,31 @@ struct MapCanvas: View {
                 // stay clear of the bottom sheet.
                 .mapControls { }
                 .onTapGesture { screenPoint in
-                    onTap(screenPoint, proxy.convert(screenPoint, from: .local))
+                    onTap(screenPoint, proxy.convert(screenPoint, from: .local), proxy)
                 }
                 // Long-press to drop a pin at the press location.
                 // SwiftUI's plain .onLongPressGesture has no location, so we sequence a
                 // zero-distance DragGesture after a LongPressGesture to capture the screen
-                // point, then convert it through the MapReader proxy.
+                // point, then convert it through the MapReader proxy. It fires on the
+                // drag's first change — the moment the press is recognised — so the pin
+                // and haptic land while the finger is still down.
                 .gesture(
                     LongPressGesture(minimumDuration: 0.5)
                         .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
+                        .onChanged { value in
+                            guard !longPressFired, case .second(true, let drag?) = value else { return }
+                            longPressFired = true
+                            onLongPress(drag.location, proxy.convert(drag.location, from: .local))
+                        }
                         .onEnded { value in
-                            guard case .second(true, let drag?) = value else { return }
+                            defer { longPressFired = false }
+                            guard !longPressFired, case .second(true, let drag?) = value else { return }
                             onLongPress(drag.location, proxy.convert(drag.location, from: .local))
                         }
                 )
                 .onMapCameraChange(frequency: .continuous) { context in
                     store.region = context.region
+                    onCameraChange(context.region)
                     if store.mapSize != geo.size { store.mapSize = geo.size }
                 }
                 .onMapCameraChange(frequency: .onEnd) { context in

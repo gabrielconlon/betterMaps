@@ -16,6 +16,9 @@ struct PlaceFormView: View {
     /// explicit coordinate. When both are nil the pin starts unset and the user taps.
     let mapCenter: CLLocationCoordinate2D?
     let targetLayer: Layer?
+    /// Prefills for a new place (from the quick-add sheet's "More details…").
+    let initialName: String?
+    let preselectedLayerId: UUID?
 
     @State private var name: String = ""
     @State private var notes: String = ""
@@ -36,11 +39,15 @@ struct PlaceFormView: View {
     init(place: Place? = nil,
          coordinate: CLLocationCoordinate2D? = nil,
          layer: Layer? = nil,
-         mapCenter: CLLocationCoordinate2D? = nil) {
+         mapCenter: CLLocationCoordinate2D? = nil,
+         name: String? = nil,
+         preselectedLayerId: UUID? = nil) {
         self.place = place
         self.initialCoordinate = coordinate
         self.targetLayer = layer
         self.mapCenter = mapCenter
+        self.initialName = name
+        self.preselectedLayerId = preselectedLayerId
     }
 
     // MARK: Derived state
@@ -220,9 +227,13 @@ struct PlaceFormView: View {
             latitude = place.latitude
             longitude = place.longitude
             photoData = place.photoData
-        } else if let start = initialCoordinate ?? mapCenter {
-            latitude = start.latitude
-            longitude = start.longitude
+        } else {
+            if let start = initialCoordinate ?? mapCenter {
+                latitude = start.latitude
+                longitude = start.longitude
+            }
+            if let initialName { name = initialName }
+            if let preselectedLayerId { selectedLayerIds = [preselectedLayerId] }
         }
         recenterOnPin()
         initialSnapshot = currentSnapshot
