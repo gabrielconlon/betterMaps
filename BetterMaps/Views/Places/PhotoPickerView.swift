@@ -26,7 +26,10 @@ struct PhotoPickerView: View {
                                     }) {
                                         Image(systemName: "xmark.circle.fill")
                                             .foregroundStyle(.white, .red)
+                                            .frame(width: 44, height: 44, alignment: .topTrailing)
+                                            .contentShape(Rectangle())
                                     }
+                                    .accessibilityLabel("Remove photo \(index + 1)")
                                     .offset(x: 4, y: -4)
                                 }
                             }

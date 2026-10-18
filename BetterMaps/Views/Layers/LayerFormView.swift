@@ -1,9 +1,12 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct LayerFormView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    /// Optional screen-level toast host. When absent the form confirms with a haptic only.
+    @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
 
     let layer: Layer?
@@ -13,15 +16,29 @@ struct LayerFormView: View {
     @State private var selectedSymbol: String = "mappin"
     @State private var selectedKind: LayerKind = .places
     @State private var lineWidth: Double = 4.0
-    @State private var showSaveToast = false
+    @State private var showDiscardConfirm = false
+    @State private var initialSnapshot: Snapshot? = nil
 
     var isEditing: Bool { layer != nil }
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var currentSnapshot: Snapshot {
+        Snapshot(name: name, colorHex: selectedColorHex, symbol: selectedSymbol,
+                 kind: selectedKind, lineWidth: lineWidth)
+    }
+
+    private var hasUnsavedEdits: Bool {
+        guard let initialSnapshot else { return false }
+        return initialSnapshot != currentSnapshot
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Name") {
                     TextField("Layer name", text: $name)
+                        .textInputAutocapitalization(.words)
                 }
 
                 Section {
@@ -107,14 +124,26 @@ struct LayerFormView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { attemptCancel() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(trimmedName.isEmpty)
                 }
             }
+            // Swipe-to-dismiss must not silently drop edits either.
+            .interactiveDismissDisabled(hasUnsavedEdits)
+            .confirmationDialog("Discard changes?",
+                                isPresented: $showDiscardConfirm,
+                                titleVisibility: .visible) {
+                Button("Discard", role: .destructive) { dismiss() }
+                Button("Keep Editing", role: .cancel) {}
+            } message: {
+                Text(isEditing ? "Your edits to this layer will be lost."
+                               : "This layer hasn't been created.")
+            }
             .onAppear {
+                guard initialSnapshot == nil else { return }
                 if let layer {
                     name = layer.name
                     selectedColorHex = layer.colorHex
@@ -122,15 +151,24 @@ struct LayerFormView: View {
                     selectedKind = layer.kind
                     lineWidth = layer.lineWidth
                 }
+                initialSnapshot = currentSnapshot
             }
-            .toast(isPresented: $showSaveToast, message: layer != nil ? "Layer updated!" : "Layer created!")
-            .sensoryFeedback(.success, trigger: showSaveToast)
+        }
+    }
+
+    private func attemptCancel() {
+        if hasUnsavedEdits {
+            showDiscardConfirm = true
+        } else {
+            dismiss()
         }
     }
 
     private func save() {
+        let finalName = trimmedName
+        guard !finalName.isEmpty else { return }
         if let layer {
-            layer.name = name.trimmingCharacters(in: .whitespaces)
+            layer.name = finalName
             layer.colorHex = selectedColorHex
             layer.symbolName = selectedSymbol
             layer.kind = selectedKind
@@ -138,7 +176,7 @@ struct LayerFormView: View {
         } else {
             let nextOrder = (allLayers.map(\.sortOrder).max() ?? -1) + 1
             let newLayer = Layer(
-                name: name.trimmingCharacters(in: .whitespaces),
+                name: finalName,
                 colorHex: selectedColorHex,
                 symbolName: selectedSymbol,
                 sortOrder: nextOrder,
@@ -147,7 +185,21 @@ struct LayerFormView: View {
             )
             modelContext.insert(newLayer)
         }
-        showSaveToast = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { dismiss() }
+        // Confirm immediately and close; no artificial delay.
+        if let toastCenter {
+            // The toast host plays the success haptic when it presents.
+            toastCenter.show(isEditing ? "Layer updated" : "Layer created")
+        } else {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        dismiss()
+    }
+
+    private struct Snapshot: Equatable {
+        var name: String
+        var colorHex: String
+        var symbol: String
+        var kind: LayerKind
+        var lineWidth: Double
     }
 }
