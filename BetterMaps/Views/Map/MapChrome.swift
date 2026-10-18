@@ -90,10 +90,13 @@ struct MapBottomBar: View {
 /// shown beneath the button while the panel is closed.
 struct MapLayersOverlay: View {
     @Binding var showFavoritesPanel: Bool
-    @Binding var showTransitStops: Set<TransitStop.TransitStopType>
+    let transitSettings: TransitLayerSettings
+    let highlightedRouteId: String?
     @Binding var mapStyleOption: MapStyleOption
     let legendLayers: [LayerLite]
     let legendEntries: [LegendEntry]
+    /// A favorite-route chip was tapped (draws / clears it on the map).
+    let onSelectRoute: (FavoriteTransitRoute) -> Void
 
     /// Reserve enough vertical room for the bottom bar (search field + buttons).
     /// 56pt button stack + 8pt bottom padding + ~12pt buffer above the search bar.
@@ -113,14 +116,11 @@ struct MapLayersOverlay: View {
                 VStack(alignment: .leading, spacing: 8) {
                     toggleButton
                     FavoritesPanel(
-                        showTransitStops: $showTransitStops,
+                        transitSettings: transitSettings,
+                        highlightedRouteId: highlightedRouteId,
                         isPresented: $showFavoritesPanel,
                         mapStyle: $mapStyleOption,
-                        onSelectRoute: { _ in
-                            // Route drawing was removed with the planner; the
-                            // chip just closes the panel until phase 2 rewires it.
-                            close()
-                        }
+                        onSelectRoute: onSelectRoute
                     )
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 }

@@ -43,11 +43,13 @@ struct FavoritesPanel: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Layer.sortOrder) private var layers: [Layer]
     @Query(sort: \FavoriteTransitRoute.sortOrder) private var favoriteRoutes: [FavoriteTransitRoute]
-    @Binding var showTransitStops: Set<TransitStop.TransitStopType>
+    let transitSettings: TransitLayerSettings
+    /// The favorite route currently drawn on the map, if any.
+    var highlightedRouteId: String? = nil
     @Binding var isPresented: Bool
     @Binding var mapStyle: MapStyleOption
-    /// Called when the user taps a favorited-route chip. Route drawing on the
-    /// map was removed with the planner; the host decides what to do here.
+    /// Called when the user taps a favorited-route chip: the host draws the
+    /// route on the map (tapping again clears it).
     var onSelectRoute: ((FavoriteTransitRoute) -> Void)? = nil
 
     // Map style favorites stay AppStorage-backed; they're a UI preference,
@@ -71,7 +73,7 @@ struct FavoritesPanel: View {
 
     /// One row per transit mode for the chip strip.
     private struct TransitMode: Identifiable {
-        let id: TransitStop.TransitStopType
+        let id: TransitLayerKind
         let label: String
         let icon: String
         let color: Color
@@ -157,7 +159,7 @@ struct FavoritesPanel: View {
 
     @ViewBuilder
     private func transitModeChip(_ mode: TransitMode) -> some View {
-        let isOn = showTransitStops.contains(mode.id)
+        let isOn = transitSettings.isEnabled(mode.id)
 
         VStack(spacing: 2) {
             Image(systemName: mode.icon)
@@ -172,7 +174,7 @@ struct FavoritesPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
-            toggleSet(&showTransitStops, type: mode.id)
+            transitSettings.toggle(mode.id)
         }
     }
 
@@ -199,6 +201,11 @@ struct FavoritesPanel: View {
             .padding(.vertical, 6)
             .background(bgColor)
             .clipShape(Capsule())
+            .overlay {
+                if highlightedRouteId == route.routeId {
+                    Capsule().strokeBorder(Color.primary, lineWidth: 2)
+                }
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -223,9 +230,9 @@ struct FavoritesPanel: View {
             HStack {
                 sectionHeader("My Layers")
                 Spacer()
-                if !showTransitStops.isEmpty {
+                if !transitSettings.enabledKinds.isEmpty {
                     Button(action: {
-                        showTransitStops.removeAll()
+                        transitSettings.disableAll()
                     }) {
                         Label("Hide Transit", systemImage: "eye.slash")
                             .font(.caption2)
@@ -336,9 +343,5 @@ struct FavoritesPanel: View {
             }
             .buttonStyle(.plain)
         }
-    }
-
-    private func toggleSet(_ set: inout Set<TransitStop.TransitStopType>, type: TransitStop.TransitStopType) {
-        if set.contains(type) { set.remove(type) } else { set.insert(type) }
     }
 }

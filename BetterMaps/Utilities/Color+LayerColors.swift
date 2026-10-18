@@ -130,8 +130,7 @@ enum TransitColors {
     static let dartPin    = Color(red: 1.00, green: 0.72, blue: 0.48)  // pastel peach
     static let railPin    = Color(red: 0.76, green: 0.61, blue: 0.91)  // pastel lilac
 
-    // Hex equivalents — used by TransitStopType.colorHex for pin rendering and
-    // by sidebar legends. Keep in lock-step with the Color values above.
+    // Hex equivalents — used by `pinHex(_:)` and by sidebar legends. Keep in lock-step with the Color values above.
     static let busPinHex     = "#75A8FF"
     static let luasRedPinHex = "#FF8C8C"
     static let luasGrnPinHex = "#7FCEA1"
@@ -148,6 +147,41 @@ enum TransitColors {
         case .rail: return railPin.opacity(0.7)
         }
     }
+
+    /// Pin hex for a network (Luas = Green; Red-line stops use `pin(for:)`).
+    static func pinHex(_ kind: TransitLayerKind) -> String {
+        switch kind {
+        case .bus:  return busPinHex
+        case .luas: return luasGrnPinHex
+        case .dart: return dartPinHex
+        case .rail: return railPinHex
+        }
+    }
+
+    static func pin(_ kind: TransitLayerKind) -> Color {
+        switch kind {
+        case .bus:  return busPin
+        case .luas: return luasGrnPin
+        case .dart: return dartPin
+        case .rail: return railPin
+        }
+    }
+
+    /// Pin color for a stop: Luas Red-line stops are coral, everything else
+    /// takes its network color.
+    static func pin(for stop: TransitStop) -> Color {
+        if stop.kind == .luas && stop.line == "red" { return luasRedPin }
+        return pin(stop.kind)
+    }
+
+    /// Stroke for a network line; the Luas Red line is coral.
+    static func line(for line: TransitLine) -> Color {
+        if line.kind == .luas && line.line == "red" { return luasRedLayer }
+        return layer(line.kind)
+    }
+
+    /// Highlighted (favorite-chip) route stroke.
+    static let highlightedRoute = Color.blue.opacity(0.85)
 
     /// Luas Red line — pastel coral with the same .opacity treatment as the
     /// other network lines so all four (LuasRed/LuasGreen/DART/Rail) read

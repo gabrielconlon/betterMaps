@@ -11,6 +11,8 @@ struct MapSearchResults: View {
     let searchState: SearchState
     let onSelectPlace: (Place) -> Void
     let onSelectStop: (TransitStop) -> Void
+    /// Draws the route on the map.
+    let onSelectRoute: (TransitRoute) -> Void
     let onSelectPOI: (MKMapItem) -> Void
 
     var hasResults: Bool {
@@ -80,27 +82,22 @@ struct MapSearchResults: View {
 
     @ViewBuilder
     private var routeResults: some View {
-        ForEach(searchState.routeSearchResults, id: \.routeId) { route in
+        ForEach(searchState.routeSearchResults) { route in
             HStack(spacing: 10) {
-                Button(action: {
-                    // Route drawing was removed with the planner; phase 2
-                    // rewires this. For now a tap just clears the search.
-                    searchState.showSearchResults = false
-                    searchState.searchText = ""
-                }) {
+                Button(action: { onSelectRoute(route) }) {
                     HStack(spacing: 10) {
-                        Image(systemName: route.routeType == 0 ? "tram.fill" : (route.routeType == 2 ? "train.side.front.car" : "bus.fill"))
+                        Image(systemName: route.type == 0 ? "tram.fill" : (route.type == 2 ? "train.side.front.car" : "bus.fill"))
                             .foregroundStyle(.white)
                             .font(.caption.bold())
                             .frame(width: 28, height: 28)
-                            .background(route.routeType == 0 ? .green : (route.routeType == 2 ? .orange : .blue))
+                            .background(TransitColors.pin(route.kind))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Route \(route.routeName)")
+                            Text("Route \(route.short)")
                                 .font(.subheadline.bold())
                                 .foregroundStyle(.primary)
-                            if !route.longName.isEmpty {
-                                Text(route.longName)
+                            if !route.long.isEmpty {
+                                Text(route.long)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -117,9 +114,9 @@ struct MapSearchResults: View {
 
                 // Star toggle — pin/unpin this route to the layers panel quick-access strip.
                 Button(action: { toggleFavoriteRoute(route) }) {
-                    Image(systemName: isRouteFavorited(route.routeId) ? "star.fill" : "star")
+                    Image(systemName: isRouteFavorited(route.id) ? "star.fill" : "star")
                         .font(.subheadline)
-                        .foregroundStyle(isRouteFavorited(route.routeId) ? .yellow : .secondary)
+                        .foregroundStyle(isRouteFavorited(route.id) ? .yellow : .secondary)
                         .frame(width: 32, height: 32)
                         .contentShape(Rectangle())
                 }
@@ -136,23 +133,23 @@ struct MapSearchResults: View {
         ForEach(searchState.transitSearchResults.prefix(5)) { stop in
             Button(action: { onSelectStop(stop) }) {
                 HStack(spacing: 10) {
-                    Image(systemName: stop.type.systemImage)
+                    Image(systemName: stop.kind.systemImage)
                         .foregroundStyle(.white)
                         .font(.caption.bold())
                         .frame(width: 28, height: 28)
-                        .background(Color(hex: stop.type.colorHex) ?? .blue)
+                        .background(TransitColors.pin(for: stop))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(stop.name)
                             .font(.subheadline.bold())
                             .foregroundStyle(.primary)
-                        Text(stop.type.displayName)
+                        Text(stop.code.map { "\(stop.kind.displayName) · Stop \($0)" } ?? stop.kind.displayName)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Image(systemName: "arrow.right.circle")
-                        .foregroundStyle(Color(hex: stop.type.colorHex) ?? .blue)
+                        .foregroundStyle(TransitColors.pin(for: stop))
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -203,17 +200,17 @@ struct MapSearchResults: View {
         favoriteRoutes.contains { $0.routeId == routeId }
     }
 
-    private func toggleFavoriteRoute(_ route: (routeId: String, routeName: String, longName: String, routeType: Int)) {
-        if let existing = favoriteRoutes.first(where: { $0.routeId == route.routeId }) {
+    private func toggleFavoriteRoute(_ route: TransitRoute) {
+        if let existing = favoriteRoutes.first(where: { $0.routeId == route.id }) {
             modelContext.delete(existing)
             return
         }
         let nextOrder = (favoriteRoutes.map(\.sortOrder).max() ?? -1) + 1
         let fav = FavoriteTransitRoute(
-            routeId: route.routeId,
-            shortName: route.routeName,
-            longName: route.longName,
-            routeType: route.routeType,
+            routeId: route.id,
+            shortName: route.short,
+            longName: route.long,
+            routeType: route.type,
             sortOrder: nextOrder
         )
         modelContext.insert(fav)

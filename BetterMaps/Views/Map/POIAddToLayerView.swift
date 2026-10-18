@@ -16,7 +16,10 @@ struct POIAddToLayerView: View {
     }
 
     @State private var showAddToLayer = false
-    @State private var showTransitArrivals = false
+    /// The transit stop this POI stands for (nearest via the stop grid);
+    /// non-nil presents the arrivals sheet.
+    @State private var nearbyStop: TransitStop?
+    @State private var arrivalsStop: TransitStop?
     @State private var yelpBusiness: YelpBusiness?
     @State private var yelpReviews: [YelpReview] = []
     @State private var isLoadingYelp = false
@@ -91,8 +94,8 @@ struct POIAddToLayerView: View {
                     Spacer()
 
                     HStack(spacing: 10) {
-                        if isTransitPOI {
-                            Button(action: { showTransitArrivals = true }) {
+                        if isTransitPOI, let nearbyStop {
+                            Button(action: { arrivalsStop = nearbyStop }) {
                                 Image(systemName: "clock.badge")
                                     .font(.title)
                                     .foregroundStyle(.purple)
@@ -241,12 +244,15 @@ struct POIAddToLayerView: View {
         .task {
             await loadYelpData()
         }
-        .sheet(isPresented: $showTransitArrivals) {
-            TransitArrivalsView(
-                stationName: placeName,
-                coordinate: mapItem.placemark.coordinate
-            )
-            .presentationDetents([.medium, .large])
+        .task {
+            guard isTransitPOI else { return }
+            let store = TransitLayerStore.shared
+            await store.loadIfNeeded()
+            nearbyStop = store.nearestStop(to: mapItem.placemark.coordinate)
+        }
+        .sheet(item: $arrivalsStop) { stop in
+            TransitArrivalsView(stop: stop)
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showAddToLayer) {
             AddToLayerSheet(

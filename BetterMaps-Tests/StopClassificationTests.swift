@@ -6,29 +6,30 @@ import CoreLocation
 /// stop selection logic used by the routing view model.
 final class StopClassificationTests: XCTestCase {
 
-    // MARK: - TransitStopType Properties
+    // MARK: - Transit kind properties
 
-    /// Each stop type should have a distinct color.
+    /// Each network has a distinct pastel pin color.
     func testStopTypeColors() {
-        XCTAssertEqual(TransitStop.TransitStopType.bus.colorHex, TransitColors.busPinHex, "Bus = pastel cornflower")
-        XCTAssertEqual(TransitStop.TransitStopType.luas.colorHex, TransitColors.luasGrnPinHex, "Luas = pastel mint")
-        XCTAssertEqual(TransitStop.TransitStopType.dart.colorHex, TransitColors.dartPinHex, "DART = pastel peach")
-        XCTAssertEqual(TransitStop.TransitStopType.rail.colorHex, TransitColors.railPinHex, "Rail = pastel lilac")
+        XCTAssertEqual(TransitColors.pinHex(.bus), TransitColors.busPinHex, "Bus = pastel cornflower")
+        XCTAssertEqual(TransitColors.pinHex(.luas), TransitColors.luasGrnPinHex, "Luas = pastel mint")
+        XCTAssertEqual(TransitColors.pinHex(.dart), TransitColors.dartPinHex, "DART = pastel peach")
+        XCTAssertEqual(TransitColors.pinHex(.rail), TransitColors.railPinHex, "Rail = pastel lilac")
+        XCTAssertEqual(Set(TransitLayerKind.allCases.map(TransitColors.pinHex)).count, 4)
     }
 
-    /// Each stop type should have a display name.
+    /// Each network has a display name.
     func testStopTypeDisplayNames() {
-        XCTAssertEqual(TransitStop.TransitStopType.bus.displayName, "Bus")
-        XCTAssertEqual(TransitStop.TransitStopType.luas.displayName, "Luas")
-        XCTAssertEqual(TransitStop.TransitStopType.dart.displayName, "DART")
-        XCTAssertEqual(TransitStop.TransitStopType.rail.displayName, "Rail")
+        XCTAssertEqual(TransitLayerKind.bus.displayName, "Bus")
+        XCTAssertEqual(TransitLayerKind.luas.displayName, "Luas")
+        XCTAssertEqual(TransitLayerKind.dart.displayName, "DART")
+        XCTAssertEqual(TransitLayerKind.rail.displayName, "Rail")
     }
 
-    /// All stop types should use SF Symbols.
+    /// All networks use SF Symbols.
     func testStopTypeIcons() {
-        XCTAssertEqual(TransitStop.TransitStopType.bus.systemImage, "bus.fill")
-        XCTAssertEqual(TransitStop.TransitStopType.luas.systemImage, "tram.fill")
-        XCTAssertEqual(TransitStop.TransitStopType.dart.systemImage, "tram.fill")
+        XCTAssertEqual(TransitLayerKind.bus.systemImage, "bus.fill")
+        XCTAssertEqual(TransitLayerKind.luas.systemImage, "tram.fill")
+        XCTAssertEqual(TransitLayerKind.dart.systemImage, "tram.fill")
     }
 
     // MARK: - Stop Proximity

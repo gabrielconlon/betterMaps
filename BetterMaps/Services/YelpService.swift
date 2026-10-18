@@ -1,4 +1,5 @@
 import Foundation
+import os
 import CoreLocation
 
 // MARK: - Yelp API Models
@@ -120,7 +121,11 @@ struct YelpReviewsResponse: Decodable {
 actor YelpService {
     // Store your Yelp API key here. Get one free at https://www.yelp.com/developers
     // For production, use Keychain or environment variable instead.
-    nonisolated(unsafe) static var apiKey: String = ""
+    private static let apiKeyStorage = OSAllocatedUnfairLock(initialState: "")
+    static var apiKey: String {
+        get { apiKeyStorage.withLock { $0 } }
+        set { apiKeyStorage.withLock { $0 = newValue } }
+    }
 
     static var isConfigured: Bool {
         !apiKey.isEmpty

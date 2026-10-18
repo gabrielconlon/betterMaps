@@ -9,7 +9,7 @@ enum ActiveSheet: Identifiable {
     case poiDetail(MKMapItem)
     case layerSidebar
     case newPlace(CLLocationCoordinate2D)
-    case transitArrivals(String, CLLocationCoordinate2D, TransitStop.TransitStopType?, String?, String?)
+    case transitArrivals(TransitStop)
 
     var id: String {
         switch self {
@@ -17,7 +17,7 @@ enum ActiveSheet: Identifiable {
         case .poiDetail(let item): return "poi-\(item.name ?? "unknown")-\(item.placemark.coordinate.latitude)"
         case .layerSidebar: return "layerSidebar"
         case .newPlace: return "newPlace"
-        case .transitArrivals(let name, _, _, _, _): return "transit-\(name)"
+        case .transitArrivals(let stop): return "transit-\(stop.id)"
         }
     }
 }
@@ -47,8 +47,8 @@ class MapViewModel {
         activeSheet = .newPlace(coordinate)
     }
 
-    func showTransitArrivals(stationName: String, coordinate: CLLocationCoordinate2D, stopType: TransitStop.TransitStopType? = nil, stopCode: String? = nil, stopId: String? = nil) {
-        activeSheet = .transitArrivals(stationName, coordinate, stopType, stopCode, stopId)
+    func showTransitArrivals(for stop: TransitStop) {
+        activeSheet = .transitArrivals(stop)
     }
 
     func dismissSheet() {

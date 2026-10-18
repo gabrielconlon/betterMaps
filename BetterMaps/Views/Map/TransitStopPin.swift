@@ -5,12 +5,9 @@ import SwiftUI
 struct TransitStopPin: View {
     let stop: TransitStop
     let size: AnnotationSize
-    /// Optional color override (e.g., Luas Red vs Green line)
-    var colorOverride: Color?
 
-    var color: Color {
-        colorOverride ?? Color(hex: stop.type.colorHex) ?? .blue
-    }
+    /// Network color; Luas Red-line stops are coral.
+    var color: Color { TransitColors.pin(for: stop) }
 
     var body: some View {
         switch size {
@@ -21,7 +18,7 @@ struct TransitStopPin: View {
                 .frame(width: 24, height: 24)
                 .contentShape(Circle())
         case .compact:
-            Image(systemName: stop.type.systemImage)
+            Image(systemName: stop.kind.systemImage)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
                 .padding(5)
@@ -34,7 +31,7 @@ struct TransitStopPin: View {
                 .contentShape(Rectangle())
         case .full:
             VStack(spacing: 0) {
-                Image(systemName: stop.type.systemImage)
+                Image(systemName: stop.kind.systemImage)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                     .padding(7)

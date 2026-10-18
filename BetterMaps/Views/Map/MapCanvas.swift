@@ -36,13 +36,8 @@ struct MapCanvas: View {
                                        onTapCluster: onTapCluster)
                     TrailsLayerContent(trails: store.output.trails)
                     TransitLayerContent(stops: transit.stops,
-                                        showTransitStops: transit.showTransitStops,
-                                        luasRedShapeLines: transit.luasRedShapeLines,
-                                        luasGreenShapeLines: transit.luasGreenShapeLines,
-                                        dartShapeLines: transit.dartShapeLines,
-                                        railShapeLines: transit.railShapeLines,
-                                        luasRedStopIds: transit.luasRedStopIds,
-                                        luasGreenStopIds: transit.luasGreenStopIds,
+                                        lines: transit.lines,
+                                        highlightedRoute: transit.highlightedRoute,
                                         size: store.output.annotationSize,
                                         onTapStop: onTapStop)
                 }
@@ -82,32 +77,6 @@ struct MapCanvas: View {
                     store.mapSize = geo.size
                 }
             }
-        }
-    }
-}
-
-extension TransitLayerContent {
-    /// Value snapshot of the transit state the canvas draws.
-    struct Inputs {
-        var stops: [TransitStop] = []
-        var showTransitStops: Set<TransitStop.TransitStopType> = []
-        var luasRedShapeLines: [[CLLocationCoordinate2D]] = []
-        var luasGreenShapeLines: [[CLLocationCoordinate2D]] = []
-        var dartShapeLines: [[CLLocationCoordinate2D]] = []
-        var railShapeLines: [[CLLocationCoordinate2D]] = []
-        var luasRedStopIds: Set<String> = []
-        var luasGreenStopIds: Set<String> = []
-
-        @MainActor
-        init(_ state: TransitMapState) {
-            stops = state.visibleTransitStops
-            showTransitStops = state.showTransitStops
-            luasRedShapeLines = state.luasRedShapeLines
-            luasGreenShapeLines = state.luasGreenShapeLines
-            dartShapeLines = state.dartShapeLines
-            railShapeLines = state.railShapeLines
-            luasRedStopIds = state.luasRedStopIds
-            luasGreenStopIds = state.luasGreenStopIds
         }
     }
 }

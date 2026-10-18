@@ -89,46 +89,7 @@ func makeStop(
     name: String,
     lat: Double,
     lon: Double,
-    type: TransitStop.TransitStopType = .bus
+    type: TransitLayerKind = .bus
 ) -> TransitStop {
-    TransitStop(id: id, name: name, latitude: lat, longitude: lon, type: type)
-}
-
-/// Create a GTFSTrip for testing
-func makeTrip(
-    tripId: String = "trip_1",
-    routeId: String = "route_1",
-    routeShortName: String = "39A",
-    routeType: Int = 3,
-    shapeId: String = ""
-) -> GTFSTrip {
-    GTFSTrip(
-        tripId: tripId,
-        routeId: routeId,
-        serviceId: "service_1",
-        directionId: 0,
-        routeShortName: routeShortName,
-        shapeId: shapeId,
-        routeType: routeType
-    )
-}
-
-/// Create a GTFSStopTime for testing
-func makeStopTime(
-    tripId: String = "trip_1",
-    stopId: String,
-    sequence: Int,
-    departureSeconds: Int
-) -> GTFSStopTime {
-    let h = departureSeconds / 3600
-    let m = (departureSeconds % 3600) / 60
-    let s = departureSeconds % 60
-    let timeStr = String(format: "%02d:%02d:%02d", h, m, s)
-    return GTFSStopTime(
-        tripId: tripId,
-        stopId: stopId,
-        arrivalTime: timeStr,
-        departureTime: timeStr,
-        stopSequence: sequence
-    )
+    TransitStop(id: id, name: name, latitude: lat, longitude: lon, kind: type)
 }

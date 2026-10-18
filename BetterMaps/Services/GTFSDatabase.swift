@@ -1,38 +1,16 @@
 import Foundation
 import SQLite3
 
-/// Lightweight SQLite wrapper for GTFS schedule data.
-/// Replaces in-memory dictionaries (~875 MB) with on-disk database (~50 MB).
-final class GTFSDatabase: @unchecked Sendable {
+/// Minimal read-only SQLite wrapper. Owned privately by
+/// `BusTimetableService`; never shared across actors.
+final class GTFSDatabase {
     private var db: OpaquePointer?
-    private let path: String
+    let path: String
 
-    static var defaultPath: String {
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return cacheDir.appendingPathComponent("gtfs_schedule.sqlite").path
-    }
+    /// Makes SQLite copy bound strings, so Swift temporaries can go away.
+    private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    /// Check if database exists and is fresh (< 7 days old)
-    static var isFresh: Bool {
-        let path = defaultPath
-        guard FileManager.default.fileExists(atPath: path),
-              let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let modDate = attrs[.modificationDate] as? Date else { return false }
-        return Date().timeIntervalSince(modDate) < 7 * 24 * 3600
-    }
-
-    /// Age of the database file
-    static var ageDescription: String? {
-        let path = defaultPath
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let modDate = attrs[.modificationDate] as? Date else { return nil }
-        let seconds = Int(Date().timeIntervalSince(modDate))
-        if seconds < 3600 { return "Updated \(seconds / 60)m ago" }
-        if seconds < 86400 { return "Updated \(seconds / 3600)h ago" }
-        return "Updated \(seconds / 86400)d ago"
-    }
-
-    init(path: String = GTFSDatabase.defaultPath) {
+    init(path: String) {
         self.path = path
     }
 
@@ -42,230 +20,83 @@ final class GTFSDatabase: @unchecked Sendable {
 
     // MARK: - Open / Close
 
+    /// Opens the file read-only. Returns false if it is missing or not SQLite.
     @discardableResult
     func open() -> Bool {
         guard db == nil else { return true }
-        let result = sqlite3_open(path, &db)
-        if result != SQLITE_OK {
-            print("GTFSDatabase: Failed to open: \(errorMessage)")
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        if sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
+            close()
             return false
         }
-        // Performance pragmas
-        execute("PRAGMA journal_mode = WAL")
-        execute("PRAGMA synchronous = NORMAL")
-        execute("PRAGMA cache_size = -8000") // 8 MB cache — keeps hot index pages in memory
         return true
     }
 
     func close() {
-        if let db {
-            sqlite3_close(db)
-        }
+        if let db { sqlite3_close(db) }
         db = nil
     }
 
-    // MARK: - Schema
+    var isOpen: Bool { db != nil }
 
-    func createTables() {
-        execute("""
-            CREATE TABLE IF NOT EXISTS trips (
-                trip_id TEXT PRIMARY KEY,
-                route_id TEXT NOT NULL,
-                service_id TEXT NOT NULL,
-                direction_id INTEGER DEFAULT 0,
-                route_short_name TEXT,
-                shape_id TEXT
-            )
-        """)
+    // MARK: - Statements
 
-        execute("""
-            CREATE TABLE IF NOT EXISTS stop_times (
-                trip_id TEXT NOT NULL,
-                stop_id TEXT NOT NULL,
-                arrival_seconds INTEGER,
-                departure_seconds INTEGER,
-                stop_sequence INTEGER,
-                departure_time TEXT
-            )
-        """)
-
-        execute("""
-            CREATE TABLE IF NOT EXISTS calendars (
-                service_id TEXT PRIMARY KEY,
-                monday INTEGER, tuesday INTEGER, wednesday INTEGER,
-                thursday INTEGER, friday INTEGER, saturday INTEGER, sunday INTEGER,
-                start_date TEXT, end_date TEXT
-            )
-        """)
-
-        execute("""
-            CREATE TABLE IF NOT EXISTS calendar_dates (
-                service_id TEXT NOT NULL,
-                date TEXT NOT NULL,
-                exception_type INTEGER NOT NULL
-            )
-        """)
-
-        execute("""
-            CREATE TABLE IF NOT EXISTS metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-
-        execute("""
-            CREATE TABLE IF NOT EXISTS shapes (
-                shape_id TEXT NOT NULL,
-                lat REAL NOT NULL,
-                lon REAL NOT NULL,
-                sequence INTEGER NOT NULL
-            )
-        """)
-
-        execute("""
-            CREATE TABLE IF NOT EXISTS routes (
-                route_id TEXT PRIMARY KEY,
-                route_short_name TEXT,
-                route_long_name TEXT,
-                route_type INTEGER DEFAULT 3
-            )
-        """)
-    }
-
-    func prepareInsertRoute() -> OpaquePointer? {
-        prepare("INSERT OR REPLACE INTO routes VALUES (?, ?, ?, ?)")
-    }
-
-    func createIndexes() {
-        execute("CREATE INDEX IF NOT EXISTS idx_st_stop_dep ON stop_times(stop_id, departure_seconds)")
-        execute("CREATE INDEX IF NOT EXISTS idx_st_trip_seq ON stop_times(trip_id, stop_sequence)")
-        execute("CREATE INDEX IF NOT EXISTS idx_trips_route ON trips(route_id)")
-        execute("CREATE INDEX IF NOT EXISTS idx_trips_service ON trips(service_id)")
-        execute("CREATE INDEX IF NOT EXISTS idx_shapes_id ON shapes(shape_id, sequence)")
-        // Covering index: departuresFromStop() can be satisfied entirely from index
-        execute("CREATE INDEX IF NOT EXISTS idx_st_stop_dep_trip ON stop_times(stop_id, departure_seconds, trip_id)")
-        // Fully covers tripReachesStop() 3-column WHERE clause
-        execute("CREATE INDEX IF NOT EXISTS idx_st_trip_stop_seq ON stop_times(trip_id, stop_id, stop_sequence)")
-        // Accelerates classifyTramAndRailStops(), shapeCoordinatesForDART/NonDartRail()
-        execute("CREATE INDEX IF NOT EXISTS idx_routes_type_name ON routes(route_type, route_short_name)")
-        // Accelerates activeServiceIds() date lookup
-        execute("CREATE INDEX IF NOT EXISTS idx_calendar_dates_date ON calendar_dates(date)")
-    }
-
-    func prepareInsertShape() -> OpaquePointer? {
-        prepare("INSERT INTO shapes VALUES (?, ?, ?, ?)")
-    }
-
-    // MARK: - Transactions
-
-    func beginTransaction() { execute("BEGIN TRANSACTION") }
-    func commitTransaction() { execute("COMMIT") }
-
-    // MARK: - Execute
-
-    @discardableResult
-    func execute(_ sql: String) -> Bool {
-        guard let db else { return false }
-        var errMsg: UnsafeMutablePointer<CChar>?
-        let result = sqlite3_exec(db, sql, nil, nil, &errMsg)
-        if result != SQLITE_OK {
-            if let errMsg { sqlite3_free(errMsg) }
-            return false
+    func prepare(_ sql: String) -> OpaquePointer? {
+        guard let db else { return nil }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            return nil
         }
-        return true
+        return stmt
     }
 
-    // MARK: - Prepared Statements for Bulk Insert
-
-    func prepareInsertTrip() -> OpaquePointer? {
-        prepare("INSERT OR REPLACE INTO trips VALUES (?, ?, ?, ?, ?, ?)")
+    func bind(_ stmt: OpaquePointer, _ index: Int32, _ text: String) {
+        sqlite3_bind_text(stmt, index, text, -1, Self.transient)
     }
 
-    func prepareInsertStopTime() -> OpaquePointer? {
-        prepare("INSERT INTO stop_times VALUES (?, ?, ?, ?, ?, ?)")
+    func bind(_ stmt: OpaquePointer, _ index: Int32, _ value: Int) {
+        sqlite3_bind_int64(stmt, index, sqlite3_int64(value))
     }
 
-    func prepareInsertCalendar() -> OpaquePointer? {
-        prepare("INSERT OR REPLACE INTO calendars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    }
-
-    func prepareInsertCalendarDate() -> OpaquePointer? {
-        prepare("INSERT INTO calendar_dates VALUES (?, ?, ?)")
-    }
-
-    func bindAndStep(_ stmt: OpaquePointer, strings: [String?], ints: [Int?] = []) {
-        var idx: Int32 = 1
-        for s in strings {
-            if let s {
-                sqlite3_bind_text(stmt, idx, (s as NSString).utf8String, -1, nil)
-            } else {
-                sqlite3_bind_null(stmt, idx)
-            }
-            idx += 1
-        }
-        for i in ints {
-            if let i {
-                sqlite3_bind_int(stmt, idx, Int32(i))
-            } else {
-                sqlite3_bind_null(stmt, idx)
-            }
-            idx += 1
-        }
-        sqlite3_step(stmt)
-        sqlite3_reset(stmt)
+    /// True while the statement yields a row.
+    func step(_ stmt: OpaquePointer) -> Bool {
+        sqlite3_step(stmt) == SQLITE_ROW
     }
 
     func finalize(_ stmt: OpaquePointer) {
         sqlite3_finalize(stmt)
     }
 
-    // MARK: - Metadata
-
-    func setMetadata(key: String, value: String) {
-        execute("INSERT OR REPLACE INTO metadata VALUES ('\(key)', '\(value)')")
-    }
-
-    func getMetadata(key: String) -> String? {
-        guard let stmt = prepare("SELECT value FROM metadata WHERE key = ?") else { return nil }
-        sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-        return columnText(stmt, index: 0)
-    }
-
-    // MARK: - Query Helpers
-
-    func prepare(_ sql: String) -> OpaquePointer? {
-        guard let db else { return nil }
-        var stmt: OpaquePointer?
-        let result = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-        if result != SQLITE_OK {
-            print("GTFSDatabase: prepare failed for: \(sql) — \(errorMessage)")
-            return nil
-        }
-        return stmt
-    }
-
-    func columnText(_ stmt: OpaquePointer, index: Int32) -> String? {
+    func columnText(_ stmt: OpaquePointer, _ index: Int32) -> String? {
         guard let cStr = sqlite3_column_text(stmt, index) else { return nil }
         return String(cString: cStr)
     }
 
-    func columnInt(_ stmt: OpaquePointer, index: Int32) -> Int {
-        Int(sqlite3_column_int(stmt, index))
+    func columnInt(_ stmt: OpaquePointer, _ index: Int32) -> Int {
+        Int(sqlite3_column_int64(stmt, index))
     }
 
-    var errorMessage: String {
-        guard let db else { return "No database" }
-        return String(cString: sqlite3_errmsg(db))
+    func columnData(_ stmt: OpaquePointer, _ index: Int32) -> Data? {
+        guard let bytes = sqlite3_column_blob(stmt, index) else { return nil }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(stmt, index)))
     }
 
-    // MARK: - Count
+    /// Runs `sql`, binding with `bind`, and maps every row with `row`.
+    func query<T>(_ sql: String,
+                  bind: (OpaquePointer) -> Void = { _ in },
+                  row: (OpaquePointer) -> T) -> [T] {
+        guard let stmt = prepare(sql) else { return [] }
+        defer { finalize(stmt) }
+        bind(stmt)
+        var out: [T] = []
+        while step(stmt) { out.append(row(stmt)) }
+        return out
+    }
 
-    func count(table: String) -> Int {
-        guard let stmt = prepare("SELECT COUNT(*) FROM \(table)") else { return 0 }
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
-        return columnInt(stmt, index: 0)
+    func metaValue(_ key: String) -> String? {
+        query("SELECT value FROM meta WHERE key = ?",
+              bind: { self.bind($0, 1, key) },
+              row: { self.columnText($0, 0) }).first ?? nil
     }
 }

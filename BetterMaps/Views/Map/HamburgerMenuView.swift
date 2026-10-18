@@ -5,7 +5,7 @@ struct HamburgerMenuView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Layer.sortOrder) private var layers: [Layer]
     @Binding var filterMode: FilterMode
-    @Binding var showTransitStops: Set<TransitStop.TransitStopType>
+    let transitSettings: TransitLayerSettings
     @Binding var mapStyleOption: MapStyleOption
     var onSelectPlace: ((Place) -> Void)?
     @AppStorage("favTransitBus") private var favBus = true
@@ -72,7 +72,7 @@ struct HamburgerMenuView: View {
                     transitPinnableRow(.rail)
 
                     Button("Hide All Transit") {
-                        showTransitStops = []
+                        transitSettings.disableAll()
                     }
                     .font(.caption)
 
@@ -247,20 +247,19 @@ struct HamburgerMenuView: View {
 
     // MARK: - Transit Pinnable Row
 
-    private func transitFavBinding(for type: TransitStop.TransitStopType) -> Binding<Bool> {
+    private func transitFavBinding(for type: TransitLayerKind) -> Binding<Bool> {
         switch type {
         case .bus: return $favBus
         case .luas: return $favLuas
         case .dart: return $favDart
         case .rail: return $favRail
-        default: return .constant(true)
         }
     }
 
     @ViewBuilder
-    private func transitPinnableRow(_ type: TransitStop.TransitStopType) -> some View {
+    private func transitPinnableRow(_ type: TransitLayerKind) -> some View {
         let isFav = transitFavBinding(for: type)
-        TransitTypeRow(type: type, showStops: $showTransitStops)
+        TransitTypeRow(type: type, settings: transitSettings)
             .swipeActions(edge: .leading) {
                 Button {
                     isFav.wrappedValue.toggle()
@@ -380,13 +379,13 @@ struct YelpKeySettingsView: View {
 // MARK: - Transit Type Row (explicit bindings, no ForEach capture issues)
 
 struct TransitTypeRow: View {
-    let type: TransitStop.TransitStopType
-    @Binding var showStops: Set<TransitStop.TransitStopType>
+    let type: TransitLayerKind
+    let settings: TransitLayerSettings
 
     private var stopsOn: Binding<Bool> {
         Binding(
-            get: { showStops.contains(type) },
-            set: { if $0 { showStops.insert(type) } else { showStops.remove(type) } }
+            get: { settings.isEnabled(type) },
+            set: { settings.setEnabled($0, for: type) }
         )
     }
 
@@ -394,7 +393,7 @@ struct TransitTypeRow: View {
         HStack(spacing: 12) {
             // Icon + Name
             Image(systemName: type.systemImage)
-                .foregroundColor(Color(hex: type.colorHex))
+                .foregroundColor(TransitColors.pin(type))
                 .frame(width: 22)
             Text(type.displayName)
                 .font(.subheadline.bold())

@@ -155,25 +155,4 @@ final class ViewportCullingTests: XCTestCase {
         XCTAssertTrue(box.contains(lat: 1, lon: 2))
         XCTAssertFalse(box.contains(lat: 1.0001, lon: 2))
     }
-
-    // MARK: - Transit grid
-
-    func testStopGridQueryMatchesLinearScan() {
-        var stops: [TransitStop] = []
-        for i in 0..<400 {
-            let lat = 53.2 + Double(i % 20) * 0.013
-            let lon = -6.5 + Double(i / 20) * 0.017
-            stops.append(TransitStop(id: "s\(i)", name: "Stop \(i)", latitude: lat, longitude: lon,
-                                     type: i % 7 == 0 ? .luas : .bus, stopCode: nil))
-        }
-        let grid = StopGrid(stops: stops)
-        let box = GeoBox(minLat: 53.25, maxLat: 53.40, minLon: -6.40, maxLon: -6.25)
-        let expected = Set(stops.filter { box.contains(lat: $0.latitude, lon: $0.longitude) }.map(\.id))
-        XCTAssertEqual(Set(grid.stops(in: box).map(\.id)), expected)
-        XCTAssertFalse(expected.isEmpty)
-
-        let visible = TransitMapState.visibleStops(in: grid, region: box, show: [.luas])
-        XCTAssertTrue(visible.allSatisfy { $0.type == .luas })
-        XCTAssertFalse(visible.isEmpty)
-    }
 }

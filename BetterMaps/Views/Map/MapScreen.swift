@@ -27,12 +27,12 @@ struct MapScreen: View {
         span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2)
     )
     @State private var cameraPosition: MapCameraPosition = .region(Self.launchRegion)
-    @State private var transitState = TransitMapState()
+    @State private var transitStore = TransitLayerStore.shared
+    @State private var transitSettings = TransitLayerSettings.shared
     @State private var searchState = SearchState()
     @FocusState private var isSearchFocused: Bool
     @State private var showFavoritesPanel = false
     @State private var mapStyleOption: MapStyleOption = .standard
-    @AppStorage("savedTransitStops") private var savedTransitStops = ""
     @AppStorage("hasSeenCoachMarks") private var hasSeenCoachMarks = false
     @State private var showCoachMarks = false
     @State private var poiSearchTask: Task<Void, Never>?
@@ -80,19 +80,16 @@ struct MapScreen: View {
                 store: store,
                 layersById: layersById,
                 mapStyle: currentMapStyle,
-                transit: TransitLayerContent.Inputs(transitState),
+                transit: TransitLayerContent.Inputs(transitStore),
                 onTapPlace: { id in
                     if let place = places.first(where: { $0.id == id }) { viewModel.selectPlace(place) }
                 },
                 onTapCluster: zoom(to:),
-                onTapStop: { stop in
-                    viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate,
-                                                  stopType: stop.type, stopCode: stop.stopCode, stopId: stop.id)
-                },
+                onTapStop: { stop in viewModel.showTransitArrivals(for: stop) },
                 onTap: handleTap,
                 onLongPress: handleLongPress,
                 onCameraSettled: { region in
-                    transitState.mapRegion = region
+                    transitStore.region = region
                     // Dismiss keyboard when user pans the map
                     if isSearchFocused { isSearchFocused = false }
                 }
@@ -100,10 +97,12 @@ struct MapScreen: View {
 
             MapLayersOverlay(
                 showFavoritesPanel: $showFavoritesPanel,
-                showTransitStops: $transitState.showTransitStops,
+                transitSettings: transitSettings,
+                highlightedRouteId: transitStore.highlightedRouteId,
                 mapStyleOption: $mapStyleOption,
                 legendLayers: visibleLayerLites,
-                legendEntries: store.output.legend
+                legendEntries: store.output.legend,
+                onSelectRoute: { route in transitStore.toggleHighlightedRoute(route.routeId) }
             )
 
             VStack(spacing: 0) {
@@ -118,8 +117,11 @@ struct MapScreen: View {
                     onSelectStop: { stop in
                         dismissSearch()
                         focus(on: stop.coordinate)
-                        viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate,
-                                                      stopType: stop.type, stopCode: stop.stopCode, stopId: stop.id)
+                        viewModel.showTransitArrivals(for: stop)
+                    },
+                    onSelectRoute: { route in
+                        dismissSearch()
+                        transitStore.toggleHighlightedRoute(route.id)
                     },
                     onSelectPOI: { item in
                         viewModel.showPOI(item)
@@ -134,7 +136,7 @@ struct MapScreen: View {
                     activeLayerCount: store.output.visibleLayerCount,
                     onOpenMenu: { viewModel.showLayerSidebar() },
                     onSearchTextChanged: {
-                        searchState.debouncedSearch(places: places, transitStops: transitState.transitStops,
+                        searchState.debouncedSearch(places: places, transit: transitStore,
                                                     userLocation: locationManager.userLocation)
                     }
                 )
@@ -147,8 +149,6 @@ struct MapScreen: View {
         }
         .onAppear {
             locationManager.requestPermission()
-            // Restore persisted transit toggle states
-            transitState.showTransitStops = transitState.deserializeTransitTypes(savedTransitStops)
 
             // Show one-time coach marks for first-time users
             if !hasSeenCoachMarks {
@@ -159,15 +159,18 @@ struct MapScreen: View {
         }
         .onChange(of: snapshot, initial: true) { _, new in feedStore(new) }
         .onChange(of: filterVM.filterMode, initial: true) { _, mode in store.filterMode = mode }
-        .onChange(of: transitState.showTransitStops) { _, newValue in
-            savedTransitStops = transitState.serializeTransitTypes(newValue)
+        .onChange(of: transitSettings.enabledKinds, initial: true) { _, kinds in
+            transitStore.enabledKinds = kinds
         }
         .onChange(of: showCoachMarks) { _, newValue in
             if !newValue { hasSeenCoachMarks = true }
         }
-        .task(id: "loadTransitData") {
-            await transitState.loadTransitData()
-            searchState.transitDataReady = true
+        // Transit data is decoded only once a transit layer is on; a user
+        // with every transit kind off does no transit work at launch.
+        .task(id: transitSettings.enabledKinds.isEmpty) {
+            guard !transitSettings.enabledKinds.isEmpty else { return }
+            await transitStore.loadIfNeeded()
+            await BusTimetableService.shared.refreshIfStale(days: 14)
         }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
@@ -251,7 +254,7 @@ struct MapScreen: View {
         case .layerSidebar:
             HamburgerMenuView(
                 filterMode: $filterVM.filterMode,
-                showTransitStops: $transitState.showTransitStops,
+                transitSettings: transitSettings,
                 mapStyleOption: $mapStyleOption,
                 onSelectPlace: { place in
                     viewModel.activeSheet = nil
@@ -267,11 +270,9 @@ struct MapScreen: View {
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
 
-        case .transitArrivals(let name, let coord, let type, let stopCode, let stopId):
-            TransitArrivalsView(stationName: name, coordinate: coord, stopType: type,
-                                stopCode: stopCode, stopId: stopId)
-                // Route chips in the sheet no longer draw a route on the map
-                // (the shape service went with the planner); phase 2 rewires them.
+        case .transitArrivals(let stop):
+            TransitArrivalsView(stop: stop,
+                                onSelectRoute: { routeId in transitStore.toggleHighlightedRoute(routeId) })
                 .presentationDetents([.fraction(0.3), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
