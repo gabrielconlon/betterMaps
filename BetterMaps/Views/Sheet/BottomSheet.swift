@@ -81,6 +81,10 @@ struct SheetLayout: Equatable, Sendable {
 /// Everything above the sheet passes touches through to the map.
 struct BottomSheet<Header: View, Content: View>: View {
     @Binding var detent: SheetDetent
+    /// Slides the sheet off the bottom edge and fades it out of the
+    /// hierarchy (fade only with Reduce Motion) while a system sheet is up.
+    /// `detent` is left alone, so the sheet returns as it was.
+    var isHidden: Bool = false
     /// Settled sheet height above the bottom safe area; fires when the detent
     /// or container changes, never per drag frame.
     var onSettledHeightChange: (CGFloat) -> Void = { _ in }
@@ -90,6 +94,9 @@ struct BottomSheet<Header: View, Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragTranslation: CGFloat = 0
     @State private var dragAxis: Axis?
+    /// Settled sheet height (home-indicator inset included): how far the
+    /// hide transition slides the sheet down, shadow clearance aside.
+    @State private var lastHeight: CGFloat = SheetLayout.collapsedContentHeight
 
     private static var cornerRadius: CGFloat { 14 }
 
@@ -97,7 +104,28 @@ struct BottomSheet<Header: View, Content: View>: View {
         reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86)
     }
 
+    /// Hide/show: a slide with a fade, or a plain cross-fade with Reduce Motion.
+    private var hideAnimation: Animation {
+        reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.35, dampingFraction: 0.9)
+    }
+
     var body: some View {
+        // Hidden means out of the hierarchy. A GeometryReader's content is
+        // not re-evaluated while a system sheet covers it, so hiding it from
+        // inside (offset, opacity, accessibilityHidden) never lands and
+        // leaves a live element behind; it must happen out here.
+        ZStack {
+            if !isHidden {
+                container
+                    .transition(reduceMotion
+                                ? .opacity
+                                : .offset(y: lastHeight + 24).combined(with: .opacity))
+            }
+        }
+        .animation(hideAnimation, value: isHidden)
+    }
+
+    private var container: some View {
         GeometryReader { geo in
             let bottomInset = Self.homeIndicatorInset(containerHeight: geo.size.height)
             let layout = SheetLayout(availableHeight: geo.size.height, bottomInset: bottomInset)
@@ -109,6 +137,7 @@ struct BottomSheet<Header: View, Content: View>: View {
                 sheet(height: height, bottomInset: bottomInset, layout: layout)
             }
             .onChange(of: base - bottomInset, initial: true) { _, settled in
+                lastHeight = base
                 onSettledHeightChange(settled)
             }
         }
