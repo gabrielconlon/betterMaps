@@ -19,3 +19,6 @@ Package.resolved
 
 # Generated Xcode project (regenerate with xcodegen)
 *.xcodeproj
+
+# Claude Code agent worktrees
+.claude/worktrees/

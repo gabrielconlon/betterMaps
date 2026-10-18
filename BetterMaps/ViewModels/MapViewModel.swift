@@ -4,31 +4,20 @@ import Observation
 
 // MARK: - Active Sheet Enum (single-sheet pattern)
 
-struct RouteContext {
-    let name: String
-    let coordinate: CLLocationCoordinate2D
-}
-
 enum ActiveSheet: Identifiable {
     case placeDetail(Place)
     case poiDetail(MKMapItem)
     case layerSidebar
-    case routing(RouteContext?)
     case newPlace(CLLocationCoordinate2D)
     case transitArrivals(String, CLLocationCoordinate2D, TransitStop.TransitStopType?, String?, String?)
-    case vehicleDetail(GTFSVehiclePosition)
-    case trainDetail(IrishRailTrainPosition)
 
     var id: String {
         switch self {
         case .placeDetail(let place): return "place-\(place.id)"
         case .poiDetail(let item): return "poi-\(item.name ?? "unknown")-\(item.placemark.coordinate.latitude)"
         case .layerSidebar: return "layerSidebar"
-        case .routing: return "routing"
         case .newPlace: return "newPlace"
         case .transitArrivals(let name, _, _, _, _): return "transit-\(name)"
-        case .vehicleDetail(let v): return "vehicle-\(v.id)"
-        case .trainDetail(let t): return "train-\(t.id)"
         }
     }
 }
@@ -51,10 +40,6 @@ class MapViewModel {
 
     func showLayerSidebar() {
         activeSheet = .layerSidebar
-    }
-
-    func showRouting(context: RouteContext? = nil) {
-        activeSheet = .routing(context)
     }
 
     func startNewPlace(at coordinate: CLLocationCoordinate2D) {

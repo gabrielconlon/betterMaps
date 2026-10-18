@@ -10,7 +10,6 @@ struct MapTabView: View {
 
     @State private var viewModel = MapViewModel()
     @State private var filterVM = LayerFilterViewModel()
-    @State private var routingVM = RoutingViewModel()
     @State private var locationManager = LocationManager()
 
     /// Default to a fixed Dublin region rather than `.userLocation(fallback:)`.
@@ -24,20 +23,14 @@ struct MapTabView: View {
         center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
         span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2)
     ))
-    @State private var selectedRouteId: UUID?
-    @State private var selectedTransitOption: TransitRouteOption?
     @State private var transitState = TransitMapState()
     @State private var searchState = SearchState()
     @FocusState private var isSearchFocused: Bool
-    @State private var activeWeatherOverlays: Set<WeatherOverlay> = []
     @State private var showFavoritesPanel = false
     @State private var mapStyleOption: MapStyleOption = .standard
     @AppStorage("savedTransitStops") private var savedTransitStops = ""
-    @AppStorage("savedLiveTransit") private var savedLiveTransit = ""
-    @AppStorage("openWeatherAPIKey") private var openWeatherAPIKey = ""
     @AppStorage("hasSeenCoachMarks") private var hasSeenCoachMarks = false
     @State private var showCoachMarks = false
-    @State private var routingDetent: PresentationDetent = .fraction(0.35)
     @State private var poiSearchTask: Task<Void, Never>?
 
     var filteredPlaces: [Place] {
@@ -106,22 +99,6 @@ struct MapTabView: View {
         ZStack {
             mapView
             layersPanelOverlay
-            // Top status banner — loading state + data-age badge. Pinned
-            // top-trailing but offset down so it stacks BELOW SwiftUI Map's
-            // MapUserLocationButton (which also lives top-trailing via
-            // .mapControls). Top-trailing keeps it visually associated
-            // with map status, the offset prevents the two pills from
-            // sitting on top of each other.
-            VStack {
-                HStack {
-                    Spacer()
-                    transitStatusBadge
-                        .padding(.trailing, 12)
-                        .padding(.top, 64)
-                }
-                Spacer()
-            }
-            .zIndex(11)
             // UI overlays
             VStack(spacing: 0) {
                 Spacer()
@@ -138,36 +115,12 @@ struct MapTabView: View {
                                 case .pois: poiResults
                                 }
                             }
-                            if !searchState.transitDataReady && !searchState.searchText.isEmpty {
-                                Text("Loading transit data...")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
                         }
                     }
                     .frame(maxHeight: 280)
                     .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal)
-                    .padding(.bottom, 4)
-                }
-
-                // Dismiss button for selected bus route (route name is shown on the map line)
-                if !transitState.selectedBusRouteCoords.isEmpty || !transitState.selectedBusRouteStopIds.isEmpty {
-                    HStack(spacing: 8) {
-                        Button(action: {
-                            transitState.selectedBusRouteCoords = []
-                            transitState.selectedBusRouteName = ""
-                            transitState.selectedBusRouteStopIds = []
-                        }) {
-                            Label("Dismiss Route", systemImage: "xmark.circle.fill")
-                                .font(.caption.bold())
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                        }
-                    }
                     .padding(.bottom, 4)
                 }
 
@@ -184,7 +137,6 @@ struct MapTabView: View {
             locationManager.requestPermission()
             // Restore persisted transit toggle states
             transitState.showTransitStops = transitState.deserializeTransitTypes(savedTransitStops)
-            transitState.showLiveTransit = transitState.deserializeTransitTypes(savedLiveTransit)
 
             // Show one-time coach marks for first-time users
             if !hasSeenCoachMarks {
@@ -198,45 +150,12 @@ struct MapTabView: View {
         .onChange(of: transitState.showTransitStops) { _, newValue in
             savedTransitStops = transitState.serializeTransitTypes(newValue)
         }
-        .onChange(of: transitState.showLiveTransit) { _, newValue in
-            savedLiveTransit = transitState.serializeTransitTypes(newValue)
-        }
         .onChange(of: showCoachMarks) { _, newValue in
             if !newValue {
                 hasSeenCoachMarks = true
             }
         }
-        .onChange(of: viewModel.activeSheet?.id) { old, new in
-            // Reset detent when routing sheet opens
-            if new?.hasPrefix("routing") == true {
-                routingDetent = .fraction(0.35)
-            }
-            // Clear routes when routing sheet is dismissed
-            if old?.hasPrefix("routing") == true && new == nil {
-                routingVM.clearRoutes()
-                selectedRouteId = nil
-                selectedTransitOption = nil
-            }
-        }
-        .modifier(RouteZoomModifier(
-            routingVM: routingVM,
-            cameraPosition: $cameraPosition,
-            selectedTransitOption: $selectedTransitOption,
-            selectedRouteId: $selectedRouteId
-        ))
-        // Each .task gets an explicit id so SwiftUI's task scheduler
-        // disambiguates them. Stacking multiple .task modifiers without
-        // ids on the same view was preventing any of them from running on
-        // the user's device — the .onAppear log fired but no .task closure
-        // body ever entered.
         .task(id: "loadTransitData") { await loadTransitData() }
-        .task(id: transitState.showLiveTransit) { await pollLiveTransit() }
-        .task(id: "stuckDetector") {
-            // Stuck-detector — flips the loading pill to a diagnostic
-            // banner if Phase 1+2 don't complete within 8 seconds.
-            try? await Task.sleep(for: .seconds(8))
-            if !searchState.transitDataReady { loadIsStuck = true }
-        }
         .sheet(item: $viewModel.activeSheet) { sheet in
             sheetContent(for: sheet)
         }
@@ -248,16 +167,7 @@ struct MapTabView: View {
     private func sheetContent(for sheet: ActiveSheet) -> some View {
         switch sheet {
         case .placeDetail(let place):
-            PlaceDetailSheet(
-                place: place,
-                onGetDirections: { dest in
-                    viewModel.dismissSheet()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        viewModel.showRouting(context: RouteContext(name: dest.name, coordinate: dest.coordinate))
-                        Task { await calculateRoute(to: dest) }
-                    }
-                }
-            )
+            PlaceDetailSheet(place: place)
             .presentationDetents([.fraction(0.25), .medium, .large])
             .presentationDragIndicator(.hidden)
             .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -265,13 +175,6 @@ struct MapTabView: View {
         case .poiDetail(let mapItem):
             POIAddToLayerView(
                 mapItem: mapItem,
-                onGetDirections: { item in
-                    viewModel.dismissSheet()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        viewModel.showRouting(context: RouteContext(name: item.name ?? "Destination", coordinate: item.placemark.coordinate))
-                        Task { await calculateRouteToMapItem(item) }
-                    }
-                },
                 onDismiss: { viewModel.dismissSheet() }
             )
             .presentationDetents([.fraction(0.25), .medium, .large])
@@ -281,10 +184,7 @@ struct MapTabView: View {
         case .layerSidebar:
             HamburgerMenuView(
                 filterMode: $filterVM.filterMode,
-                activeWeatherOverlays: $activeWeatherOverlays,
-                bicyclePreference: $routingVM.bicyclePreference,
                 showTransitStops: $transitState.showTransitStops,
-                showLiveTransit: $transitState.showLiveTransit,
                 mapStyleOption: $mapStyleOption,
                 onSelectPlace: { place in
                     viewModel.activeSheet = nil
@@ -300,21 +200,6 @@ struct MapTabView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
 
-        case .routing(let context):
-            RoutingPanelView(
-                viewModel: routingVM,
-                destinationName: context?.name ?? "",
-                source: locationManager.userLocation,
-                destination: context?.coordinate,
-                selectedRouteId: $selectedRouteId,
-                selectedTransitOption: $selectedTransitOption,
-                currentDetent: $routingDetent,
-                dismissAction: { viewModel.activeSheet = nil }
-            )
-            .presentationDetents([.fraction(0.08), .fraction(0.35), .medium, .large], selection: $routingDetent)
-            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-            .interactiveDismissDisabled()  // Prevent glitchy drag-to-dismiss; use Close button instead
-
         case .newPlace(let coordinate):
             PlaceFormView(coordinate: coordinate)
 
@@ -324,37 +209,13 @@ struct MapTabView: View {
                 coordinate: coord,
                 stopType: type,
                 stopCode: stopCode,
-                stopId: stopId,
-                onSelectRoute: { routeId, routeName in
-                    // User tapped a bus route — load and display its shape on the map
-                    transitState.selectedBusRouteName = routeName
-                    viewModel.activeSheet = nil  // Dismiss the arrivals sheet
-                    Task {
-                        async let shapeLoad = GTFSShapeService.shared.shapeCoordinates(forRouteId: routeId)
-                        async let stopsLoad = GTFSScheduleService.shared.stopIdsForRoute(routeId: routeId)
-                        let (coords, stopIds) = await (shapeLoad, stopsLoad)
-                        if let coords {
-                            transitState.selectedBusRouteCoords = coords
-                        }
-                        transitState.selectedBusRouteStopIds = stopIds
-                    }
-                }
+                stopId: stopId
             )
-                .presentationDetents([.fraction(0.3), .medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-
-        case .vehicleDetail(let vehicle):
-            VehicleDetailView(vehicle: vehicle)
-                .presentationDetents([.fraction(0.3), .medium])
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.3)))
-
-        case .trainDetail(let train):
-            TrainDetailView(train: train)
-                .presentationDetents([.fraction(0.3), .medium])
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.3)))
+            // Route chips in the sheet no longer draw a route on the map
+            // (the shape service went with the planner); phase 2 rewires them.
+            .presentationDetents([.fraction(0.3), .medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
     }
 
@@ -386,20 +247,11 @@ struct MapTabView: View {
                     layersPanelToggleButton
                     FavoritesPanel(
                         showTransitStops: $transitState.showTransitStops,
-                        showLiveTransit: $transitState.showLiveTransit,
                         isPresented: $showFavoritesPanel,
                         mapStyle: $mapStyleOption,
-                        onSelectRoute: { route in
-                            // Tap on a favorited-route chip = draw it on the map
-                            // (same code path as picking a route from the search
-                            // results). The host owns the cameraPosition so it
-                            // belongs here, not inside FavoritesPanel.
-                            transitState.selectedBusRouteName = route.shortName
-                            Task {
-                                if let region = await transitState.selectBusRoute(routeId: route.routeId, routeName: route.shortName) {
-                                    cameraPosition = .region(region)
-                                }
-                            }
+                        onSelectRoute: { _ in
+                            // Route drawing was removed with the planner; the
+                            // chip just closes the panel until phase 2 rewires it.
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 showFavoritesPanel = false
                             }
@@ -518,114 +370,6 @@ struct MapTabView: View {
                         }
                     }
                 }
-
-                // Live bus vehicle positions
-                ForEach(transitState.visibleVehicles) { vehicle in
-                    Annotation(vehicle.routeShortName.isEmpty ? "" : vehicle.routeShortName, coordinate: vehicle.coordinate) {
-                        VehicleDot(vehicle: vehicle)
-                            .onTapGesture {
-                                viewModel.activeSheet = .vehicleDetail(vehicle)
-                            }
-                    }
-                }
-
-                // Live train positions
-                ForEach(transitState.visibleTrains) { train in
-                    Annotation(train.trainCode, coordinate: train.coordinate) {
-                        TrainDot(train: train, zoomDelta: transitState.mapRegion?.span.latitudeDelta ?? 0.01)
-                            .onTapGesture {
-                                viewModel.activeSheet = .trainDetail(train)
-                            }
-                    }
-                }
-
-                // Routes — hide standard routes when a transit option is selected
-                let routesToShow: [RouteResult] = {
-                    if selectedTransitOption != nil { return [] }
-                    if selectedRouteId != nil {
-                        return routingVM.activeRoutes.filter { $0.id == selectedRouteId }
-                    }
-                    return routingVM.activeRoutes
-                }()
-                ForEach(routesToShow) { routeResult in
-                    if let route = routeResult.route {
-                        MapPolyline(route)
-                            .stroke(
-                                routeResult.mode.color,
-                                lineWidth: routeResult.isPreferred ? 6 : 3
-                            )
-                    } else if let polyline = routeResult.cyclingPolyline {
-                        MapPolyline(polyline)
-                            .stroke(
-                                routeResult.mode.color.opacity(0.8),
-                                style: StrokeStyle(
-                                    lineWidth: routeResult.isPreferred ? 6 : 3,
-                                    dash: [8, 4]  // Dashed line for cycling
-                                )
-                            )
-                    }
-                }
-
-                // Selected transit route legs (coordinates embedded in each leg)
-                if let transitOption = selectedTransitOption {
-                    ForEach(transitOption.legs) { leg in
-                        switch leg {
-                        case .walk(_, _, _, _, _, let fromCoord, let toCoord):
-                            MapPolyline(coordinates: [fromCoord.clCoordinate, toCoord.clCoordinate])
-                                .stroke(TransitColors.walkColor, style: TransitColors.walkDash)
-
-                        case .ride(_, _, _, _, _, _, _, _, let mode, _, _, let pathCoords, _, _):
-                            if pathCoords.count >= 2 {
-                                MapPolyline(coordinates: pathCoords.map { $0.clCoordinate })
-                                    .stroke(TransitColors.route(mode), lineWidth: 5)
-                            }
-
-                        case .transfer(_, _, _, _, let fromCoord, let toCoord):
-                            MapPolyline(coordinates: [fromCoord.clCoordinate, toCoord.clCoordinate])
-                                .stroke(TransitColors.walkColor, style: TransitColors.transferDash)
-                        }
-                    }
-                }
-
-                // Selected bus route (from shapes.txt, shown when user taps a route)
-                if transitState.selectedBusRouteCoords.count >= 2 {
-                    MapPolyline(coordinates: transitState.selectedBusRouteCoords)
-                        .stroke(.blue, lineWidth: 4)
-
-                    // Route labels at intervals along the line so one is always visible
-                    // regardless of zoom level. Spaced at ~25% intervals.
-                    let labelIndices = busRouteLabelIndices(count: transitState.selectedBusRouteCoords.count)
-                    ForEach(labelIndices, id: \.self) { idx in
-                        Annotation("", coordinate: transitState.selectedBusRouteCoords[idx], anchor: .center) {
-                            Text(transitState.selectedBusRouteName)
-                                .font(.caption.bold())
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(.blue)
-                                .foregroundStyle(.white)
-                                .clipShape(Capsule())
-                                .shadow(radius: 2)
-                        }
-                    }
-
-                    // Start and end markers
-                    if let first = transitState.selectedBusRouteCoords.first {
-                        Annotation("Start", coordinate: first) {
-                            Circle()
-                                .fill(.blue)
-                                .frame(width: 10, height: 10)
-                                .overlay(Circle().stroke(.white, lineWidth: 2))
-                        }
-                    }
-                    if let last = transitState.selectedBusRouteCoords.last {
-                        Annotation("End", coordinate: last) {
-                            Circle()
-                                .fill(.blue)
-                                .frame(width: 10, height: 10)
-                                .overlay(Circle().stroke(.white, lineWidth: 2))
-                        }
-                    }
-                }
             }
             .mapStyle(currentMapStyle)
             // Intentionally NOT using .ignoresSafeArea(). Even when applied
@@ -644,12 +388,6 @@ struct MapTabView: View {
                 if isSearchFocused {
                     isSearchFocused = false
                     searchState.clearSearch()
-                    return
-                }
-                // Clear any displayed bus route overlay
-                if !transitState.selectedBusRouteCoords.isEmpty {
-                    transitState.selectedBusRouteCoords = []
-                    transitState.selectedBusRouteName = ""
                     return
                 }
                 // If a sheet is already showing (from a previous tap), don't POI search
@@ -746,13 +484,10 @@ struct MapTabView: View {
         ForEach(searchState.routeSearchResults, id: \.routeId) { route in
             HStack(spacing: 10) {
                 Button(action: {
+                    // Route drawing was removed with the planner; phase 2
+                    // rewires this. For now a tap just clears the search.
                     searchState.showSearchResults = false
                     searchState.searchText = ""
-                    Task {
-                        if let region = await transitState.selectBusRoute(routeId: route.routeId, routeName: route.routeName) {
-                            cameraPosition = .region(region)
-                        }
-                    }
                 }) {
                     HStack(spacing: 10) {
                         Image(systemName: route.routeType == 0 ? "tram.fill" : (route.routeType == 2 ? "train.side.front.car" : "bus.fill"))
@@ -827,7 +562,7 @@ struct MapTabView: View {
                     center: stop.coordinate,
                     span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
                 ))
-                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type)
+                viewModel.showTransitArrivals(stationName: stop.name, coordinate: stop.coordinate, stopType: stop.type, stopCode: stop.stopCode, stopId: stop.id)
             }) {
                 HStack(spacing: 10) {
                     Image(systemName: stop.type.systemImage)
@@ -898,126 +633,6 @@ struct MapTabView: View {
             }
             Divider()
         }
-    }
-
-    // MARK: - Transit Status Badge
-
-    /// Top-right floating pill: shows "Loading transit…" while loadTransitData
-    /// hasn't finished, otherwise shows the GTFS data's age (e.g. "Data: 3d
-    /// old"). User reported a 60-second white screen on cold start with no
-    /// signal — this gives them a visible anchor that the app is doing work,
-    /// and afterwards lets them see at a glance how stale the cached
-    /// timetable is. Non-interactive (allowsHitTesting=false on the parent)
-    /// so it doesn't compete for taps with the map.
-    @ViewBuilder
-    private var transitStatusBadge: some View {
-        if !searchState.transitDataReady {
-            if loadIsStuck {
-                // After 8s of no completion, switch from a quiet pill to a
-                // diagnostic banner. Shows which phase is in flight + the
-                // sizes of the on-disk caches so a user reporting "stuck"
-                // can read out concrete data without Xcode console.
-                stuckDiagnosticBanner
-            } else {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(loadPhaseLabel)
-                        .font(.caption2.weight(.medium))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial)
-                .clipShape(Capsule())
-                .shadow(color: .black.opacity(0.1), radius: 2)
-            }
-        } else if let age = transitDataAge {
-            // Tap → open the hamburger menu so the user can see per-source
-            // last-fetched timestamps and hit "Refresh Transit Data" if
-            // the schedule is stale. The pill itself reads "3d ago"; the
-            // tap is the discoverability path to a deeper view.
-            Button(action: { viewModel.showLayerSidebar() }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 10))
-                    Text(age)
-                        .font(.caption2)
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.ultraThinMaterial)
-                .clipShape(Capsule())
-                .opacity(0.85)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    /// Pulled from the GTFS database file's mtime. Updated only when SQLite
-    /// is rebuilt, so it accurately reflects how old the schedule data is.
-    @State private var transitDataAge: String? = nil
-
-    /// Phase string set by loadTransitData so the stuck-detector banner can
-    /// show which step is in flight when it fires. Helps diagnose hangs
-    /// without requiring Xcode console — the app itself reports where it's
-    /// stuck.
-    @State private var loadPhaseLabel: String = "Starting…"
-    /// Set true after 8 seconds if searchState.transitDataReady hasn't
-    /// flipped. Triggers the diagnostic banner over the regular loading
-    /// pill so the user has actionable info rather than a silent spinner.
-    @State private var loadIsStuck: Bool = false
-
-    /// `dataAge` returns "Updated 3h ago"; the badge is already labeled
-    /// "Data:" via the clock icon so trim the verbose prefix for a tighter
-    /// pill — "3h ago" is enough.
-    private func stripUpdatedPrefix(_ s: String) -> String {
-        s.replacingOccurrences(of: "Updated ", with: "")
-    }
-
-    /// Diagnostic banner shown after 8 seconds without loadTransitData
-    /// completing. Always-readable text — phase name + on-disk cache
-    /// presence + a tap target to force-restart loading. The user reported
-    /// "white screen, nothing happens, can't describe it"; this gives them
-    /// concrete data to relay back without needing the Xcode console.
-    private var stuckDiagnosticBanner: some View {
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        func sizeKB(_ name: String) -> String {
-            let url = cachesURL.appendingPathComponent(name)
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-                  let size = attrs[.size] as? Int else { return "missing" }
-            if size < 1024 { return "\(size) B" }
-            if size < 1_048_576 { return String(format: "%.0f KB", Double(size) / 1024.0) }
-            return String(format: "%.1f MB", Double(size) / 1_048_576.0)
-        }
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text("Loading slow")
-                    .font(.caption.bold())
-                Spacer()
-            }
-            Text("Phase: \(loadPhaseLabel)")
-                .font(.caption2)
-            Text("Stops cache: \(sizeKB("gtfs_stops_cache.json"))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-            Text("Schedule SQLite: \(sizeKB("gtfs_schedule.sqlite"))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-            Text("GTFS ZIP: \(sizeKB("gtfs_all_cache.zip"))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-            Text("Shapes cache: \(sizeKB("gtfs_shapes_cache.json"))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-        }
-        .padding(10)
-        .frame(maxWidth: 220, alignment: .leading)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .shadow(color: .black.opacity(0.15), radius: 3)
     }
 
     // MARK: - Bottom Bar
@@ -1100,41 +715,7 @@ struct MapTabView: View {
 
     // MARK: - POI Search
 
-    @MainActor
     // MARK: - Async Tasks (extracted from body to reduce type-checker complexity)
-
-    private func pollLiveTransit() async {
-        // Debounce: wait 1 second after last toggle change before making API calls
-        // This prevents rapid toggling from burning through rate limits
-        try? await Task.sleep(for: .seconds(1))
-        guard !Task.isCancelled else { return }
-
-        let wantsBus = transitState.showLiveTransit.contains(.bus) && NTATransitService.isConfigured
-        let wantsTrains = transitState.showLiveTransit.contains(.dart) || transitState.showLiveTransit.contains(.rail)
-        guard wantsBus || wantsTrains else {
-            transitState.liveVehicles = []
-            transitState.liveTrains = []
-            return
-        }
-        let vehicleService = LiveVehicleService()
-        let railService = IrishRailService()
-        var interval: Duration = .seconds(30)
-        while !Task.isCancelled {
-            async let busFetch: [GTFSVehiclePosition] = wantsBus ? vehicleService.fetchVehiclePositions() : []
-            async let trainFetch: [IrishRailTrainPosition] = wantsTrains ? railService.fetchCurrentTrains() : []
-            let (buses, trains) = await (busFetch, trainFetch)
-            guard !Task.isCancelled else { break }
-            let anySuccess = !buses.isEmpty || !trains.isEmpty
-            if wantsBus { transitState.liveVehicles = buses }
-            if wantsTrains { transitState.liveTrains = trains }
-            interval = anySuccess ? .seconds(30) : min(interval * 2, .seconds(120))
-            try? await Task.sleep(for: interval)
-            guard !Task.isCancelled else { break }
-        }
-        transitState.liveVehicles = []
-        transitState.liveTrains = []
-    }
-
 
     @MainActor
     private func loadTransitData() async {
@@ -1160,10 +741,6 @@ struct MapTabView: View {
         //             query results never overwrite a Phase 1 hit (so a partial
         //             SQLite parse can't wipe the map).
         //
-        // Each phase logs its outcome to APILogger so future "stops/lines
-        // missing" debugging is one tap into the API Log instead of another
-        // round of guess-and-rebuild.
-        //
         // MUST be @MainActor: writes @Observable state on transitState. Without
         // isolation Swift may schedule the final assignments off-main and
         // SwiftUI never observes the change.
@@ -1172,8 +749,6 @@ struct MapTabView: View {
         // Both the stop JSON and the shape JSON are read synchronously (no
         // suspension). Map is populated within the first frame even if the
         // SQLite DB needs a 60s rebuild after this point.
-        loadPhaseLabel = "Loading stops cache"
-        let phase1Start = Date()
         let loader = GTFSStopLoader()
         let stopsFromCache = await loader.loadStops()    // returns from JSON cache in ~100ms
         transitState.transitStops = stopsFromCache       // ← assign EARLY, before any slow await
@@ -1187,24 +762,11 @@ struct MapTabView: View {
             transitState.luasGreenStopIds = cached.luasGreenStops
         }
 
-        let phase1Ms = Int(Date().timeIntervalSince(phase1Start) * 1000)
-        let cachedLines = transitState.luasRedShapeLines.count
-            + transitState.luasGreenShapeLines.count
-            + transitState.dartShapeLines.count
-            + transitState.railShapeLines.count
-        APILogger.shared.log(
-            service: "BetterMaps", endpoint: "loadTransitData phase1 (caches)",
-            status: .success, durationMs: phase1Ms,
-            detail: "\(stopsFromCache.count) stops, \(cachedLines) cached shape segments"
-        )
-
         // ─── PHASE 2: Refresh from SQLite GTFS database ────────────────────────
         // This may block on a 30–60s re-parse the first time after install or
         // after the cached DB is rejected for being incomplete. Phase 1 already
         // populated the map, so the user is not staring at nothing.
-        loadPhaseLabel = "Opening transit DB"
         await GTFSScheduleService.shared.loadIfNeeded()
-        loadPhaseLabel = "Classifying stops"
         let classification = await GTFSScheduleService.shared.classifyTramAndRailStops()
 
         var reclassified = stopsFromCache
@@ -1218,10 +780,8 @@ struct MapTabView: View {
                                    type: newType, stopCode: stop.stopCode)
             }
         }
-        loadPhaseLabel = "Deduplicating stops"
         let dedupedStops = Self.deduplicateLuasStops(reclassified, classifiedIds: Set(classification.keys))
 
-        loadPhaseLabel = "Loading shapes"
         let luasShapes = await GTFSScheduleService.shared.luasShapesByLine()
         let luasStops = await GTFSScheduleService.shared.luasStopsByLine()
         let dart = await GTFSScheduleService.shared.shapeCoordinatesForDART()
@@ -1253,43 +813,6 @@ struct MapTabView: View {
             luasRedStops: transitState.luasRedStopIds,
             luasGreenStops: transitState.luasGreenStopIds
         )
-
-        // Type breakdown of dedupedStops so we can see whether the SQLite
-        // classification actually populated rail/dart buckets — the user
-        // reported missing purple rail pins on visible rail lines, which
-        // is consistent with stops staying classified as bus from the
-        // initial name-based pass.
-        let busCount = dedupedStops.filter { $0.type == .bus }.count
-        let luasCount = dedupedStops.filter { $0.type == .luas }.count
-        let dartCount = dedupedStops.filter { $0.type == .dart }.count
-        let railCount = dedupedStops.filter { $0.type == .rail || $0.type == .suburban }.count
-        APILogger.shared.log(
-            service: "BetterMaps", endpoint: "loadTransitData phase2 (SQLite)",
-            status: (luasShapes.red.isEmpty && luasShapes.green.isEmpty && dart.isEmpty && rail.isEmpty) ? .failure : .success,
-            durationMs: 0,
-            detail: "\(dedupedStops.count) stops [bus=\(busCount) luas=\(luasCount) dart=\(dartCount) rail=\(railCount)] | shapes luasRed=\(luasShapes.red.count) luasGreen=\(luasShapes.green.count) dart=\(dart.count) rail=\(rail.count)"
-        )
-
-        // Refresh the visible "Data: Xd old" badge with the SQLite mtime.
-        transitDataAge = await GTFSScheduleService.shared.dataAge.map { stripUpdatedPrefix($0) }
-
-        // Background graph build (independent of view rendering — does not block).
-        Task.detached(priority: .utility) {
-            let router = TransitRoutePlanner.shared.headwayRouter
-            await router.loadGraph()
-
-            let isReady: Bool = await router.isReady
-            if !isReady {
-                let services = await GTFSScheduleService.shared.activeServiceIds(for: Date())
-                let stops = await GTFSStopLoader().loadStops()
-                let builder = TransitGraphBuilder()
-                let db = await GTFSScheduleService.shared.database
-                let graph = await builder.build(
-                    db: db, activeServices: services, allStops: stops
-                )
-                await router.setGraph(graph)
-            }
-        }
     }
 
     /// Extracted to a static function to avoid type-checker timeout in the .task closure.
@@ -1345,17 +868,6 @@ struct MapTabView: View {
     }
 
 
-    // MARK: - Bus Route Labels
-
-    /// Indices along the bus route shape where labels should be placed.
-    /// Returns ~4 evenly spaced indices so a label is always visible at any zoom.
-    private func busRouteLabelIndices(count: Int) -> [Int] {
-        guard count >= 2 else { return [] }
-        if count < 8 { return [count / 2] }  // short routes: just midpoint
-        let step = count / 4
-        return [step, step * 2, step * 3]
-    }
-
     /// Determine pin color for a stop. Returns nil for the default (the
     /// stop type's `colorHex`); only overrides for Luas stops where the
     /// pin should match the LINE color (Red vs Green) rather than the
@@ -1370,76 +882,5 @@ struct MapTabView: View {
             return TransitColors.luasGrnPin
         }
         return nil
-    }
-
-    // MARK: - Routing
-
-    @MainActor
-    private func calculateRouteToMapItem(_ mapItem: MKMapItem) async {
-        guard let userLocation = locationManager.userLocation else { return }
-        let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
-        await routingVM.calculateRoutes(from: userLocation, to: mapItem.placemark.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: transitState.showTransitStops)
-    }
-
-    @MainActor
-    private func calculateRoute(to destination: Place) async {
-        guard let userLocation = locationManager.userLocation else { return }
-        let weatherRules = try? modelContext.fetch(FetchDescriptor<WeatherRule>())
-        await routingVM.calculateRoutes(from: userLocation, to: destination.coordinate, weatherRules: weatherRules ?? [], context: modelContext, activeTransitLayers: transitState.showTransitStops)
-    }
-}
-
-// MARK: - Route Zoom Modifier (extracted to reduce body type-checker complexity)
-
-private struct RouteZoomModifier: ViewModifier {
-    let routingVM: RoutingViewModel
-    @Binding var cameraPosition: MapCameraPosition
-    @Binding var selectedTransitOption: TransitRouteOption?
-    @Binding var selectedRouteId: UUID?
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: routingVM.activeRoutes.count) { old, new in
-                if old == 0 && new > 0 && selectedTransitOption == nil {
-                    let allCoords = routingVM.activeRoutes.flatMap { routingVM.coordinates(for: $0) }
-                    if let region = routingVM.boundingRegion(for: allCoords) {
-                        withAnimation(.easeInOut(duration: 0.5)) {
-                            cameraPosition = .region(region)
-                        }
-                    }
-                }
-            }
-            .onChange(of: routingVM.transitOptions.count) { old, new in
-                // Zoom to show the first transit option's extent, but don't auto-select
-                // so the user stays on the route list
-                if old == 0 && new > 0, let first = routingVM.transitOptions.first {
-                    let coords = routingVM.coordinates(for: first)
-                    if let region = routingVM.boundingRegion(for: coords) {
-                        withAnimation(.easeInOut(duration: 0.5)) {
-                            cameraPosition = .region(region)
-                        }
-                    }
-                }
-            }
-            .onChange(of: selectedTransitOption?.id) { _, newId in
-                guard let newId,
-                      let option = routingVM.transitOptions.first(where: { $0.id == newId }) else { return }
-                let coords = routingVM.coordinates(for: option)
-                if let region = routingVM.boundingRegion(for: coords) {
-                    withAnimation(.easeInOut(duration: 0.5)) {
-                        cameraPosition = .region(region)
-                    }
-                }
-            }
-            .onChange(of: selectedRouteId) { _, newId in
-                guard let newId,
-                      let result = routingVM.activeRoutes.first(where: { $0.id == newId }) else { return }
-                let coords = routingVM.coordinates(for: result)
-                if let region = routingVM.boundingRegion(for: coords) {
-                    withAnimation(.easeInOut(duration: 0.5)) {
-                        cameraPosition = .region(region)
-                    }
-                }
-            }
     }
 }

@@ -44,12 +44,10 @@ struct FavoritesPanel: View {
     @Query(sort: \Layer.sortOrder) private var layers: [Layer]
     @Query(sort: \FavoriteTransitRoute.sortOrder) private var favoriteRoutes: [FavoriteTransitRoute]
     @Binding var showTransitStops: Set<TransitStop.TransitStopType>
-    @Binding var showLiveTransit: Set<TransitStop.TransitStopType>
     @Binding var isPresented: Bool
     @Binding var mapStyle: MapStyleOption
-    /// Called when the user taps a favorited-route chip — host should select
-    /// the route on the map (draws shape + zooms). MapTabView wires this to
-    /// transitState.selectBusRoute.
+    /// Called when the user taps a favorited-route chip. Route drawing on the
+    /// map was removed with the planner; the host decides what to do here.
     var onSelectRoute: ((FavoriteTransitRoute) -> Void)? = nil
 
     // Map style favorites stay AppStorage-backed; they're a UI preference,
@@ -72,7 +70,6 @@ struct FavoritesPanel: View {
     }
 
     /// One row per transit mode for the chip strip.
-    /// Bus is special: long-press toggles the live layer (rare, bus-only).
     private struct TransitMode: Identifiable {
         let id: TransitStop.TransitStopType
         let label: String
@@ -136,8 +133,7 @@ struct FavoritesPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Transit")
 
-            // Mode chips: tap toggles stops + lines for that mode. Long-press
-            // on Bus toggles Live (it's the only mode where Live is useful).
+            // Mode chips: tap toggles stops + lines for that mode.
             HStack(spacing: 6) {
                 ForEach(Self.transitModes) { mode in
                     transitModeChip(mode)
@@ -162,8 +158,6 @@ struct FavoritesPanel: View {
     @ViewBuilder
     private func transitModeChip(_ mode: TransitMode) -> some View {
         let isOn = showTransitStops.contains(mode.id)
-        let isLiveOn = showLiveTransit.contains(mode.id)
-        let liveAvailable = mode.id == .bus && NTATransitService.isConfigured
 
         VStack(spacing: 2) {
             Image(systemName: mode.icon)
@@ -176,28 +170,9 @@ struct FavoritesPanel: View {
         .background(isOn ? mode.color.opacity(0.25) : Color(.systemGray5))
         .foregroundStyle(isOn ? mode.color : .secondary)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(alignment: .topTrailing) {
-            // Tiny dot when Live is on — only meaningful for Bus today, but
-            // shown generically so the visual language is consistent if we
-            // expand Live to other modes later.
-            if isLiveOn {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 6, height: 6)
-                    .padding(4)
-            }
-        }
         .contentShape(Rectangle())
         .onTapGesture {
             toggleSet(&showTransitStops, type: mode.id)
-        }
-        .onLongPressGesture(minimumDuration: 0.4) {
-            // Long-press = toggle Live. Bus-only per current behavior; the
-            // gesture is harmless on the others since liveAvailable=false
-            // would just flip showLiveTransit which the live poller ignores
-            // for non-bus modes.
-            guard liveAvailable else { return }
-            toggleSet(&showLiveTransit, type: mode.id)
         }
     }
 
@@ -248,10 +223,9 @@ struct FavoritesPanel: View {
             HStack {
                 sectionHeader("My Layers")
                 Spacer()
-                if !showTransitStops.isEmpty || !showLiveTransit.isEmpty {
+                if !showTransitStops.isEmpty {
                     Button(action: {
                         showTransitStops.removeAll()
-                        showLiveTransit.removeAll()
                     }) {
                         Label("Hide Transit", systemImage: "eye.slash")
                             .font(.caption2)

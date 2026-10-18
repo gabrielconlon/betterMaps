@@ -18,7 +18,7 @@ final class SavedRoute {
     var destinationLongitude: Double = 0
 
     // Route data
-    var mode: String = "driving"  // TransportMode rawValue
+    var mode: String = "driving"  // legacy transport-mode raw value
     var etaSeconds: Double = 0
     var distanceMeters: Double = 0
 
@@ -32,10 +32,6 @@ final class SavedRoute {
     var savedAt: Date = Date()
     var lastUsed: Date = Date()
     var notes: String = ""
-
-    var transportMode: TransportMode {
-        TransportMode(rawValue: mode) ?? .driving
-    }
 
     var originCoordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: originLatitude, longitude: originLongitude)
@@ -57,7 +53,7 @@ final class SavedRoute {
         origin: CLLocationCoordinate2D = CLLocationCoordinate2D(),
         destinationName: String = "",
         destination: CLLocationCoordinate2D = CLLocationCoordinate2D(),
-        mode: TransportMode = .driving,
+        mode: String = "driving",
         etaSeconds: Double = 0,
         distanceMeters: Double = 0,
         coordinates: [CLLocationCoordinate2D] = [],
@@ -72,7 +68,7 @@ final class SavedRoute {
         self.destinationName = destinationName
         self.destinationLatitude = destination.latitude
         self.destinationLongitude = destination.longitude
-        self.mode = mode.rawValue
+        self.mode = mode
         self.etaSeconds = etaSeconds
         self.distanceMeters = distanceMeters
         self.bikeLaneInfo = bikeLaneInfo

@@ -142,18 +142,13 @@ actor YelpService {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
 
-        let start = Date()
         do {
-            let (data, urlResponse) = try await URLSession.shared.data(for: request)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.updateQuota(service: "Yelp", from: urlResponse)
+            let (data, _) = try await URLSession.shared.data(for: request)
             let decoded = try JSONDecoder().decode(YelpSearchResponse.self, from: data)
-            await APILogger.shared.log(service: "Yelp", endpoint: "businesses/search?term=\(name)", status: .success, durationMs: ms)
             guard let business = decoded.businesses.first else { return nil }
             return await fetchBusinessDetails(id: business.id)
         } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "Yelp", endpoint: "businesses/search", status: .failure, durationMs: ms, detail: error.localizedDescription)
+            print("[Yelp] businesses/search failed: \(error.localizedDescription)")
             return nil
         }
     }

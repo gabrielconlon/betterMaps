@@ -140,8 +140,8 @@ enum TransitColors {
 
     /// Background line color for the Luas/DART/Rail network overlay. Same hue
     /// as the pin so a stop and its line visibly share identity.
-    static func layer(_ mode: TransitLegMode) -> Color {
-        switch mode {
+    static func layer(_ kind: TransitLayerKind) -> Color {
+        switch kind {
         case .bus:  return busPin.opacity(0.7)
         case .luas: return luasGrnPin.opacity(0.7)   // Green line — Red is `luasRedLayer`
         case .dart: return dartPin.opacity(0.7)
@@ -149,35 +149,8 @@ enum TransitColors {
         }
     }
 
-    /// Saturated colors for the *active selected* route polyline so it pops
-    /// against the pastel network underneath. These stay vivid on purpose —
-    /// they're a foreground action layer, not background context.
-    static func route(_ mode: TransitLegMode) -> Color {
-        switch mode {
-        case .bus:  return Color(red: 0.0, green: 0.48, blue: 1.0)
-        case .luas: return Color(red: 0.1, green: 0.75, blue: 0.4)
-        case .dart: return Color(red: 1.0, green: 0.55, blue: 0.0)
-        case .rail: return Color(red: 0.55, green: 0.25, blue: 0.85)
-        }
-    }
-
-    /// Route color from a string key (for views using raw mode strings)
-    static func route(for modeKey: String) -> Color {
-        if let mode = TransitLegMode(rawValue: modeKey) {
-            return route(mode)
-        }
-        if modeKey == "walk" { return walkColor }
-        return .gray
-    }
-
     /// Luas Red line — pastel coral with the same .opacity treatment as the
     /// other network lines so all four (LuasRed/LuasGreen/DART/Rail) read
     /// as a coherent overlay set.
     static let luasRedLayer = luasRedPin.opacity(0.7)
-    static let luasRedRoute = Color(red: 0.95, green: 0.25, blue: 0.25)  // saturated red for selected route
-
-    // Walk & transfer styling
-    static let walkColor = Color.gray
-    static let walkDash = StrokeStyle(lineWidth: 3, dash: [6, 4])
-    static let transferDash = StrokeStyle(lineWidth: 2, dash: [4, 4])
 }

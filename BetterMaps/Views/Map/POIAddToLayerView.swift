@@ -9,11 +9,9 @@ struct POIAddToLayerView: View {
 
     let mapItem: MKMapItem
     let onDismiss: () -> Void
-    let onGetDirections: ((MKMapItem) -> Void)?
 
-    init(mapItem: MKMapItem, onGetDirections: ((MKMapItem) -> Void)? = nil, onDismiss: @escaping () -> Void) {
+    init(mapItem: MKMapItem, onDismiss: @escaping () -> Void) {
         self.mapItem = mapItem
-        self.onGetDirections = onGetDirections
         self.onDismiss = onDismiss
     }
 
@@ -105,11 +103,7 @@ struct POIAddToLayerView: View {
                                 .font(.title)
                                 .foregroundStyle(.blue)
                         }
-                        Button(action: {
-                            onGetDirections?(mapItem)
-                            onDismiss()
-                            dismiss()
-                        }) {
+                        Button(action: openInAppleMaps) {
                             Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
                                 .font(.title)
                                 .foregroundStyle(.green)
@@ -232,29 +226,14 @@ struct POIAddToLayerView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button(action: {
-                        onGetDirections?(mapItem)
-                        onDismiss()
-                        dismiss()
-                    }) {
-                        Label("Directions", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
+                    Button(action: openInAppleMaps) {
+                        Label("Open in Apple Maps", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
                 }
-
-                Button(action: {
-                    let placemark = MKPlacemark(coordinate: mapItem.placemark.coordinate)
-                    let item = MKMapItem(placemark: placemark)
-                    item.name = placeName
-                    item.openInMaps()
-                }) {
-                    Label("Open in Apple Maps", systemImage: "arrow.up.forward.app")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
             }
             .padding(.horizontal)
             .padding(.bottom)
@@ -280,6 +259,13 @@ struct POIAddToLayerView: View {
                 }
             )
         }
+    }
+
+    /// Hand off to Apple Maps with walking directions to this POI.
+    private func openInAppleMaps() {
+        let item = MKMapItem(placemark: MKPlacemark(coordinate: mapItem.placemark.coordinate))
+        item.name = placeName
+        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
     }
 
     // MARK: - Yelp

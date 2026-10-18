@@ -70,8 +70,8 @@ actor GTFSStopLoader {
     private let routesCacheFileName = "gtfs_routes_cache.json"
     private let cacheMaxAge: TimeInterval = 7 * 24 * 3600 // 7 days
 
-    /// Route ID → route short name mapping (e.g., "125593" → "39A")
-    /// Shared so LiveVehicleService can look up route names
+    /// Route ID → route short name mapping (e.g., "125593" → "39A").
+    /// Read by GTFSScheduleService.parseTrips to denormalize route names into trips.
     nonisolated(unsafe) static var routeNameLookup: [String: String] = [:]
 
     /// Path to the cached raw GTFS ZIP (for lazy shapes.txt extraction)
@@ -96,7 +96,6 @@ actor GTFSStopLoader {
     func loadStops() async -> [TransitStop] {
         // Check cache first
         if let cached = loadFromCache() {
-            await APILogger.shared.log(service: "NTA", endpoint: "GTFS stops (cached)", status: .cached, durationMs: 0)
             return cached
         }
 
@@ -104,9 +103,6 @@ actor GTFSStopLoader {
         let stops = await downloadAndParseGTFS()
         if !stops.isEmpty {
             saveToCache(stops)
-        }
-        if GTFSStopLoader.routeNameLookup.isEmpty {
-            await APILogger.shared.log(service: "TFI", endpoint: "GTFS route lookup", status: .failure, durationMs: 0, detail: "routeNameLookup is empty after GTFS load")
         }
         return stops.isEmpty ? builtInStops() : stops
     }
@@ -134,19 +130,14 @@ actor GTFSStopLoader {
         var request = URLRequest(url: url)
         request.timeoutInterval = 300 // TFI server can be very slow for this ~65 MB file
 
-        let start = Date()
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
 
             let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
             if httpStatus != 200 {
-                await APILogger.shared.log(service: "TFI", endpoint: "GTFS static (\(url.host ?? ""))", status: .failure, durationMs: ms, detail: "HTTP \(httpStatus)")
+                print("[GTFS] static download \(url.host ?? "") failed: HTTP \(httpStatus)")
                 return nil
             }
-
-            await APILogger.shared.log(service: "TFI", endpoint: "GTFS static (\(data.count / 1024)KB)", status: .success, durationMs: ms)
-            await APILogger.shared.trackBytes(data.count)
 
             // Cache the raw ZIP for lazy shapes.txt extraction later
             Self.cacheRawZip(data)
@@ -156,27 +147,23 @@ actor GTFSStopLoader {
             await parseRoutesFromZip(data: data)
             return stops.isEmpty ? nil : stops
         } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "TFI", endpoint: "GTFS static", status: .failure, durationMs: ms, detail: error.localizedDescription)
+            print("[GTFS] static download failed: \(error.localizedDescription)")
             return nil
         }
     }
 
     /// Parse routes.txt to build route_id → route_short_name lookup
     private func parseRoutesFromZip(data: Data) async {
-        guard let routesCSV = extractFileFromZip(data: data, fileName: "routes.txt") else {
-            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
+        guard let routesCSV = extractFileFromZip(data: data, fileName: "routes.txt"),
+              let headerLine = routesCSV.components(separatedBy: .newlines).first else {
+            print("[GTFS] routes.txt not found or empty in ZIP")
             return
         }
         let lines = routesCSV.components(separatedBy: .newlines)
-        guard let headerLine = lines.first else {
-            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
-            return
-        }
         let headers = parseCSVRow(headerLine)
         guard let idIdx = headers.firstIndex(of: "route_id"),
               let nameIdx = headers.firstIndex(of: "route_short_name") else {
-            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
+            print("[GTFS] routes.txt missing route_id/route_short_name columns")
             return
         }
 
@@ -192,12 +179,6 @@ actor GTFSStopLoader {
         }
         GTFSStopLoader.routeNameLookup = lookup
 
-        if lookup.isEmpty {
-            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt", status: .failure, durationMs: 0, detail: "routes.txt not found or empty in ZIP")
-        } else {
-            await APILogger.shared.log(service: "TFI", endpoint: "routes.txt (\(lookup.count) routes)", status: .success, durationMs: 0)
-        }
-
         // Cache the routes lookup
         if let data = try? JSONEncoder().encode(lookup) {
             let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -206,24 +187,15 @@ actor GTFSStopLoader {
         }
     }
 
-    /// Load cached route name lookup (call on app launch)
+    /// Load cached route name lookup. GTFSScheduleService calls this before
+    /// parsing trips so route short names are available on a rebuild from the
+    /// cached ZIP even when routes.txt wasn't parsed in this session.
     static func loadCachedRouteNames() {
         let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("gtfs_routes_cache.json")
         if let data = try? Data(contentsOf: url),
            let lookup = try? JSONDecoder().decode([String: String].self, from: data) {
             routeNameLookup = lookup
-        }
-        print("GTFS route lookup: \(routeNameLookup.count) routes loaded from cache")
-        // Also log to API Logs so it's visible in-app
-        Task { @MainActor in
-            APILogger.shared.log(
-                service: "TFI",
-                endpoint: "Route name cache",
-                status: routeNameLookup.isEmpty ? .failure : .success,
-                durationMs: 0,
-                detail: "\(routeNameLookup.count) route names loaded"
-            )
         }
     }
 
@@ -303,7 +275,7 @@ actor GTFSStopLoader {
 
     /// Initial stop classification based on ID/name patterns.
     /// This is a rough guess — stops are reclassified using actual GTFS route_type
-    /// data after the schedule database loads (see MapTabView and RoutingViewModel).
+    /// data after the schedule database loads (see MapTabView.loadTransitData).
     /// Only match when we're very confident to avoid false positives like
     /// bus stops named "Connolly Road" being tagged as DART.
     private func classifyStop(id: String, name: String) -> TransitStop.TransitStopType {

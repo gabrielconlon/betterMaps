@@ -103,12 +103,6 @@ actor GTFSScheduleService {
         let weekdayCol = Self.weekdayColumns[weekday]
         let dateStr = formatGTFSDate(date)
 
-        let calendarCount = db.count(table: "calendars")
-        let calendarDatesCount = db.count(table: "calendar_dates")
-
-        var baseCount = 0
-        var addedCount = 0
-        var removedCount = 0
         var services = Set<String>()
 
         // 1. Base services: weekday=1 AND today within [start_date, end_date]
@@ -124,7 +118,6 @@ actor GTFSScheduleService {
             }
             db.finalize(stmt)
         }
-        baseCount = services.count
 
         // 2. Add services from calendar_dates (exception_type=1)
         let addSql = "SELECT service_id FROM calendar_dates WHERE date = ? AND exception_type = 1"
@@ -135,10 +128,8 @@ actor GTFSScheduleService {
             }
             db.finalize(stmt)
         }
-        addedCount = services.count - baseCount
 
         // 3. Remove services from calendar_dates (exception_type=2)
-        let beforeRemove = services.count
         let removeSql = "SELECT service_id FROM calendar_dates WHERE date = ? AND exception_type = 2"
         if let stmt = db.prepare(removeSql) {
             sqlite3_bind_text(stmt, 1, (dateStr as NSString).utf8String, -1, nil)
@@ -147,13 +138,6 @@ actor GTFSScheduleService {
             }
             db.finalize(stmt)
         }
-        removedCount = beforeRemove - services.count
-
-        await APILogger.shared.log(
-            service: "GTFS", endpoint: "activeServiceIds",
-            status: services.isEmpty ? .failure : .success, durationMs: 0,
-            detail: "date=\(dateStr) weekday=\(weekdayCol) | base:\(baseCount) +added:\(addedCount) -removed:\(removedCount) = \(services.count) active"
-        )
 
         return services
     }
@@ -175,13 +159,12 @@ actor GTFSScheduleService {
                 // the 7-day freshness window to lapse.
                 if trips > 0 && shapes > 0 {
                     isLoaded = true
-                    await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .cached, durationMs: 0, detail: "\(trips) trips, \(shapes) shapes")
                     return
                 }
                 let reason = trips == 0 ? "0 trips" : "\(trips) trips but 0 shapes"
                 db.close()
                 try? FileManager.default.removeItem(atPath: GTFSDatabase.defaultPath)
-                await APILogger.shared.log(service: "TFI", endpoint: "GTFS schedule (SQLite)", status: .failure, durationMs: 0, detail: "Cached DB has \(reason) — re-parsing")
+                print("[GTFS] cached SQLite has \(reason) — re-parsing")
             }
         }
 
@@ -200,14 +183,7 @@ actor GTFSScheduleService {
                 let trips = db.count(table: "trips")
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
                 if trips > 0 {
-                    let stopTimes = db.count(table: "stop_times")
-                    let routes = db.count(table: "routes")
-                    let shapes = db.count(table: "shapes")
-                    await APILogger.shared.log(
-                        service: "TFI", endpoint: "GTFS → SQLite (cached ZIP)",
-                        status: .success, durationMs: ms,
-                        detail: "\(trips) trips, \(stopTimes) stop_times, \(routes) routes, \(shapes) shapes. Parse: \(ms)ms"
-                    )
+                    print("[GTFS] SQLite built from cached ZIP: \(trips) trips in \(ms)ms")
                     isLoaded = true
                     return
                 }
@@ -233,7 +209,6 @@ actor GTFSScheduleService {
 
                 guard httpStatus == 200 else { continue }
 
-                await APILogger.shared.trackBytes(data.count)
                 GTFSStopLoader.cacheRawZip(data)
 
                 // Delete old database and create fresh
@@ -249,17 +224,9 @@ actor GTFSScheduleService {
                 db.execute("PRAGMA optimize")
                 db.execute("PRAGMA synchronous = NORMAL")
 
-                let totalMs = Int(Date().timeIntervalSince(start) * 1000)
                 let parseMs = Int(Date().timeIntervalSince(parseStart) * 1000)
                 let trips = db.count(table: "trips")
-                let stopTimes = db.count(table: "stop_times")
-                let routes = db.count(table: "routes")
-                let shapes = db.count(table: "shapes")
-                await APILogger.shared.log(
-                    service: "TFI", endpoint: "GTFS → SQLite",
-                    status: trips > 0 ? .success : .failure, durationMs: totalMs,
-                    detail: "\(trips) trips, \(stopTimes) stop_times, \(routes) routes, \(shapes) shapes. Download: \(ms)ms, Parse: \(parseMs)ms"
-                )
+                print("[GTFS] SQLite built from download: \(trips) trips. Download: \(ms)ms, Parse: \(parseMs)ms")
                 if trips > 0 {
                     isLoaded = true
                     return
@@ -702,24 +669,6 @@ actor GTFSScheduleService {
         }
     }
 
-    /// Log what route types and names exist in the database (for debugging)
-    func logRouteTypes() async {
-        let sql = "SELECT route_type, route_short_name, route_long_name, COUNT(*) FROM routes GROUP BY route_type ORDER BY route_type"
-        guard let stmt = db.prepare(sql) else { return }
-        defer { db.finalize(stmt) }
-
-        var detail = ""
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let type = db.columnInt(stmt, index: 0)
-            let name = db.columnText(stmt, index: 1) ?? "?"
-            let longName = db.columnText(stmt, index: 2) ?? ""
-            let count = db.columnInt(stmt, index: 3)
-            let typeName = ["Tram", "Subway", "Rail", "Bus"][min(type, 3)]
-            detail += "\(typeName)(\(type)): \(count) routes (e.g. \(name) \(longName)). "
-        }
-        await APILogger.shared.log(service: "GTFS", endpoint: "route_types", status: .success, durationMs: 0, detail: detail)
-    }
-
     /// Database age description for staleness display
     var dataAge: String? { GTFSDatabase.ageDescription }
 
@@ -728,6 +677,9 @@ actor GTFSScheduleService {
     private func parseScheduleFromZip(data: Data) async {
         let loader = GTFSStopLoader()
 
+        if GTFSStopLoader.routeNameLookup.isEmpty {
+            GTFSStopLoader.loadCachedRouteNames()
+        }
         if let tripsCSV = await loader.extractFile(from: data, named: "trips.txt") {
             parseTrips(csv: tripsCSV)
         }

@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftData
 import CoreLocation
 
 struct TransitArrivalsView: View {
@@ -13,8 +12,7 @@ struct TransitArrivalsView: View {
 
     @State private var railArrivals: [IrishRailArrival] = []
     @State private var luasForecast: LuasStopForecast?
-    @State private var busDepartures: [NTAStopDeparture] = []
-    @State private var serviceAlerts: [NTAServiceAlert] = []
+    @State private var busDepartures: [BusDeparture] = []
     @State private var isLoading = true
     @State private var hasRail = false
     @State private var hasLuas = false
@@ -31,7 +29,6 @@ struct TransitArrivalsView: View {
 
     private let railService = IrishRailService()
     private let luasService = LuasService()
-    private let ntaService = NTATransitService()
 
     /// Filter rail arrivals by stop type — DART-only shows DART trains, Rail-only shows non-DART
     private var filteredRailArrivals: [IrishRailArrival] {
@@ -241,11 +238,6 @@ struct TransitArrivalsView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(dep.headsign)
                                             .font(.subheadline)
-                                        if !dep.operator_.isEmpty {
-                                            Text(dep.operator_)
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
                                     }
 
                                     Spacer()
@@ -288,30 +280,6 @@ struct TransitArrivalsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(.systemGray6))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-
-                // Service alerts
-                if !serviceAlerts.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Service Alerts")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.orange)
-                        ForEach(serviceAlerts) { alert in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(alert.header)
-                                    .font(.caption.bold())
-                                if !alert.description.isEmpty {
-                                    Text(alert.description)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(3)
-                                }
-                            }
-                            .padding(8)
-                            .background(Color.orange.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
                 }
 
                 if !isLoading && filteredRailArrivals.isEmpty && luasForecast == nil && busDepartures.isEmpty && !busFetchAttempted {
@@ -459,21 +427,7 @@ struct TransitArrivalsView: View {
             // Ensure SQLite database is ready (instant if already built, downloads if first time)
             await GTFSScheduleService.shared.loadIfNeeded()
 
-            let loader = GTFSStopLoader()
-            let gtfsStops = await loader.loadStops()
-            // Use WaypointGraph.meters (Haversine) to avoid creating a
-            // CLLocation per stop when scanning thousands of bus stops —
-            // that pattern was contributing to the kernel CoreLocation
-            // rate-limit warnings the user saw on cold start.
-            let nearbyBusStop = gtfsStops
-                .filter { $0.type == .bus }
-                .map { stop in
-                    (stop: stop, distance: WaypointGraph.meters(stop.coordinate, coordinate))
-                }
-                .filter { $0.distance < 200 }
-                .min(by: { $0.distance < $1.distance })
-
-            if let busStop = nearbyBusStop {
+            if let busStopId = await resolveBusStopId() {
                 var irishCal = Calendar.current
                 irishCal.timeZone = TimeZone(identifier: "Europe/Dublin")!
                 let now = Date()
@@ -482,7 +436,7 @@ struct TransitArrivalsView: View {
                     irishCal.component(.second, from: now)
 
                 // Query routes that serve this stop
-                let routes = await GTFSScheduleService.shared.routesForStop(stopId: busStop.stop.id)
+                let routes = await GTFSScheduleService.shared.routesForStop(stopId: busStopId)
                 busRoutes = routes
 
                 // Pre-compute active services for correct calendar filtering
@@ -490,7 +444,7 @@ struct TransitArrivalsView: View {
 
                 // Query next departures
                 let departures = await GTFSScheduleService.shared.departuresFromStop(
-                    stopId: busStop.stop.id,
+                    stopId: busStopId,
                     afterSeconds: secondsSinceMidnight,
                     withinSeconds: 3600,
                     activeServices: activeServices
@@ -498,13 +452,12 @@ struct TransitArrivalsView: View {
 
                 busDepartures = departures.prefix(10).map { stopTime, trip in
                     let dueMinutes = max(0, (stopTime.departureSeconds - secondsSinceMidnight) / 60)
-                    return NTAStopDeparture(
+                    return BusDeparture(
                         routeShortName: trip.routeShortName,
                         headsign: trip.directionId == 0 ? "Outbound" : "Inbound",
                         dueIn: dueMinutes,
                         scheduledTime: stopTime.departureTime,
                         isRealTime: false,
-                        operator_: "",
                         routeId: trip.routeId,
                         tripId: trip.tripId
                     )
@@ -515,6 +468,35 @@ struct TransitArrivalsView: View {
         isLoading = false
         lastUpdated = Date()
     }
+
+    /// The GTFS stop_id to query departures for. Pins pass `stopId` directly;
+    /// callers that only know a coordinate (POI sheet, legacy search results)
+    /// fall back to the nearest cached bus stop within 200 m.
+    private func resolveBusStopId() async -> String? {
+        if let stopId { return stopId }
+        let gtfsStops = await GTFSStopLoader().loadStops()
+        // Use WaypointGraph.meters (Haversine) to avoid creating a
+        // CLLocation per stop when scanning thousands of bus stops.
+        return gtfsStops
+            .filter { $0.type == .bus }
+            .map { stop in (id: stop.id, distance: WaypointGraph.meters(stop.coordinate, coordinate)) }
+            .filter { $0.distance < 200 }
+            .min(by: { $0.distance < $1.distance })?
+            .id
+    }
+}
+
+// MARK: - Bus Departure (GTFS schedule row)
+
+struct BusDeparture: Identifiable {
+    let id = UUID()
+    let routeShortName: String
+    let headsign: String
+    let dueIn: Int              // minutes
+    let scheduledTime: String
+    let isRealTime: Bool
+    let routeId: String
+    let tripId: String
 }
 
 // MARK: - Flow Layout (wrapping horizontal layout for route pills)
@@ -561,13 +543,25 @@ struct FlowLayout: Layout {
 
 // MARK: - Favorite Stop Button
 
+/// Pinned stop IDs live in UserDefaults as a comma-joined string.
+enum PinnedTransitStops {
+    static let key = "transit.pinnedStopIds"
+
+    static func decode(_ raw: String) -> [String] {
+        raw.split(separator: ",").map(String.init).filter { !$0.isEmpty }
+    }
+
+    static func encode(_ ids: [String]) -> String {
+        ids.joined(separator: ",")
+    }
+}
+
 struct FavoriteStopButton: View {
     let stopId: String
-    @Environment(\.modelContext) private var modelContext
-    @Query private var profiles: [UserProfile]
+    @AppStorage(PinnedTransitStops.key) private var pinnedRaw = ""
 
     private var isFavorite: Bool {
-        profiles.first?.favoriteStopIds.contains(stopId) ?? false
+        PinnedTransitStops.decode(pinnedRaw).contains(stopId)
     }
 
     var body: some View {
@@ -579,19 +573,13 @@ struct FavoriteStopButton: View {
     }
 
     private func toggleFavorite() {
-        guard let profile = profiles.first else {
-            // Create profile if none exists
-            let newProfile = UserProfile()
-            newProfile.favoriteStopIds = [stopId]
-            modelContext.insert(newProfile)
-            return
-        }
-        if let idx = profile.favoriteStopIds.firstIndex(of: stopId) {
-            profile.favoriteStopIds.remove(at: idx)
+        var ids = PinnedTransitStops.decode(pinnedRaw)
+        if let idx = ids.firstIndex(of: stopId) {
+            ids.remove(at: idx)
         } else {
-            profile.favoriteStopIds.append(stopId)
+            ids.append(stopId)
         }
-        profile.updatedAt = Date()
+        pinnedRaw = PinnedTransitStops.encode(ids)
     }
 }
 

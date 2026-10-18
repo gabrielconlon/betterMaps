@@ -42,28 +42,4 @@ final class UserProfile {
         self.createdAt = Date()
         self.updatedAt = Date()
     }
-
-    // MARK: - Helpers
-
-    /// Check if a TransportMode is disabled by the user
-    func isModeDisabled(_ mode: TransportMode) -> Bool {
-        disabledModes.contains(mode.rawValue)
-    }
-
-    /// Check if a TransportMode is preferred by the user
-    func isModePreferred(_ mode: TransportMode) -> Bool {
-        preferredModes.contains(mode.rawValue)
-    }
-
-    /// Check if a TransportMode is last-resort
-    func isModeLastResort(_ mode: TransportMode) -> Bool {
-        lastResortModes.contains(mode.rawValue)
-    }
-
-    /// Sort priority for a mode: 0 = preferred, 1 = normal, 2 = last resort
-    func modePriority(_ mode: TransportMode) -> Int {
-        if isModePreferred(mode) { return 0 }
-        if isModeLastResort(mode) { return 2 }
-        return 1
-    }
 }

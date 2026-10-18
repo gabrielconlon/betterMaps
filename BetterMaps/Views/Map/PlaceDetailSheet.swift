@@ -7,7 +7,6 @@ struct PlaceDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
     @Bindable var place: Place
-    let onGetDirections: (Place) -> Void
 
     @State private var showEditForm = false
     @State private var showAddToLayer = false
@@ -65,10 +64,7 @@ struct PlaceDetailSheet: View {
                                 .font(.title)
                                 .foregroundStyle(.blue)
                         }
-                        Button(action: {
-                            onGetDirections(place)
-                            dismiss()
-                        }) {
+                        Button(action: openInAppleMaps) {
                             Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
                                 .font(.title)
                                 .foregroundStyle(.green)
@@ -242,11 +238,8 @@ struct PlaceDetailSheet: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button(action: {
-                        onGetDirections(place)
-                        dismiss()
-                    }) {
-                        Label("Directions", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
+                    Button(action: openInAppleMaps) {
+                        Label("Open in Apple Maps", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                     }
@@ -254,24 +247,11 @@ struct PlaceDetailSheet: View {
                     .tint(.green)
                 }
 
-                HStack(spacing: 12) {
-                    Button(action: { showEditForm = true }) {
-                        Label("Edit", systemImage: "pencil")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(action: {
-                        let placemark = MKPlacemark(coordinate: place.coordinate)
-                        let item = MKMapItem(placemark: placemark)
-                        item.name = place.name
-                        item.openInMaps()
-                    }) {
-                        Label("Apple Maps", systemImage: "arrow.up.forward.app")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
+                Button(action: { showEditForm = true }) {
+                    Label("Edit", systemImage: "pencil")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.bordered)
             }
             .padding(.horizontal)
             .padding(.bottom)
@@ -286,6 +266,13 @@ struct PlaceDetailSheet: View {
         .sheet(isPresented: $showAddToLayer) {
             SavedPlaceLayerSheet(place: place)
         }
+    }
+
+    /// Hand off to Apple Maps with walking directions to this place.
+    private func openInAppleMaps() {
+        let item = MKMapItem(placemark: MKPlacemark(coordinate: place.coordinate))
+        item.name = place.name
+        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
     }
 
     private func loadMapItem() async {

@@ -48,18 +48,12 @@ actor LuasService {
     func fetchForecast(stopCode: String) async -> LuasStopForecast? {
         let endpoint = "\(baseURL)?action=forecast&stop=\(stopCode)&encrypt=false"
         guard let url = URL(string: endpoint) else { return nil }
-        let start = Date()
-
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
             let parser = LuasForecastParser(data: data)
-            let forecast = parser.parse()
-            await APILogger.shared.log(service: "Luas", endpoint: "forecast/\(stopCode)", status: .success, durationMs: ms)
-            return forecast
+            return parser.parse()
         } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "Luas", endpoint: "forecast/\(stopCode)", status: .failure, durationMs: ms, detail: error.localizedDescription)
+            print("[Luas] forecast/\(stopCode) failed: \(error.localizedDescription)")
             return nil
         }
     }
