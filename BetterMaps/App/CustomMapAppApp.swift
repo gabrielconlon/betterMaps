@@ -7,6 +7,7 @@ struct CustomMapAppApp: App {
         let schema = Schema([
             Place.self,
             Layer.self,
+            Trail.self,
             WeatherRule.self,
             SavedRoute.self,
             UserProfile.self,
