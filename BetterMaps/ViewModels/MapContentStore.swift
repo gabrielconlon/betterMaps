@@ -126,13 +126,14 @@ struct CullOutput: Sendable, Equatable {
     var places: [MatchedPlace]
     var clusters: [ClusterLite]
     var trails: [TrailLite]
-    var legend: [LegendEntry]
-    var visibleLayerCount: Int
+    /// Saved places the tag selection matches across the whole map (not
+    /// just the viewport), for "N places match".
+    var matchingPlaceCount: Int
     /// Pin size class for the viewport the output was computed for.
     var annotationSize: AnnotationSize
 
-    static let empty = CullOutput(places: [], clusters: [], trails: [], legend: [],
-                                  visibleLayerCount: 0, annotationSize: .compact)
+    static let empty = CullOutput(places: [], clusters: [], trails: [], matchingPlaceCount: 0,
+                                  annotationSize: .compact)
 }
 
 // MARK: - Store
@@ -153,10 +154,10 @@ final class MapContentStore {
 
     /// Includes `annotationSize`, the coarse zoom bucket views size pins by.
     private(set) var output: CullOutput = .empty
-    /// `output.legend` on its own, so the screen (which shows only the
-    /// legend) is not invalidated by a pan; the legend covers the whole
-    /// filtered set and so rarely changes with the camera.
-    private(set) var legend: [LegendEntry] = []
+    /// `output.matchingPlaceCount` on its own, so the layers panel (which
+    /// shows only the count) is not invalidated by a pan; it covers the
+    /// whole map and so never changes with the camera.
+    private(set) var matchingPlaceCount = 0
     /// Bumped whenever `output` is replaced; lets the map coalesce this
     /// store's and the transit store's publishes into one redraw.
     private(set) var version = 0
@@ -166,8 +167,8 @@ final class MapContentStore {
     @ObservationIgnored var region: MKCoordinateRegion {
         didSet { scheduleRecompute() }
     }
-    @ObservationIgnored var filterMode: FilterMode = .union {
-        didSet { if filterMode != oldValue { scheduleRecompute() } }
+    @ObservationIgnored var filter: PlaceFilter = .showAll {
+        didSet { if filter != oldValue { scheduleRecompute() } }
     }
     @ObservationIgnored var mapSize: CGSize = .zero {
         didSet { if mapSize != oldValue { scheduleRecompute() } }
@@ -191,21 +192,23 @@ final class MapContentStore {
 
     private func scheduleRecompute() {
         recomputeTask?.cancel()
-        let places = places, layers = layers, trails = trails, mode = filterMode
+        let places = places, layers = layers, trails = trails, filter = filter
         let viewport = GeoBox(region: region)
         let width = Double(mapSize.width), height = Double(mapSize.height)
         recomputeTask = Task { [weak self] in
             try? await Task.sleep(for: Self.debounce)
             guard !Task.isCancelled else { return }
             let result = await Task.detached(priority: .userInitiated) {
-                Self.cull(places: places, layers: layers, trails: trails, mode: mode,
+                Self.cull(places: places, layers: layers, trails: trails, filter: filter,
                           viewport: viewport, mapWidth: width, mapHeight: height)
             }.value
             guard !Task.isCancelled, let self else { return }
             if self.output != result {
                 self.output = result
                 self.version &+= 1
-                if self.legend != result.legend { self.legend = result.legend }
+                if self.matchingPlaceCount != result.matchingPlaceCount {
+                    self.matchingPlaceCount = result.matchingPlaceCount
+                }
                 #if DEBUG
                 self.debugPublishCount += 1
                 #endif
@@ -227,33 +230,32 @@ final class MapContentStore {
     // MARK: Pure culling
 
     /// Pure: filter → viewport cull (padded 30%) → grid clustering at dot
-    /// zoom → trail bbox test → legend. No actors, no SwiftData.
+    /// zoom → trail bbox test → match count. No actors, no SwiftData.
     nonisolated static func cull(places: [PlaceLite],
                                  layers: [LayerLite],
                                  trails: [TrailLite],
-                                 mode: FilterMode,
+                                 filter: PlaceFilter,
                                  viewport: GeoBox,
                                  mapWidth: Double,
                                  mapHeight: Double) -> CullOutput {
-        let matched = LayerMath.filter(places, layers: layers, mode: mode)
-        let legend = LayerMath.intersectionLegend(matched, layers: layers)
+        let matched = LayerMath.filter(places, layers: layers, filter: filter)
+        let matchingCount = LayerMath.matchingPlaceCount(places, layers: layers, filter: filter)
         let padded = viewport.padded(by: viewportPadding)
         let inView = matched.filter { padded.contains(lat: $0.place.latitude, lon: $0.place.longitude) }
         let size = AnnotationSize(latitudeDelta: viewport.latDelta)
 
-        let visibleTrailIds = LayerMath.visibleTrailLayerIds(layers)
+        let visibleTrailIds = LayerMath.visibleTrailLayerIds(layers, showTrails: filter.showTrails)
         let trailsInView = trails.filter { visibleTrailIds.contains($0.layerId) && $0.bbox.intersects(padded) }
-        let visibleLayerCount = layers.reduce(0) { $1.isVisible ? $0 + 1 : $0 }
 
         guard size == .dot, !inView.isEmpty else {
-            return CullOutput(places: inView, clusters: [], trails: trailsInView, legend: legend,
-                              visibleLayerCount: visibleLayerCount, annotationSize: size)
+            return CullOutput(places: inView, clusters: [], trails: trailsInView,
+                              matchingPlaceCount: matchingCount, annotationSize: size)
         }
 
         let (singles, clusters) = cluster(inView, layers: layers, viewport: viewport,
                                           mapWidth: mapWidth, mapHeight: mapHeight)
-        return CullOutput(places: singles, clusters: clusters, trails: trailsInView, legend: legend,
-                          visibleLayerCount: visibleLayerCount, annotationSize: size)
+        return CullOutput(places: singles, clusters: clusters, trails: trailsInView,
+                          matchingPlaceCount: matchingCount, annotationSize: size)
     }
 
     private struct CellKey: Hashable { let row: Int; let col: Int }
@@ -294,7 +296,7 @@ final class MapContentStore {
             let n = Double(members.count)
             let lat = members.reduce(0.0) { $0 + $1.place.latitude } / n
             let lon = members.reduce(0.0) { $0 + $1.place.longitude } / n
-            let hex = members[0].primaryLayerId.flatMap { colorById[$0] } ?? "#FF3B30"
+            let hex = members[0].pinLayerId.flatMap { colorById[$0] } ?? "#FF3B30"
             clusters.append(ClusterLite(id: "cell-\(key.row)-\(key.col)",
                                         latitude: lat, longitude: lon,
                                         count: members.count, colorHex: hex,

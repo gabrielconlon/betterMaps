@@ -4,8 +4,8 @@ import CoreLocation
 
 /// Fast place capture after a long-press: the name fills itself from the
 /// nearest POI or street address, and one 50 pt button saves into a smart
-/// default layer (Tesler: the app absorbs the "which layer?" decision).
-/// Other layers are one chip away; "More details…" opens the full form.
+/// default tag (Tesler: the app absorbs the "which tag?" decision).
+/// Other tags are one chip away; "More details…" opens the full form.
 /// Saving where a place already exists (same name within 30 m, or anything
 /// within 8 m) adds that place to the layer instead of duplicating it, so
 /// overlaps can form.
@@ -79,7 +79,7 @@ struct QuickAddPlaceSheet: View {
             nameField
 
             Button { add(to: defaultLayer) } label: {
-                Label("Add to \(defaultLayer?.name ?? SmartDefaultLayer.fallbackPlaceLayerName)",
+                Label("Tag as \(defaultLayer?.name ?? SmartDefaultLayer.fallbackPlaceLayerName)",
                       systemImage: "plus.circle.fill")
                     .font(.headline)
                     .lineLimit(1)
@@ -111,10 +111,10 @@ struct QuickAddPlaceSheet: View {
         }
     }
 
-    /// Inline "new layer" entry (no alert): the place is saved into it.
+    /// Inline "new tag" entry (no alert): the place is saved with it.
     private var newLayerRow: some View {
         HStack(spacing: 8) {
-            TextField("Layer name", text: $newLayerName)
+            TextField("Tag name", text: $newLayerName)
                 .textInputAutocapitalization(.words)
                 .submitLabel(.done)
                 .focused($isLayerNameFocused)
@@ -173,7 +173,7 @@ struct QuickAddPlaceSheet: View {
                         .chipStyle()
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Add to \(layer.name)")
+                    .accessibilityLabel("Tag as \(layer.name)")
                 }
                 Button {
                     newLayerName = ""
@@ -181,7 +181,7 @@ struct QuickAddPlaceSheet: View {
                     detent = .medium
                     isLayerNameFocused = true
                 } label: {
-                    Label("New layer…", systemImage: "plus")
+                    Label("New tag…", systemImage: "plus")
                         .chipStyle()
                 }
                 .buttonStyle(.plain)
@@ -229,7 +229,7 @@ struct QuickAddPlaceSheet: View {
         if let existing = matchingPlace {
             let wasMember = existing.isMember(of: layer)
             existing.addMembership(layer)
-            message = wasMember ? "Already in \(layer.name)" : "Added to \(layer.name)"
+            message = wasMember ? "Already tagged \(layer.name)" : "Tagged \(layer.name)"
             if wasMember {
                 undo = nil
             } else {
@@ -245,7 +245,7 @@ struct QuickAddPlaceSheet: View {
                                  longitude: coordinate.longitude)
             context.insert(newPlace)
             newPlace.addMembership(layer)
-            message = "Saved to \(layer.name)"
+            message = "Saved with \(layer.name)"
             undo = {
                 context.delete(newPlace)
                 Self.deleteIfEmpty(layer, created: createdLayer, in: context)

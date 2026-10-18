@@ -1,13 +1,11 @@
 import SwiftUI
 import SwiftData
 
-/// "Transit" section of the sheet: one card per network plus the bus
-/// timetable status row.
+/// "Transit" section of the sheet: pinned stops and the bus timetable
+/// status row. The networks themselves are switched in the layers panel.
 struct TransitSheetSection: View {
     let transitSettings: TransitLayerSettings
     let timetable: BusTimetableModel
-    /// A transit network was switched on or off.
-    var onToggle: () -> Void = {}
     /// Opens a stop's arrivals (the host routes it, e.g.
     /// `viewModel.showTransitArrivals`). The "Pinned stops" group only
     /// shows when this is set.
@@ -19,27 +17,7 @@ struct TransitSheetSection: View {
                 PinnedStopsGroup(pinnedStopIds: transitSettings.pinnedStopIds, onOpen: onOpenStop)
             }
             SheetSectionHeader(title: "Transit")
-            ForEach(TransitLayerKind.allCases) { kind in
-                LayerCardRow(color: TransitColors.pin(kind),
-                             symbol: kind.systemImage,
-                             title: kind.displayName,
-                             subtitle: Self.subtitle(kind),
-                             isVisible: transitSettings.isEnabled(kind),
-                             onToggle: {
-                                 transitSettings.toggle(kind)
-                                 onToggle()
-                             })
-            }
             BusTimetableStatusRow(model: timetable)
-        }
-    }
-
-    static func subtitle(_ kind: TransitLayerKind) -> String {
-        switch kind {
-        case .bus: return "Stops appear as you zoom in"
-        case .luas: return "Red and Green lines"
-        case .dart: return "Coastal line"
-        case .rail: return "Commuter and intercity"
         }
     }
 }

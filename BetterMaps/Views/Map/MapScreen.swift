@@ -5,7 +5,7 @@ import CoreData
 
 /// The map screen: owns the SwiftData queries, view models and the
 /// `MapContentStore`, routes sheets, and composes `MapCanvas`, the map
-/// chrome and the persistent layers sheet. Everything the `Map` draws comes
+/// chrome, the layers panel and the persistent bottom sheet. Everything the `Map` draws comes
 /// from `store.output` or value arrays — SwiftData objects never reach the
 /// map content.
 struct MapScreen: View {
@@ -14,7 +14,7 @@ struct MapScreen: View {
     @Query private var places: [Place]
 
     @State private var viewModel = MapViewModel()
-    @State private var filterVM = LayerFilterViewModel()
+    @State private var tagFilter = TagFilter()
     @State private var locationManager = LocationManager()
     @State private var store = MapContentStore(region: Self.launchRegion)
     @State private var trailSnapshotter = TrailSnapshotter()
@@ -41,10 +41,8 @@ struct MapScreen: View {
     /// Settled sheet height above the bottom safe area; toasts sit on top of it.
     @State private var sheetHeight: CGFloat = SheetLayout.collapsedContentHeight
     @State private var poiSearchTask: Task<Void, Never>?
-    /// Tap-lookup status pill; nil when hidden.
-    @State private var lookupPill: LookupPill.Phase?
-    /// Camera region when the current tap lookup started; moving away cancels it.
-    @State private var lookupRegion: MKCoordinateRegion?
+    /// The slide-in layers panel (top-left button).
+    @State private var isLayersPanelOpen = false
     /// Long-press pin, shown while the quick-add sheet is open.
     @State private var droppedPin: CLLocationCoordinate2D?
     @State private var dropCount = 0
@@ -58,13 +56,11 @@ struct MapScreen: View {
     /// Cached value snapshot of places and layers, rebuilt only when the
     /// full `SnapshotToken` changes. That token is computed outside the body,
     /// only when the cheap `snapshotTrigger` changes.
-    @State private var snapshot = Snapshot(places: [], layers: [])
+    @State private var snapshot = Snapshot()
     @State private var cachedToken: SnapshotToken?
     /// Bumped on every SwiftData save (local or remote) so edits that keep
     /// the counts (rename, move, membership) still refresh the snapshot.
     @State private var dataChangeToken = 0
-    /// "No places in all N layers" when Overlap only finds nothing.
-    @State private var emptyOverlapLayerCount: Int?
     /// The locate button asked for permission; centre on the first fix.
     @State private var pendingLocate = false
 
@@ -77,13 +73,14 @@ struct MapScreen: View {
 
     // MARK: - Snapshots
 
-    /// Value snapshot of the SwiftData graph that feeds the store.
+    /// Value snapshot of the SwiftData graph that feeds the store, the
+    /// layers panel and the sheet's management lists.
     private struct Snapshot: Equatable {
-        var places: [PlaceLite]
-        var layers: [LayerLite]
+        var places: [PlaceLite] = []
+        var layers: [LayerLite] = []
         var layersById: [UUID: LayerLite] = [:]
-        /// Visible layers in sortOrder, for the legend.
-        var visibleLayers: [LayerLite] = []
+        /// Tags and trail groups in sortOrder, with counts.
+        var lists = SheetLayerLists()
     }
 
     /// Change detector for the snapshot: counts, newest place edit,
@@ -104,6 +101,7 @@ struct MapScreen: View {
         for layer in layers {
             hasher.combine(layer.id)
             hasher.combine(layer.isVisible)
+            hasher.combine(layer.isFavorite)
             hasher.combine(layer.sortOrder)
             hasher.combine(layer.name)
             hasher.combine(layer.colorHex)
@@ -134,6 +132,7 @@ struct MapScreen: View {
         for layer in layers {
             hasher.combine(layer.id)
             hasher.combine(layer.isVisible)
+            hasher.combine(layer.isFavorite)
             hasher.combine(layer.sortOrder)
             hasher.combine(layer.name)
             hasher.combine(layer.colorHex)
@@ -147,11 +146,12 @@ struct MapScreen: View {
 
     private var layersById: [UUID: LayerLite] { snapshot.layersById }
 
-    private var sortedLayers: [Layer] {
-        layers.sorted { $0.sortOrder < $1.sortOrder }
+    /// What the store draws: the tag selection plus the Places and Trails
+    /// switches. Changes only on a user action, never with the camera.
+    private var placeFilter: PlaceFilter {
+        PlaceFilter(tagIds: tagFilter.selectedTagIds, match: tagFilter.match,
+                    showPlaces: transitSettings.showPlaces, showTrails: transitSettings.showTrails)
     }
-
-    private var visibleLayerLites: [LayerLite] { snapshot.visibleLayers }
 
     /// Settled map centre for "add a place here" forms. The stores' region
     /// is unobserved, so reading it never ties a body to the camera.
@@ -175,7 +175,7 @@ struct MapScreen: View {
                 transitStore: transitStore,
                 droppedPin: droppedPin,
                 onTapPlace: { id in
-                    if store.output.places.contains(where: { $0.id == id && $0.matchCount >= 2 }) {
+                    if store.output.places.contains(where: { $0.id == id && $0.showsOverlap }) {
                         markHintDone(.overlap)
                     }
                     if let place = places.first(where: { $0.id == id }) { viewModel.selectPlace(place) }
@@ -184,7 +184,6 @@ struct MapScreen: View {
                 onTapStop: { stop in viewModel.showTransitArrivals(for: stop) },
                 onTap: handleTap,
                 onLongPress: handleLongPress,
-                onCameraChange: cancelLookupIfMoved(_:),
                 onCameraSettled: { region in
                     transitStore.region = region
                     if isSearchFocused { isSearchFocused = false }
@@ -192,25 +191,32 @@ struct MapScreen: View {
             )
             .ignoresSafeArea(.keyboard)
 
+            if isLayersPanelOpen {
+                // A tap anywhere on the map closes the panel.
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { setLayersPanel(open: false) }
+                    .accessibilityHidden(true)
+            }
+
             MapChrome(mapScope: mapScope,
-                      mapStyle: mapStyleOption,
-                      legendLayers: visibleLayerLites,
-                      legendEntries: store.legend,
-                      emptyOverlapLayerCount: emptyOverlapLayerCount,
                       isHidden: sheetDetent == .expanded,
+                      isLayersOpen: isLayersPanelOpen,
+                      onToggleLayers: { setLayersPanel(open: !isLayersPanelOpen) },
                       draftChip: draftChip,
                       canLocateUser: canLocateUser,
-                      onRequestLocation: locateUser,
-                      onCycleMapStyle: cycleMapStyle)
+                      onRequestLocation: locateUser)
                 .animation(.easeInOut(duration: 0.2), value: draftStore.hasDraft)
 
-            if let lookupPill {
-                LookupPill(phase: lookupPill)
-                    .padding(.top, 8)
-                    .padding(.horizontal, 60)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
+            if isLayersPanelOpen {
+                layersPanel
+                    .padding(.leading, 12)
+                    // Below the 44pt Layers button, above the sheet.
+                    .padding(.top, 8 + 44 + 8)
+                    .padding(.bottom, sheetHeight + 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
             BottomSheet(detent: $sheetDetent,
@@ -227,7 +233,7 @@ struct MapScreen: View {
         }
         .mapScope(mapScope)
         .environment(toastCenter)
-        .animation(.easeInOut(duration: 0.15), value: lookupPill)
+        .animation(.easeInOut(duration: 0.25), value: isLayersPanelOpen)
         .sensoryFeedback(.impact(weight: .medium), trigger: dropCount)
         .sensoryFeedback(.selection, trigger: trailHitCount)
         // Location is requested on first use (locate, quick add, search),
@@ -249,9 +255,8 @@ struct MapScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: TrailSnapshotter.didChangeNotification)) { _ in
             feedStore(snapshot)
         }
-        .onChange(of: filterVM.filterMode, initial: true) { _, mode in
-            store.filterMode = mode
-            updateEmptyOverlap()
+        .onChange(of: placeFilter, initial: true) { _, filter in
+            store.filter = filter
         }
         .onChange(of: transitSettings.enabledKinds, initial: true) { _, kinds in
             transitStore.enabledKinds = kinds
@@ -264,6 +269,7 @@ struct MapScreen: View {
         }
         .onChange(of: sheetDetent) { _, detent in
             if detent == .collapsed, isSearchFocused { isSearchFocused = false }
+            if detent != .collapsed, isLayersPanelOpen { setLayersPanel(open: false) }
         }
         // Transit data is decoded only once a transit layer is on; a user
         // with every transit kind off does no transit work at launch.
@@ -295,12 +301,9 @@ struct MapScreen: View {
 
     private var sheetHeader: some View {
         LayersSheetHeader(
-            layers: sortedLayers,
-            filterVM: filterVM,
             searchState: searchState,
             isSearchFocused: $isSearchFocused,
             detent: sheetDetent,
-            transitSettings: transitSettings,
             onSearchTextChanged: {
                 searchState.debouncedSearch(places: places, transit: transitStore,
                                             userLocation: locationManager.userLocation)
@@ -314,17 +317,16 @@ struct MapScreen: View {
                 viewModel.startNewPlace(at: nil)
             },
             onDrawTrail: { startDrawTrail(in: nil) },
-            onNewLayer: { viewModel.activeSheet = .newLayer },
+            onNewTag: { viewModel.activeSheet = .newLayer(.places) },
             onOpenSettings: { viewModel.activeSheet = .settings }
         )
     }
 
     private var sheetContent: some View {
         LayersSheetContent(
-            layers: sortedLayers,
+            lists: snapshot.lists,
             placeCount: places.count,
             viewModel: viewModel,
-            filterVM: filterVM,
             searchState: searchState,
             transitSettings: transitSettings,
             transitStore: transitStore,
@@ -347,8 +349,41 @@ struct MapScreen: View {
                     showResult(at: item.placemark.coordinate)
                     viewModel.showPOI(item)
                 }
-            )
+            ),
+            onDrawTrail: { startDrawTrail(in: $0) }
         )
+    }
+
+    // MARK: - Layers panel
+
+    private var layersPanel: some View {
+        LayersPanel(
+            input: LayersPanelInput(tags: snapshot.lists.tags, trailGroups: snapshot.lists.trailGroups),
+            tagFilter: tagFilter,
+            settings: transitSettings,
+            store: store,
+            mapStyle: $mapStyleOption,
+            onClose: { setLayersPanel(open: false) },
+            onToggleFavorite: { id in layer(withId: id)?.isFavorite.toggle() },
+            onToggleTrailGroup: { id in layer(withId: id)?.isVisible.toggle() },
+            onNewTag: {
+                setLayersPanel(open: false)
+                viewModel.activeSheet = .newLayer(.places)
+            },
+            onFilterChanged: {
+                if tagFilter.match == .all, tagFilter.selectedTagIds.count >= 2 { markHintDone(.overlap) }
+            }
+        )
+    }
+
+    private func setLayersPanel(open: Bool) {
+        guard open != isLayersPanelOpen else { return }
+        if open {
+            if isSearchFocused { isSearchFocused = false }
+            if sheetDetent != .collapsed { sheetDetent = .collapsed }
+            markHintDone(.toggleLayer)
+        }
+        isLayersPanelOpen = open
     }
 
     // MARK: - Store feeding
@@ -360,20 +395,33 @@ struct MapScreen: View {
         guard token != cachedToken else { return }
         cachedToken = token
         let layerLites = layers.map(LayerLite.init)
+        let placeLites = places.map(PlaceLite.init)
+        let sorted = layerLites.sorted { ($0.sortOrder, $0.name) < ($1.sortOrder, $1.name) }
+        let tags = sorted.filter { $0.kind == .places }
+
+        var tagCounts: [UUID: Int] = [:]
+        for place in placeLites {
+            for id in place.layerIds { tagCounts[id, default: 0] += 1 }
+        }
+        var trailStats: [UUID: TrailGroupStats] = [:]
+        for layer in layers where layer.kind == .waypointPath {
+            let trails = layer.trails ?? []
+            trailStats[layer.id] = TrailGroupStats(count: trails.count,
+                                                   meters: trails.reduce(0) { $0 + $1.distanceMeters })
+        }
+
         snapshot = Snapshot(
-            places: places.map(PlaceLite.init),
+            places: placeLites,
             layers: layerLites,
             layersById: Dictionary(layerLites.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
-            visibleLayers: layerLites.filter(\.isVisible).sorted { $0.sortOrder < $1.sortOrder }
+            lists: SheetLayerLists(tags: tags,
+                                   trailGroups: sorted.filter { $0.kind == .waypointPath },
+                                   tagCounts: tagCounts,
+                                   trailStats: trailStats)
         )
+        tagFilter.migrateIfNeeded(tags: tags)
+        tagFilter.prune(existingTagIds: Set(tags.map(\.id)))
         feedStore(snapshot)
-        updateEmptyOverlap()
-    }
-
-    private func updateEmptyOverlap() {
-        let count = LayerMath.emptyOverlapLayerCount(snapshot.places, layers: snapshot.layers,
-                                                     mode: filterVM.filterMode)
-        if count != emptyOverlapLayerCount { emptyOverlapLayerCount = count }
     }
 
     private func markHintDone(_ hint: FirstRunHints.Hint) {
@@ -393,8 +441,8 @@ struct MapScreen: View {
     private static let stopDotTapRadius: CGFloat = 22
 
     /// Tap on the map: a transit dot or trail under the finger opens its
-    /// detail; otherwise look up the place there, with a status pill shown
-    /// within 100 ms.
+    /// detail; otherwise the place sheet opens at once and looks up the
+    /// place there (no status floats over the map).
     private func handleTap(_ screenPoint: CGPoint, _ coordinate: CLLocationCoordinate2D?, _ proxy: MapProxy) {
         // First tap on the map only dismisses the keyboard.
         if isSearchFocused {
@@ -424,19 +472,7 @@ struct MapScreen: View {
                 viewModel.showTrailDetail(hitTrail)
                 return
             }
-            lookupRegion = store.region
-            lookupPill = .searching
-            let item = await POILookup.nearestItem(to: coordinate)
-            guard !Task.isCancelled else { return }
-            if let item, viewModel.activeSheet == nil {
-                lookupPill = nil
-                viewModel.showPOI(item)
-                return
-            }
-            lookupPill = .nothingFound
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled else { return }
-            lookupPill = nil
+            viewModel.lookUpPlace(at: coordinate)
         }
     }
 
@@ -452,24 +488,10 @@ struct MapScreen: View {
         return transitStore.nearestDotStop(to: coordinate, within: meters)
     }
 
-    /// Stops any tap lookup and hides its pill.
+    /// Stops a pending tap (before its sheet opens).
     private func cancelLookup() {
         poiSearchTask?.cancel()
         poiSearchTask = nil
-        lookupRegion = nil
-        lookupPill = nil
-    }
-
-    /// A pan or zoom while "Finding place…" means the user moved on.
-    private func cancelLookupIfMoved(_ region: MKCoordinateRegion) {
-        guard lookupPill == .searching, let start = lookupRegion else { return }
-        let dLat = abs(region.center.latitude - start.center.latitude)
-        let dLon = abs(region.center.longitude - start.center.longitude)
-        let zoom = abs(region.span.latitudeDelta - start.span.latitudeDelta)
-        if dLat > start.span.latitudeDelta * 0.02 || dLon > start.span.longitudeDelta * 0.02
-            || zoom > start.span.latitudeDelta * 0.02 {
-            cancelLookup()
-        }
     }
 
     /// Long-press: drop a pin with a haptic right away, then open quick add.
@@ -552,8 +574,9 @@ struct MapScreen: View {
             }
         } else {
             NavigationStack {
-                StatusView(status: .empty(title: "This layer was deleted", hint: nil,
-                                          systemImage: "square.3.layers.3d", action: nil))
+                StatusView(status: .empty(title: "This trail group was deleted", hint: nil,
+                                          systemImage: "point.topleft.down.to.point.bottomright.curvepath",
+                                          action: nil))
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Close") { viewModel.drawTrailRequest = nil }
@@ -594,7 +617,7 @@ struct MapScreen: View {
             onResume: {
                 guard layer(withId: pending.layerId) != nil else {
                     draftStore.clear()
-                    toastCenter.show("That draft's layer was deleted", systemImage: "exclamationmark.circle")
+                    toastCenter.show("That draft's trail group was deleted", systemImage: "exclamationmark.circle")
                     return
                 }
                 startDrawTrail(in: pending.layerId, trailId: pending.trailId, resuming: pending.draft)
@@ -645,12 +668,6 @@ struct MapScreen: View {
         searchState.clearSearch()
     }
 
-    private func cycleMapStyle() {
-        let next = mapStyleOption.next
-        mapStyleOption = next
-        toastCenter.show(next.rawValue, systemImage: next.icon, duration: .seconds(1.2))
-    }
-
     // MARK: - Sheet Router
 
     @ViewBuilder
@@ -664,6 +681,12 @@ struct MapScreen: View {
 
         case .poiDetail(let mapItem):
             POIAddToLayerView(mapItem: mapItem, onDismiss: { viewModel.dismissSheet() })
+                .presentationDetents([.fraction(0.25), .medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+
+        case .poiLookup(let coordinate):
+            POILookupSheet(coordinate: coordinate, onDismiss: { viewModel.dismissSheet() })
                 .presentationDetents([.fraction(0.25), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -698,8 +721,8 @@ struct MapScreen: View {
                 missingLayer
             }
 
-        case .newLayer:
-            LayerFormView(layer: nil)
+        case .newLayer(let kind):
+            LayerFormView(layer: nil, kind: kind)
 
         case .editLayer(let id):
             if let layer = layers.first(where: { $0.id == id }) {
@@ -731,9 +754,20 @@ struct MapScreen: View {
 
     #if DEBUG
     /// Launch arguments that open screens for simulator screenshots:
-    /// `-openQuickAdd 53.3438,-6.2546` and `-openTrailEditor YES`.
+    /// `-openQuickAdd 53.3438,-6.2546`, `-openTrailEditor YES`,
+    /// `-openLayersPanel YES`, and `-debugSelectTags 2 -debugTagMatch all`
+    /// (selects the first N tags by sortOrder).
     private func openDebugScreens() {
         let defaults = UserDefaults.standard
+        let selectCount = defaults.integer(forKey: "debugSelectTags")
+        if selectCount > 0 {
+            let tags = layers.filter { $0.kind == .places }.sorted { $0.sortOrder < $1.sortOrder }
+            tagFilter.selectedTagIds = Set(tags.prefix(selectCount).map(\.id))
+        }
+        if let match = defaults.string(forKey: "debugTagMatch").flatMap(TagMatch.init(rawValue:)) {
+            tagFilter.match = match
+        }
+        if defaults.bool(forKey: "openLayersPanel") { isLayersPanelOpen = true }
         if let raw = defaults.string(forKey: "openQuickAdd"), let c = CoordinateText.parse(raw) {
             droppedPin = c
             focus(on: c)
@@ -745,8 +779,8 @@ struct MapScreen: View {
     #endif
 
     private var missingLayer: some View {
-        StatusView(status: .empty(title: "This layer was deleted", hint: nil,
-                                  systemImage: "square.3.layers.3d", action: nil))
+        StatusView(status: .empty(title: "This tag was deleted", hint: nil,
+                                  systemImage: "tag", action: nil))
             .presentationDetents([.fraction(0.25)])
     }
 }

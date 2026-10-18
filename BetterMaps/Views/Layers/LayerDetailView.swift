@@ -68,8 +68,12 @@ struct LayerDetailView: View {
 
                     Spacer()
 
-                    Toggle("", isOn: $layer.isVisible)
-                        .labelsHidden()
+                    // A tag's visibility is the panel's tag selection; only
+                    // trail groups have their own show/hide switch.
+                    if isWaypointPath {
+                        Toggle("Show on map", isOn: $layer.isVisible)
+                            .labelsHidden()
+                    }
                 }
             }
 
@@ -87,7 +91,7 @@ struct LayerDetailView: View {
             } else {
                 Section("Places") {
                     if layerPlaces.isEmpty {
-                        Text("No places in this layer yet.")
+                        Text("No places with this tag yet.")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(layerPlaces) { place in
@@ -136,7 +140,7 @@ struct LayerDetailView: View {
                         }
                     }
                     Button(action: { showEditForm = true }) {
-                        Label("Edit Layer", systemImage: "pencil")
+                        Label(isWaypointPath ? "Edit trail group" : "Edit tag", systemImage: "pencil")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -223,7 +227,7 @@ struct LayerDetailView: View {
         editorTarget = EditorTarget(trail: trail)
     }
 
-    /// Removes places from this layer; a place in no other layer is deleted.
+    /// Removes this tag from places; a place left with no tag is deleted.
     private func removePlaces(at offsets: IndexSet) {
         let sorted = layerPlaces
         for index in offsets {

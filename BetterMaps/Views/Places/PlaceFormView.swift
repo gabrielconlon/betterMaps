@@ -59,13 +59,13 @@ struct PlaceFormView: View {
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    /// Place layers only: a saved place never goes into a trail layer here.
+    /// Tags only: a saved place never goes into a trail group here.
     private var placeKindLayers: [Layer] { allLayers.filter { $0.kind == .places } }
 
     /// The chips show whenever there's no fixed target layer, new or editing.
     private var showsLayerChips: Bool { targetLayer == nil && !placeKindLayers.isEmpty }
 
-    /// Trail memberships keep an edited place alive with no place layer ticked.
+    /// Trail memberships keep an edited place alive with no tag ticked.
     private var hasTrailMembership: Bool {
         (place?.layers ?? []).contains { $0.kind == .waypointPath }
     }
@@ -125,7 +125,7 @@ struct PlaceFormView: View {
 
                 Section("Details") {
                     TextField("Hours (e.g., Mon-Fri 9-5)", text: $hoursInfo)
-                    TextField("Tags (comma separated)", text: $tagsText)
+                    TextField("Keywords (comma separated)", text: $tagsText)
                         .textInputAutocapitalization(.never)
                 }
 
@@ -138,8 +138,8 @@ struct PlaceFormView: View {
                     PhotoPickerView(photoData: $photoData)
                 }
 
-                // Layers — new or editing, so one place can be in several
-                // layers (the overlaps the map highlights).
+                // Tags — new or editing, so one place can have several
+                // (Match All in the layers panel finds places with both).
                 if showsLayerChips {
                     Section {
                         LayerMembershipChips(layers: placeKindLayers, selected: selectedLayerIds) { layer in
@@ -151,7 +151,7 @@ struct PlaceFormView: View {
                         }
                         .padding(.vertical, 4)
                     } header: {
-                        Text("Layers")
+                        Text("Tags")
                     } footer: {
                         Text("Pick one or more.")
                     }
@@ -343,12 +343,12 @@ struct PlaceFormView: View {
         }
     }
 
-    /// "Saved to Brunch", "Saved to Brunch + Favourites", "Saved to 3 layers".
+    /// "Saved with Brunch", "Saved with Brunch + POR", "Saved with 3 tags".
     nonisolated static func savedMessage(layerNames: [String]) -> String {
         switch layerNames.count {
         case 0: return "Place saved"
-        case 1, 2: return "Saved to " + layerNames.joined(separator: " + ")
-        default: return "Saved to \(layerNames.count) layers"
+        case 1, 2: return "Saved with " + layerNames.joined(separator: " + ")
+        default: return "Saved with \(layerNames.count) tags"
         }
     }
 

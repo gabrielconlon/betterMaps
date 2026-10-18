@@ -28,9 +28,6 @@ struct MapCanvas: View {
     /// Long press on the map, fired as soon as the press is recognised (not
     /// on release): screen point and coordinate.
     let onLongPress: (CGPoint, CLLocationCoordinate2D?) -> Void
-    /// Every camera change while it moves. Must not write observed state:
-    /// it only cancels an in-flight tap lookup.
-    var onCameraChange: (MKCoordinateRegion) -> Void = { _ in }
     /// Fires once when a camera move settles, after `store.region` is set
     /// (keyboard dismissal, transit viewport refresh).
     let onCameraSettled: (MKCoordinateRegion) -> Void
@@ -97,9 +94,6 @@ struct MapCanvas: View {
                             onLongPress(drag.location, proxy.convert(drag.location, from: .local))
                         }
                 )
-                .onMapCameraChange(frequency: .continuous) { context in
-                    onCameraChange(context.region)
-                }
                 .onMapCameraChange(frequency: .onEnd) { context in
                     if store.mapSize != geo.size { store.mapSize = geo.size }
                     store.region = context.region

@@ -74,4 +74,42 @@ final class TransitLayerSettingsTests: XCTestCase {
         XCTAssertTrue(settings.isPinned("8220IR0025"))
         XCTAssertEqual(defaults.string(forKey: TransitLayerSettings.pinnedStopIdsKey), "8220GA00408,8220IR0025")
     }
+
+    // MARK: - Places and Trails layers
+
+    func testPlacesAndTrailsDefaultOnAndPersist() {
+        let settings = TransitLayerSettings(defaults: defaults)
+        XCTAssertTrue(settings.showPlaces)
+        XCTAssertTrue(settings.showTrails)
+
+        settings.showPlaces = false
+        settings.showTrails = false
+        let reloaded = TransitLayerSettings(defaults: defaults)
+        XCTAssertFalse(reloaded.showPlaces)
+        XCTAssertFalse(reloaded.showTrails)
+
+        reloaded.showPlaces = true
+        XCTAssertTrue(TransitLayerSettings(defaults: defaults).showPlaces)
+    }
+
+    // MARK: - Hide / show transit
+
+    func testHideTransitRemembersAndShowRestores() {
+        let settings = TransitLayerSettings(defaults: defaults)
+        settings.toggle(.luas)
+        settings.toggle(.rail)
+        settings.hideAllTransit()
+        XCTAssertFalse(settings.isAnyTransitOn)
+
+        let reloaded = TransitLayerSettings(defaults: defaults)
+        XCTAssertTrue(reloaded.enabledKinds.isEmpty)
+        reloaded.showTransit()
+        XCTAssertEqual(reloaded.enabledKinds, [.luas, .rail], "restores the set that was on, across launches")
+    }
+
+    func testShowTransitWithNothingRememberedTurnsAllOn() {
+        let settings = TransitLayerSettings(defaults: defaults)
+        settings.showTransit()
+        XCTAssertEqual(settings.enabledKinds, Set(TransitLayerKind.allCases))
+    }
 }

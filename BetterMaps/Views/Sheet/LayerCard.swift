@@ -1,103 +1,26 @@
 import SwiftUI
 
-/// One layer as one card (common region): swatch with the layer symbol,
-/// name, a count line, optional accessory buttons and a trailing eye toggle.
-/// 56pt tall; every button is a 44×44 target.
-struct LayerCardRow<Accessory: View>: View {
-    let color: Color
-    let symbol: String
-    let title: String
-    let subtitle: String?
-    let isVisible: Bool
-    let onToggle: () -> Void
-    var onOpen: (() -> Void)? = nil
-    @ViewBuilder var accessory: () -> Accessory
+/// One tag or trail group in the sheet's management list: swatch with the
+/// symbol, name and a count line. Tapping opens its detail; trail groups
+/// also get a "Draw" button. Value inputs only (no SwiftData), 56pt tall,
+/// every button a 44×44 target. Visibility lives in the layers panel.
+struct LayerCard: View {
+    let layer: LayerLite
+    let subtitle: String
+    let onOpen: () -> Void
+    /// Starts the trail editor in this trail group.
+    var onDraw: (() -> Void)? = nil
+
+    private var isTrailGroup: Bool { layer.kind == .waypointPath }
+    private var color: Color { Color(hex: layer.colorHex) ?? .red }
 
     var body: some View {
         HStack(spacing: 4) {
-            if let onOpen {
-                Button(action: onOpen) { label }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Shows the layer's details")
-            } else {
-                label
-            }
-            accessory()
-            Button(action: onToggle) {
-                Image(systemName: isVisible ? "eye.fill" : "eye.slash")
-                    .font(.body)
-                    .foregroundStyle(isVisible ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isVisible ? "Hide \(title)" : "Show \(title)")
-            .sensoryFeedback(.selection, trigger: isVisible)
-        }
-        .frame(minHeight: 56)
-    }
-
-    private var label: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(isVisible ? color : color.opacity(0.35))
-                Image(systemName: symbol)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 34, height: 34)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(minHeight: 56)
-        .contentShape(Rectangle())
-    }
-}
-
-extension LayerCardRow where Accessory == EmptyView {
-    init(color: Color, symbol: String, title: String, subtitle: String?, isVisible: Bool,
-         onToggle: @escaping () -> Void, onOpen: (() -> Void)? = nil) {
-        self.init(color: color, symbol: symbol, title: title, subtitle: subtitle, isVisible: isVisible,
-                  onToggle: onToggle, onOpen: onOpen, accessory: { EmptyView() })
-    }
-}
-
-/// A user layer (places or trails). Tapping the row opens its detail; trail
-/// layers also get a "Draw" button.
-struct LayerCard: View {
-    let layer: Layer
-    let onOpen: () -> Void
-    let onToggle: () -> Void
-    /// Starts the trail editor in this layer.
-    let onDraw: () -> Void
-
-    private var isTrailLayer: Bool { layer.kind == .waypointPath }
-
-    var body: some View {
-        LayerCardRow(
-            color: Color(hex: layer.colorHex) ?? .red,
-            symbol: isTrailLayer ? LayerKind.waypointPath.systemImage : layer.symbolName,
-            title: layer.name,
-            subtitle: subtitle,
-            isVisible: layer.isVisible,
-            onToggle: onToggle,
-            onOpen: onOpen
-        ) {
-            if isTrailLayer {
+            Button(action: onOpen) { label }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityHint(isTrailGroup ? "Shows the trail group's trails" : "Shows the tag's places")
+            if isTrailGroup, let onDraw {
                 Button(action: onDraw) {
                     Image(systemName: "pencil.and.scribble")
                         .font(.body)
@@ -109,15 +32,38 @@ struct LayerCard: View {
                 .accessibilityLabel("Draw a trail in \(layer.name)")
             }
         }
+        .frame(minHeight: 56)
     }
 
-    private var subtitle: String {
-        if isTrailLayer {
-            let trails = layer.trails ?? []
-            return Self.trailSummary(count: trails.count,
-                                     meters: trails.reduce(0) { $0 + $1.distanceMeters })
+    private var label: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(color)
+                Image(systemName: isTrailGroup ? LayerKind.waypointPath.systemImage : layer.symbolName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 34, height: 34)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(layer.name)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
         }
-        return Self.placeSummary(count: layer.places?.count ?? 0)
+        .frame(minHeight: 56)
+        .contentShape(Rectangle())
     }
 
     static func placeSummary(count: Int) -> String {

@@ -1,11 +1,11 @@
 import SwiftUI
 import SwiftData
 
-/// Wrapping multi-select chips, one per place layer: filled with the layer
-/// colour and checked when the place is in it. Used by the place detail
-/// sheet (applies immediately) and the place form (applies on Save), so a
-/// place can be in Brunch *and* Favourites — the overlap the map shows.
-/// Callers pass `.places` layers only; trail layers are never offered.
+/// Wrapping multi-select chips, one per tag: filled with the tag colour and
+/// checked when the place has it. Used by the place detail sheet (applies
+/// immediately) and the place form (applies on Save), so a place can be
+/// tagged Brunch *and* Favourites. Callers pass tags (`.places` layers)
+/// only; trail groups are never offered.
 struct LayerMembershipChips: View {
     let layers: [Layer]
     let selected: Set<UUID>
@@ -22,7 +22,7 @@ struct LayerMembershipChips: View {
 
     private func chip(for layer: Layer, isOn: Bool) -> some View {
         let color = Color(hex: layer.colorHex) ?? .red
-        let darkText = LayerChip.prefersDarkText(hex: layer.colorHex)
+        let darkText = Color.prefersDarkText(hex: layer.colorHex)
         return Button { onToggle(layer) } label: {
             HStack(spacing: 6) {
                 Image(systemName: isOn ? "checkmark" : layer.symbolName)
@@ -41,7 +41,7 @@ struct LayerMembershipChips: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(layer.name)
-        .accessibilityValue(isOn ? "In this layer" : "Not in this layer")
+        .accessibilityValue(isOn ? "Tagged" : "Not tagged")
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }
@@ -72,7 +72,7 @@ extension Place {
         updatedAt = Date()
     }
 
-    /// Number of place (not trail) layers the place is in.
+    /// Number of tags (not trail groups) the place has.
     @MainActor
     var placeLayerCount: Int {
         (layers ?? []).reduce(0) { $1.kind == .places ? $0 + 1 : $0 }

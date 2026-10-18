@@ -12,7 +12,7 @@ struct PlacesLayerContent: MapContent {
 
     var body: some MapContent {
         ForEach(places) { matched in
-            let layer = matched.primaryLayerId.flatMap { layersById[$0] }
+            let layer = matched.pinLayerId.flatMap { layersById[$0] }
             let color = layer.flatMap { Color(hex: $0.colorHex) } ?? .red
             Annotation(size == .dot ? "" : matched.place.name,
                        coordinate: CLLocationCoordinate2D(latitude: matched.place.latitude,
@@ -20,7 +20,7 @@ struct PlacesLayerContent: MapContent {
                 PlaceAnnotationView(color: color,
                                     symbol: layer?.symbolName ?? "mappin",
                                     name: matched.place.name,
-                                    matchCount: matched.matchCount,
+                                    overlapCount: matched.showsOverlap ? matched.matchCount : 0,
                                     size: size)
                     .onTapGesture { onTapPlace(matched.place.id) }
             }

@@ -30,8 +30,8 @@ enum SheetDetent: Int, CaseIterable, Comparable, Sendable {
 /// Detent heights for a container, measured from the bottom of the screen
 /// (bottom safe area included), plus drag-release snapping.
 struct SheetLayout: Equatable, Sendable {
-    /// Grabber strip + search row + chip row, above the bottom safe area.
-    static let collapsedContentHeight: CGFloat = 100
+    /// Grabber strip + search row, above the bottom safe area.
+    static let collapsedContentHeight: CGFloat = 60
     /// Release velocity (pt/s) above which a drag counts as a flick.
     static let flickVelocity: CGFloat = 700
 
@@ -164,7 +164,7 @@ struct BottomSheet<Header: View, Content: View>: View {
             .onTapGesture { setDetent(detent.cycled) }
             .gesture(dragGesture(layout: layout))
             .accessibilityElement()
-            .accessibilityLabel("Layers sheet")
+            .accessibilityLabel("Search and saved places")
             .accessibilityValue(detent.accessibilityValue)
             .accessibilityHint("Double-tap to resize")
             .accessibilityAddTraits(.isButton)

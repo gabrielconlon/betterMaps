@@ -20,19 +20,20 @@ enum AnnotationSize: Sendable, Equatable {
 /// A saved-place pin. Pure value inputs — no SwiftData walking — so the map
 /// content can be built from `MapContentStore.output` alone.
 ///
-/// Every size is tappable with a hit target of at least 24pt. Places shared
-/// by two or more visible layers (`matchCount >= 2`) get a white ring, a
-/// dark outer stroke and a dark count badge; the pin keeps its primary layer
-/// colour. Black-and-white reads as "overlap" whatever the layer or transit
+/// Every size is tappable with a hit target of at least 24pt. In Match Any,
+/// places with two or more selected tags (`overlapCount >= 2`) get a white
+/// ring, a dark outer stroke and a dark count badge; the pin keeps its tag
+/// colour. Black-and-white reads as "overlap" whatever the tag or transit
 /// colours around it (accent blue was indistinguishable from Bus blue).
 struct PlaceAnnotationView: View {
     let color: Color
     let symbol: String
     let name: String
-    let matchCount: Int
+    /// Selected tags the place has, when the ring should show; 0 otherwise.
+    let overlapCount: Int
     let size: AnnotationSize
 
-    private var isOverlap: Bool { matchCount >= 2 }
+    private var isOverlap: Bool { overlapCount >= 2 }
 
     var body: some View {
         switch size {
@@ -104,7 +105,7 @@ struct PlaceAnnotationView: View {
     }
 
     private var countBadge: some View {
-        Text("\(matchCount)")
+        Text("\(overlapCount)")
             .font(.caption2.bold())
             .monospacedDigit()
             .foregroundStyle(.white)

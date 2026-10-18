@@ -14,22 +14,33 @@ struct LayerFormView: View {
     @State private var name: String = ""
     @State private var selectedColorHex: String = "#FF3B30"
     @State private var selectedSymbol: String = "mappin"
-    @State private var selectedKind: LayerKind = .places
+    /// Fixed by context: a form opened from Trails makes a trail group,
+    /// anywhere else a tag. Editing keeps the layer's own kind.
+    private let kind: LayerKind
     @State private var lineWidth: Double = 4.0
     @State private var showDiscardConfirm = false
     @State private var initialSnapshot: Snapshot? = nil
 
+    /// - Parameters:
+    ///   - layer: the tag or trail group to edit; `nil` creates one.
+    ///   - kind: what a new layer is (`.places` = tag, `.waypointPath` =
+    ///     trail group). Ignored when editing.
+    init(layer: Layer?, kind: LayerKind = .places) {
+        self.layer = layer
+        self.kind = layer?.kind ?? kind
+    }
+
     var isEditing: Bool { layer != nil }
 
-    /// A layer's type is fixed once it holds places or trails: switching a
-    /// Places layer to Trails would turn saved places into trail points.
-    private var canChangeKind: Bool { !(layer?.hasItems ?? false) }
+    private var isTrailGroup: Bool { kind == .waypointPath }
+
+    /// "tag" or "trail group", for titles and messages.
+    private var noun: String { isTrailGroup ? "trail group" : "tag" }
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var currentSnapshot: Snapshot {
-        Snapshot(name: name, colorHex: selectedColorHex, symbol: selectedSymbol,
-                 kind: selectedKind, lineWidth: lineWidth)
+        Snapshot(name: name, colorHex: selectedColorHex, symbol: selectedSymbol, lineWidth: lineWidth)
     }
 
     private var hasUnsavedEdits: Bool {
@@ -41,37 +52,11 @@ struct LayerFormView: View {
         NavigationStack {
             Form {
                 Section("Name") {
-                    TextField("Layer name", text: $name)
+                    TextField(isTrailGroup ? "Trail group name" : "Tag name", text: $name)
                         .textInputAutocapitalization(.words)
                 }
 
-                Section {
-                    if canChangeKind {
-                        Picker("Type", selection: $selectedKind) {
-                            ForEach(LayerKind.allCases) { kind in
-                                Label(kind.displayName, systemImage: kind.systemImage)
-                                    .tag(kind)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                    } else {
-                        LabeledContent("Type") {
-                            Label(selectedKind.displayName, systemImage: selectedKind.systemImage)
-                        }
-                    }
-
-                    Text(selectedKind.description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Layer Type")
-                } footer: {
-                    if !canChangeKind {
-                        Text("Type can't change once a layer has items.")
-                    }
-                }
-
-                if selectedKind == .waypointPath {
+                if isTrailGroup {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
@@ -116,38 +101,40 @@ struct LayerFormView: View {
                     .padding(.vertical, 4)
                 }
 
-                Section("Icon") {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 12) {
-                        ForEach(Color.layerSymbols, id: \.symbol) { item in
-                            let isSelected = selectedSymbol == item.symbol
-                            Button {
-                                selectedSymbol = item.symbol
-                            } label: {
-                                Image(systemName: item.symbol)
-                                    .font(.title2)
-                                    .frame(width: 44, height: 44)
-                                    .background(
-                                        isSelected
-                                            ? Color(hex: selectedColorHex)?.opacity(0.2) ?? Color.red.opacity(0.2)
-                                            : Color.clear
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    .foregroundStyle(
-                                        isSelected
-                                            ? Color(hex: selectedColorHex) ?? .red
-                                            : .secondary
-                                    )
-                                    .contentShape(Rectangle())
+                if !isTrailGroup {
+                    Section("Icon") {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 12) {
+                            ForEach(Color.layerSymbols, id: \.symbol) { item in
+                                let isSelected = selectedSymbol == item.symbol
+                                Button {
+                                    selectedSymbol = item.symbol
+                                } label: {
+                                    Image(systemName: item.symbol)
+                                        .font(.title2)
+                                        .frame(width: 44, height: 44)
+                                        .background(
+                                            isSelected
+                                                ? Color(hex: selectedColorHex)?.opacity(0.2) ?? Color.red.opacity(0.2)
+                                                : Color.clear
+                                        )
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .foregroundStyle(
+                                            isSelected
+                                                ? Color(hex: selectedColorHex) ?? .red
+                                                : .secondary
+                                        )
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(item.name)
+                                .accessibilityAddTraits(isSelected ? .isSelected : [])
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(item.name)
-                            .accessibilityAddTraits(isSelected ? .isSelected : [])
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
                 }
             }
-            .navigationTitle(isEditing ? "Edit Layer" : "New Layer")
+            .navigationTitle(isEditing ? "Edit \(noun)" : "New \(noun)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -166,8 +153,8 @@ struct LayerFormView: View {
                 Button("Discard", role: .destructive) { dismiss() }
                 Button("Keep Editing", role: .cancel) {}
             } message: {
-                Text(isEditing ? "Your edits to this layer will be lost."
-                               : "This layer hasn't been created.")
+                Text(isEditing ? "Your edits to this \(noun) will be lost."
+                               : "This \(noun) hasn't been created.")
             }
             .onAppear {
                 guard initialSnapshot == nil else { return }
@@ -175,7 +162,6 @@ struct LayerFormView: View {
                     name = layer.name
                     selectedColorHex = layer.colorHex
                     selectedSymbol = layer.symbolName
-                    selectedKind = layer.kind
                     lineWidth = layer.lineWidth
                 }
                 initialSnapshot = currentSnapshot
@@ -198,17 +184,15 @@ struct LayerFormView: View {
             layer.name = finalName
             layer.colorHex = selectedColorHex
             layer.symbolName = selectedSymbol
-            // Defensive: never retype a layer that already holds items.
-            if !layer.hasItems { layer.kind = selectedKind }
             layer.lineWidth = lineWidth
         } else {
             let nextOrder = (allLayers.map(\.sortOrder).max() ?? -1) + 1
             let newLayer = Layer(
                 name: finalName,
                 colorHex: selectedColorHex,
-                symbolName: selectedSymbol,
+                symbolName: isTrailGroup ? "figure.walk" : selectedSymbol,
                 sortOrder: nextOrder,
-                kind: selectedKind,
+                kind: kind,
                 lineWidth: lineWidth
             )
             modelContext.insert(newLayer)
@@ -216,7 +200,8 @@ struct LayerFormView: View {
         // Confirm immediately and close; no artificial delay.
         if let toastCenter {
             // The toast host plays the success haptic when it presents.
-            toastCenter.show(isEditing ? "Layer updated" : "Layer created")
+            let title = isTrailGroup ? "Trail group" : "Tag"
+            toastCenter.show(isEditing ? "\(title) updated" : "\(title) created")
         } else {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
@@ -227,7 +212,6 @@ struct LayerFormView: View {
         var name: String
         var colorHex: String
         var symbol: String
-        var kind: LayerKind
         var lineWidth: Double
     }
 }

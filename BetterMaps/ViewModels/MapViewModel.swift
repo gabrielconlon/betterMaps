@@ -7,6 +7,8 @@ import Observation
 enum ActiveSheet: Identifiable {
     case placeDetail(Place)
     case poiDetail(MKMapItem)
+    /// A tap on the map: the sheet opens at once and looks up the place there.
+    case poiLookup(CLLocationCoordinate2D)
     /// New place form. `nil` coordinate starts the pin at the map centre;
     /// `name` and `layerId` prefill it (from the quick-add sheet).
     case newPlace(CLLocationCoordinate2D?, name: String? = nil, layerId: UUID? = nil)
@@ -14,7 +16,8 @@ enum ActiveSheet: Identifiable {
     case quickAdd(CLLocationCoordinate2D)
     case transitArrivals(TransitStop)
     case layerDetail(UUID)
-    case newLayer
+    /// New tag (`.places`) or trail group (`.waypointPath`).
+    case newLayer(LayerKind)
     case editLayer(UUID)
     case trailDetail(UUID)
     case settings
@@ -23,11 +26,12 @@ enum ActiveSheet: Identifiable {
         switch self {
         case .placeDetail(let place): return "place-\(place.id)"
         case .poiDetail(let item): return "poi-\(item.name ?? "unknown")-\(item.placemark.coordinate.latitude)"
+        case .poiLookup(let c): return "poiLookup-\(c.latitude),\(c.longitude)"
         case .newPlace: return "newPlace"
         case .quickAdd(let c): return "quickAdd-\(c.latitude),\(c.longitude)"
         case .transitArrivals(let stop): return "transit-\(stop.id)"
         case .layerDetail(let id): return "layer-\(id)"
-        case .newLayer: return "newLayer"
+        case .newLayer(let kind): return "newLayer-\(kind.rawValue)"
         case .editLayer(let id): return "editLayer-\(id)"
         case .trailDetail(let id): return "trail-\(id)"
         case .settings: return "settings"
@@ -71,6 +75,10 @@ class MapViewModel {
 
     func showPOI(_ mapItem: MKMapItem) {
         activeSheet = .poiDetail(mapItem)
+    }
+
+    func lookUpPlace(at coordinate: CLLocationCoordinate2D) {
+        activeSheet = .poiLookup(coordinate)
     }
 
     func startNewPlace(at coordinate: CLLocationCoordinate2D?) {
