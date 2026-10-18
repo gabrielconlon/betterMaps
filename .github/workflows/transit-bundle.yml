@@ -1,0 +1,132 @@
+# Weekly rebuild of the BetterMaps offline transit bundle.
+#
+# - Downloads the TFI GTFS feed, runs scripts/build_transit_bundle.py.
+# - Uploads transit_timetable.sqlite.gz + manifest.json to the rolling
+#   pre-release tagged `transit-data` (assets are overwritten in place, so the
+#   app can always fetch
+#   https://github.com/gabrielconlon/betterMaps/releases/download/transit-data/transit_timetable.sqlite.gz).
+# - Opens/updates a PR from branch `bot/transit-bundle` when the bundled JSON
+#   files (stops / lines / routes) changed.
+#
+# Repo setting required for the PR step: Settings -> Actions -> General ->
+# "Allow GitHub Actions to create and approve pull requests". See scripts/README.md.
+
+name: Transit bundle
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Service window in days"
+        required: false
+        default: "60"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: transit-bundle
+  cancel-in-progress: false
+
+env:
+  GTFS_URL: https://www.transportforireland.ie/transitData/Data/GTFS_All.zip
+  GTFS_FALLBACK_URL: https://www.transportforireland.ie/transitData/Data/GTFS_Realtime.zip
+  GZ_HARD_LIMIT_BYTES: "20971520" # 20 MB: fail the run rather than ship a bundle the app would choke on
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download TFI GTFS feed
+        run: |
+          mkdir -p "$RUNNER_TEMP/gtfs_in"
+          if ! curl -sSfL --retry 3 --retry-delay 10 -o "$RUNNER_TEMP/gtfs_in/GTFS.zip" "$GTFS_URL"; then
+            echo "::warning::GTFS_All.zip unavailable, falling back to GTFS_Realtime.zip"
+            curl -sSfL --retry 3 --retry-delay 10 -o "$RUNNER_TEMP/gtfs_in/GTFS.zip" "$GTFS_FALLBACK_URL"
+          fi
+          ls -la "$RUNNER_TEMP/gtfs_in"
+
+      - name: Build bundle
+        run: |
+          mkdir -p scripts/out
+          python3 -I scripts/build_transit_bundle.py \
+            --input "$RUNNER_TEMP/gtfs_in/GTFS.zip" \
+            --out-dir BetterMaps/Resources/Transit \
+            --timetable-out scripts/out/transit_timetable.sqlite \
+            --manifest scripts/out/manifest.json \
+            --days "${{ github.event.inputs.days || '60' }}" \
+            | tee scripts/out/summary.txt
+          echo "## Transit bundle" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat scripts/out/summary.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Size guard and metadata
+        id: meta
+        run: |
+          BYTES=$(stat -c %s scripts/out/transit_timetable.sqlite.gz)
+          echo "gz bytes: $BYTES"
+          if [ "$BYTES" -gt "$GZ_HARD_LIMIT_BYTES" ]; then
+            echo "::error::transit_timetable.sqlite.gz is $BYTES bytes (> $GZ_HARD_LIMIT_BYTES)"; exit 1
+          fi
+          if [ "$BYTES" -gt 15728640 ]; then
+            echo "::warning::transit_timetable.sqlite.gz is $BYTES bytes (> 15 MB target)"
+          fi
+          echo "feed_version=$(jq -r .feedVersion scripts/out/manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "built=$(jq -r .built scripts/out/manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(jq -r .sha256 scripts/out/manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "gz_bytes=$BYTES" >> "$GITHUB_OUTPUT"
+
+      - name: Publish rolling release (transit-data)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: transit-data
+          name: Transit data (rolling)
+          prerelease: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          body: |
+            Rolling offline timetable bundle, rebuilt weekly from the TFI GTFS feed.
+
+            - built: ${{ steps.meta.outputs.built }}
+            - feedVersion: ${{ steps.meta.outputs.feed_version }}
+            - sha256: ${{ steps.meta.outputs.sha256 }}
+            - bytes: ${{ steps.meta.outputs.gz_bytes }}
+
+            The app downloads `transit_timetable.sqlite.gz` and checks it against `manifest.json`.
+          files: |
+            scripts/out/transit_timetable.sqlite.gz
+            scripts/out/manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open PR with refreshed JSON (if changed)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bot/transit-bundle
+          delete-branch: true
+          add-paths: |
+            BetterMaps/Resources/Transit/transit_stops.json
+            BetterMaps/Resources/Transit/transit_lines.json
+            BetterMaps/Resources/Transit/transit_routes.json
+          commit-message: "chore(transit): refresh bundled transit JSON (feed ${{ steps.meta.outputs.feed_version }})"
+          title: "chore(transit): refresh bundled transit JSON (${{ steps.meta.outputs.built }})"
+          body: |
+            Automated refresh of `BetterMaps/Resources/Transit/*.json` from the TFI GTFS feed.
+
+            - built: ${{ steps.meta.outputs.built }}
+            - feedVersion: ${{ steps.meta.outputs.feed_version }}
+            - matching timetable: https://github.com/${{ github.repository }}/releases/tag/transit-data
+
+            Generated by `.github/workflows/transit-bundle.yml`.
+          labels: transit-data

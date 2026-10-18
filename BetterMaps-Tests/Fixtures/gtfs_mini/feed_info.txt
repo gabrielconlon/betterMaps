@@ -1,0 +1,2 @@
+feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version,feed_contact_email
+BetterMaps test fixture,https://example.invalid/,en,20261001,20261231,mini-2026-10,

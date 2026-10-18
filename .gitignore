@@ -19,3 +19,9 @@ Package.resolved
 
 # Generated Xcode project (regenerate with xcodegen)
 *.xcodeproj
+
+# Transit bundle build outputs (the timetable is fetched from the transit-data
+# GitHub release at runtime; only the three JSONs and the test fixture are tracked)
+scripts/out/
+BetterMaps/Resources/Transit/*.sqlite
+BetterMaps/Resources/Transit/*.sqlite.gz
