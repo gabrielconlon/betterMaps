@@ -1,0 +1,4 @@
+agency_id,agency_name,agency_url,agency_timezone
+978,Dublin Bus,https://www.dublinbus.ie/,Europe/Dublin
+LUAS,Luas,https://luas.ie/,Europe/Dublin
+IR,Iarnród Éireann,https://www.irishrail.ie/,Europe/Dublin
