@@ -6,7 +6,7 @@ downloads for offline Dublin transit:
 | Output | Lives | Size (2026-10-18 feed) |
 | --- | --- | --- |
 | `transit_stops.json` | `BetterMaps/Resources/Transit/` (committed, bundled) | 544 KB (target <= 800 KB) |
-| `transit_lines.json` | same | 20 KB (target <= 300 KB) |
+| `transit_lines.json` | same | 15 KB, 16 entries / 715 points (target <= 150 KB) |
 | `transit_routes.json` | same | 26 KB (target <= 100 KB) |
 | `transit_timetable.sqlite(.gz)` | `scripts/out/` locally (gitignored); published to the `transit-data` GitHub release | 30.2 MB raw / 12.6 MB gz (targets 60 / 15 MB) |
 
@@ -87,18 +87,39 @@ imported.
    brings the timetable from 79 MB / 22.9 MB gz down to 30 MB / 12.6 MB gz.
    Departure queries return exactly the same rows either way; the schema never
    exposed GTFS trip ids.
-7. **Shapes**: the shape used by the most trips per (route, direction) is
-   loaded from `shapes.txt`, trimmed to the bbox expanded by 0.05° (so
-   inter-city rail lines stop a few km outside Dublin instead of running to
-   Cork), and Douglas–Peucker-simplified with a 0.00007° (~8 m) tolerance.
-   `transit_lines.json` has one polyline per Luas line / DART / rail route
-   (directions merged by taking the longest); the SQLite `route_shapes` table
-   has one per route and direction, for every route including buses.
-8. All outputs are sorted by id and written with compact separators, so a
+7. **Shapes**: shapes are loaded from `shapes.txt`, trimmed to the bbox
+   expanded by 0.05° (so inter-city rail lines stop a few km outside Dublin
+   instead of running to Cork), and Douglas–Peucker-simplified with a
+   0.00007° (~8 m) tolerance. The SQLite `route_shapes` table has the shape
+   used by the most trips per (route, direction), for every route including
+   buses.
+8. **Lines** (`transit_lines.json`): every distinct shape used by an active
+   trip of a Luas / DART / rail route is a candidate, not just the dominant
+   one, because branches and short workings (DART Howth, Luas Saggart and
+   Broombridge, rail M3 Parkway and Docklands) only exist as minority shapes.
+   Dedupe scopes are Luas Red, Luas Green, DART, and all rail routes together
+   (Irish Rail publishes inbound/outbound as separate routes over the same
+   track). Within a scope shapes go longest first; each contributes only the
+   stretches that are not already within 15 m of something kept (sampled every
+   20 m), and a stretch is emitted only if it strays more than 40 m from the
+   kept network somewhere (so a parallel track is not drawn twice). Reversed
+   duplicates and sub-sections therefore add nothing, and a branch becomes its
+   own short entry starting at its junction vertex. The first entry of a line
+   keeps the plain id (`dart`, `luas-red`, `rail-<route_id>`), later ones get
+   `-2`, `-3`, ... (`dart-2` is the Howth branch). Ids are unique; the app
+   draws every entry, so entries never overlap except at a junction vertex.
+   A rail route whose track is fully covered by other routes has no entry.
+9. **Coverage gate**: every `dart` / `rail` / `luas` stop (by primary `kind`)
+   must be within 150 m of a line entry of the same kind (a Luas stop: of its
+   own `line`, Red or Green). Otherwise the offenders are printed to stderr and
+   the script exits non-zero **before writing any of the three JSONs** (the
+   timetable is not built either). No stations are excluded: stops are all
+   inside the bbox and lines are only trimmed outside bbox + 0.05°. Today's
+   max distances: DART 76 m (Connolly), rail 23 m, Luas Red 10 m, Luas
+   Green 14 m.
+   The mini fixture passes the gate too, so there is no opt-out flag.
+10. All outputs are sorted by id and written with compact separators, so a
    rebuild from the same feed and `--today` is byte-identical.
-
-Luas branches: `luas-red` is the single longest Red shape (Saggart–The Point);
-the Tallaght spur is not in `transit_lines.json`, but it is in `route_shapes`.
 
 ## JSON schemas
 
@@ -123,8 +144,12 @@ the Tallaght spur is not in `transit_lines.json`, but it is in `route_shapes`.
   {"id":"luas-red","kind":"luas","line":"red","name":"Luas Red Line","coords":[[53.34768,-6.26528],...]},
   {"id":"luas-green","kind":"luas","line":"green","name":"Luas Green Line","coords":[...]},
   {"id":"dart","kind":"dart","name":"DART","coords":[...]},
+  {"id":"dart-2","kind":"dart","name":"DART","coords":[...]},
   {"id":"rail-DUB-MAYNOOTH-O","kind":"rail","name":"Dublin - Maynooth","coords":[...]}]}
 ```
+
+Several entries can share `kind` / `line` / `name` (a line's branches); `id`
+is unique.
 
 `transit_routes.json`
 
@@ -204,7 +229,7 @@ the Swift tests to assert:
 | departures at `8220IR0025` (Tara Street) | `[28500]` DART headsign `Greystones` |
 | `route_shapes` | 4 rows; `MINI-39A` dir 0 has 4 points (DP dropped one), DART polyline keeps Greystones (bbox margin) |
 | `transit_stops.json` | 7 stops: bus `8220DB000002/3/4` with codes `2/3/4`, Luas `8220GA00404` Jervis and `8220GA00408` Abbey St. (`line: red`, `altIds: ["8220GA00409"]`), DART `8220IR0025`, `8240IR0017` |
-| `transit_lines.json` | 2 lines: `dart` (6 points), `luas-red` (3 points, the longer of the two Red shapes) |
+| `transit_lines.json` | 2 lines: `dart` (6 points), `luas-red` (3 points, the longer of the two Red shapes; the reversed `SHRED1` is within 15 m of it and adds nothing) |
 | `transit_routes.json` | 3 routes, sorted `MINI-39A`, `MINI-DART`, `MINI-RED` |
 
 ## GitHub Action (`.github/workflows/transit-bundle.yml`)

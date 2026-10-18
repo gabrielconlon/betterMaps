@@ -1,4 +1,5 @@
 import XCTest
+import CoreLocation
 @testable import CustomMapApp
 
 /// The bundled `Resources/Transit/*.json` decode and look sane.
@@ -45,6 +46,54 @@ final class TransitBundleDecodingTests: XCTestCase {
         XCTAssertGreaterThan(bundle.routes.count, 100)
         XCTAssertEqual(Set(bundle.routes.map(\.id)).count, bundle.routes.count)
         XCTAssertTrue(bundle.routes.contains { $0.short == "39A" && $0.kind == .bus })
+    }
+
+    func testLineIdsAreUnique() throws {
+        let ids = try loadBundle().lines.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "line ids are ForEach identities and must be unique")
+    }
+
+    /// Mirrors the coverage gate in scripts/build_transit_bundle.py: no DART /
+    /// rail / Luas station may sit away from the drawn track (the DART used to
+    /// stop at Grand Canal Dock, and Luas / rail branches were missing).
+    func testEveryRailStationIsOnALineOfItsKind() throws {
+        let bundle = try loadBundle()
+        let maxMetres = 150.0
+        var worst: [String: Double] = [:]
+        var offenders: [String] = []
+        for stop in bundle.stops where [TransitLayerKind.dart, .rail, .luas].contains(stop.kind) {
+            let lines = bundle.lines.filter {
+                $0.kind == stop.kind && (stop.kind != .luas || stop.line == nil || $0.line == stop.line)
+            }
+            let p = CLLocationCoordinate2D(latitude: stop.latitude, longitude: stop.longitude)
+            var best = Double.infinity
+            for line in lines {
+                for (a, b) in zip(line.coordinates, line.coordinates.dropFirst()) {
+                    best = min(best, Self.distanceMetres(p, segment: a, b))
+                }
+            }
+            let key = stop.kind == .luas ? "luas-\(stop.line ?? "?")" : "\(stop.kind)"
+            worst[key] = max(worst[key] ?? 0, best)
+            if best > maxMetres { offenders.append("\(stop.name) (\(key)) \(Int(best)) m") }
+        }
+        XCTAssertTrue(offenders.isEmpty, "stations off their line: \(offenders)")
+        for key in ["dart", "rail", "luas-red", "luas-green"] {
+            XCTAssertNotNil(worst[key], "no \(key) stations checked")
+        }
+    }
+
+    /// Point-to-segment distance on a local equirectangular projection; plenty
+    /// accurate over the few km a Dublin segment spans.
+    private static func distanceMetres(_ p: CLLocationCoordinate2D, segment a: CLLocationCoordinate2D,
+                                       _ b: CLLocationCoordinate2D) -> Double {
+        let mPerDeg = 6_371_000.0 * Double.pi / 180
+        let cosLat = cos(p.latitude * Double.pi / 180)
+        let ax = (a.longitude - p.longitude) * cosLat * mPerDeg, ay = (a.latitude - p.latitude) * mPerDeg
+        let bx = (b.longitude - p.longitude) * cosLat * mPerDeg, by = (b.latitude - p.latitude) * mPerDeg
+        let dx = bx - ax, dy = by - ay
+        let len2 = dx * dx + dy * dy
+        let t = len2 == 0 ? 0 : max(0, min(1, -(ax * dx + ay * dy) / len2))
+        return hypot(ax + t * dx, ay + t * dy)
     }
 
     func testStopRoundTripsThroughJSON() throws {
