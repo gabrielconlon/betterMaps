@@ -157,6 +157,14 @@ struct MapScreen: View {
     /// is unobserved, so reading it never ties a body to the camera.
     private var settledMapCenter: CLLocationCoordinate2D { store.region.center }
 
+    /// One panel at a time: the map sheet steps aside while a router sheet
+    /// is up and comes back at the detent it had.
+    private var isMapSheetHidden: Bool { viewModel.activeSheet != nil }
+
+    /// Height of the map sheet as drawn: 0 while it is hidden, so toasts and
+    /// the layers panel do not leave room for an absent sheet.
+    private var visibleSheetHeight: CGFloat { isMapSheetHidden ? 0 : sheetHeight }
+
     private var canLocateUser: Bool {
         let status = locationManager.authorizationStatus
         return status == .authorizedWhenInUse || status == .authorizedAlways
@@ -201,9 +209,14 @@ struct MapScreen: View {
             }
 
             MapChrome(mapScope: mapScope,
-                      isHidden: sheetDetent == .expanded,
+                      // An expanded map sheet covers the chrome; a hidden one does not.
+                      isHidden: sheetDetent == .expanded && !isMapSheetHidden,
                       isLayersOpen: isLayersPanelOpen,
-                      onToggleLayers: { setLayersPanel(open: !isLayersPanelOpen) },
+                      onToggleLayers: {
+                          // The panel and a router sheet never share the screen.
+                          if !isLayersPanelOpen, isMapSheetHidden { viewModel.dismissSheet() }
+                          setLayersPanel(open: !isLayersPanelOpen)
+                      },
                       draftChip: draftChip,
                       canLocateUser: canLocateUser,
                       onRequestLocation: locateUser)
@@ -214,22 +227,23 @@ struct MapScreen: View {
                     .padding(.leading, 12)
                     // Below the 44pt Layers button, above the sheet.
                     .padding(.top, 8 + 44 + 8)
-                    .padding(.bottom, sheetHeight + 8)
+                    .padding(.bottom, visibleSheetHeight + 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
             BottomSheet(detent: $sheetDetent,
+                        isHidden: isMapSheetHidden,
                         onSettledHeightChange: { sheetHeight = $0 },
                         header: { sheetHeader },
                         content: { sheetContent })
 
             // Toast host: clear and untouchable itself, its toast sits just
-            // above the sheet.
+            // above the sheet (or the bottom edge while the sheet is hidden).
             Color.clear
                 .allowsHitTesting(false)
                 .toasts(toastCenter)
-                .padding(.bottom, sheetHeight)
+                .padding(.bottom, visibleSheetHeight)
         }
         .mapScope(mapScope)
         .environment(toastCenter)
@@ -245,6 +259,11 @@ struct MapScreen: View {
         .onChange(of: viewModel.activeSheet?.id) { _, _ in
             // The dropped pin lives exactly as long as the quick-add sheet.
             if !viewModel.isQuickAddOpen { droppedPin = nil }
+            // A router sheet replaces the map sheet and the layers panel.
+            if isMapSheetHidden {
+                if isLayersPanelOpen { setLayersPanel(open: false) }
+                if isSearchFocused { isSearchFocused = false }
+            }
         }
         .onChange(of: snapshotTrigger, initial: true) { _, _ in rebuildSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
