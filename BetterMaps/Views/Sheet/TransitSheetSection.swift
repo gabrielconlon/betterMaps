@@ -8,9 +8,16 @@ struct TransitSheetSection: View {
     let timetable: BusTimetableModel
     /// A transit network was switched on or off.
     var onToggle: () -> Void = {}
+    /// Opens a stop's arrivals (the host routes it, e.g.
+    /// `viewModel.showTransitArrivals`). The "Pinned stops" group only
+    /// shows when this is set.
+    var onOpenStop: ((TransitStop) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let onOpenStop {
+                PinnedStopsGroup(pinnedStopIds: transitSettings.pinnedStopIds, onOpen: onOpenStop)
+            }
             SheetSectionHeader(title: "Transit")
             ForEach(TransitLayerKind.allCases) { kind in
                 LayerCardRow(color: TransitColors.pin(kind),
@@ -34,6 +41,55 @@ struct TransitSheetSection: View {
         case .dart: return "Coastal line"
         case .rail: return "Commuter and intercity"
         }
+    }
+}
+
+/// Stops the user starred in an arrivals sheet, in the order they were
+/// pinned. Tap opens the stop's arrivals. Hidden when nothing is pinned or
+/// none of the ids resolve against the bundled stop list.
+struct PinnedStopsGroup: View {
+    let pinnedStopIds: [String]
+    let onOpen: (TransitStop) -> Void
+    private let store = TransitLayerStore.shared
+
+    var body: some View {
+        let stops = Self.resolve(pinnedStopIds, using: store.stop(id:))
+        VStack(alignment: .leading, spacing: 0) {
+            if !stops.isEmpty {
+                SheetSectionHeader(title: "Pinned stops")
+                ForEach(stops) { stop in
+                    Button { onOpen(stop) } label: {
+                        SearchResultRow(icon: stop.kind.systemImage,
+                                        iconColor: TransitColors.pin(for: stop),
+                                        iconShape: .circle,
+                                        title: stop.name,
+                                        subtitle: Self.subtitle(stop))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Shows departures")
+                }
+            }
+        }
+        .padding(.bottom, stops.isEmpty ? 0 : 12)
+        // Stop names live in the bundled JSON, which is only decoded once a
+        // network is switched on; decode it here when there are pins to show.
+        .task(id: pinnedStopIds.isEmpty) {
+            guard !pinnedStopIds.isEmpty else { return }
+            await store.loadIfNeeded()
+        }
+    }
+
+    /// Pinned ids → stops, in pin order, skipping unknown ids and repeats
+    /// (an alt id and its main id resolve to the same stop).
+    nonisolated static func resolve(_ ids: [String], using lookup: (String) -> TransitStop?) -> [TransitStop] {
+        var seen = Set<String>()
+        return ids.compactMap(lookup).filter { seen.insert($0.id).inserted }
+    }
+
+    nonisolated static func subtitle(_ stop: TransitStop) -> String {
+        let networks = stop.kinds.map(\.displayName).joined(separator: " · ")
+        guard let code = stop.code else { return networks }
+        return "\(networks) · Stop \(code)"
     }
 }
 
@@ -122,7 +178,7 @@ struct PinnedRoutesSection: View {
 
     private func chip(_ route: FavoriteTransitRoute) -> some View {
         let isOn = highlightedRouteId == route.routeId
-        let color = Self.color(routeType: route.routeType)
+        let color = TransitColors.pin(routeType: route.routeType, shortName: route.shortName)
         return Button { onSelect(route) } label: {
             Text(route.shortName)
                 .font(.subheadline.weight(.semibold))
@@ -145,11 +201,4 @@ struct PinnedRoutesSection: View {
         }
     }
 
-    static func color(routeType: Int) -> Color {
-        switch routeType {
-        case 0: return TransitColors.luasGrnPin
-        case 2: return TransitColors.dartPin
-        default: return TransitColors.busPin
-        }
-    }
 }

@@ -110,7 +110,7 @@ struct SheetSearchResults: View {
         let isFavorite = favoriteRoutes.contains { $0.routeId == route.id }
         return HStack(spacing: 0) {
             Button { onSelectRoute(route) } label: {
-                SearchResultRow(icon: route.kind.systemImage, iconColor: TransitColors.pin(route.kind),
+                SearchResultRow(icon: route.kind.systemImage, iconColor: TransitColors.pin(for: route),
                                 iconShape: .rounded, title: "Route \(route.short)",
                                 subtitle: route.long.isEmpty ? nil : route.long)
             }

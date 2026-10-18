@@ -71,12 +71,11 @@ struct MatchedPlace: Sendable, Identifiable {
     var id: UUID { place.id }
 }
 
-/// One row of the "shared by" legend shown in intersection mode:
-/// e.g. "Brunch ∩ Favorites — 4".
+/// One row of the "shared by" legend: e.g. "Brunch + Favourites · 4".
 struct LegendEntry: Sendable, Hashable, Identifiable {
     /// The visible place-layer ids this group is shared by, in sortOrder order.
     let layerIds: [UUID]
-    /// Layer names joined with " ∩ " in sortOrder order.
+    /// Layer names joined with " + " in sortOrder order.
     let label: String
     let count: Int
     var id: String { layerIds.map(\.uuidString).joined(separator: "|") }
@@ -172,7 +171,7 @@ enum LayerMath {
 
         let entries = counts.map { ids, count in
             LegendEntry(layerIds: ids,
-                        label: ids.compactMap { nameById[$0] }.joined(separator: " ∩ "),
+                        label: ids.compactMap { nameById[$0] }.joined(separator: " + "),
                         count: count)
         }
         .sorted { lhs, rhs in
@@ -180,6 +179,24 @@ enum LayerMath {
             return lhs.label < rhs.label
         }
         return Array(entries.prefix(limit))
+    }
+
+    /// How many places are in *every* visible place layer. Trail layers
+    /// never count. 0 when no place layer is visible.
+    static func overlapCount(_ places: [PlaceLite], layers: [LayerLite]) -> Int {
+        let placeIds = visiblePlaceLayerIds(layers)
+        guard !placeIds.isEmpty else { return 0 }
+        return places.reduce(0) { matchCount($1, visible: placeIds) == placeIds.count ? $0 + 1 : $0 }
+    }
+
+    /// In "Overlap only" mode with two or more visible place layers and no
+    /// place in all of them, the number of those layers (for "No places in
+    /// all 3 layers"). `nil` otherwise.
+    static func emptyOverlapLayerCount(_ places: [PlaceLite], layers: [LayerLite], mode: FilterMode) -> Int? {
+        guard mode == .intersection else { return nil }
+        let count = visiblePlaceLayerIds(layers).count
+        guard count >= 2, overlapCount(places, layers: layers) == 0 else { return nil }
+        return count
     }
 
     // MARK: Private

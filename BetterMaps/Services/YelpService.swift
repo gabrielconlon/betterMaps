@@ -119,12 +119,51 @@ struct YelpReviewsResponse: Decodable {
 // MARK: - Yelp Service
 
 actor YelpService {
-    // Store your Yelp API key here. Get one free at https://www.yelp.com/developers
-    // For production, use Keychain or environment variable instead.
-    private static let apiKeyStorage = OSAllocatedUnfairLock(initialState: "")
+    /// Keychain account holding the optional Yelp Fusion key.
+    static let keychainAccount = "yelpAPIKey"
+    /// Where older builds kept the key in plain UserDefaults.
+    static let legacyDefaultsKey = "yelpAPIKey"
+
+    /// In-memory copy of the Keychain value; nil until first read.
+    private static let apiKeyStorage = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    /// The user's Yelp key, kept in the Keychain. The first read moves a key
+    /// left in UserDefaults by older builds into the Keychain and deletes it.
     static var apiKey: String {
-        get { apiKeyStorage.withLock { $0 } }
-        set { apiKeyStorage.withLock { $0 = newValue } }
+        get {
+            apiKeyStorage.withLock { cached in
+                if let cached { return cached }
+                let loaded = loadKey()
+                cached = loaded
+                return loaded
+            }
+        }
+        set {
+            let key = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            apiKeyStorage.withLock { $0 = key }
+            if KeychainStore().set(key, for: keychainAccount) {
+                UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
+            }
+        }
+    }
+
+    /// Reads the key, migrating a legacy UserDefaults copy first.
+    static func loadKey(keychain: KeychainStore = KeychainStore(),
+                        defaults: UserDefaults = .standard) -> String {
+        migrateLegacyKey(keychain: keychain, defaults: defaults)
+        return keychain.string(for: keychainAccount) ?? ""
+    }
+
+    /// One-time move of the key from UserDefaults to the Keychain. The
+    /// plain-text copy is deleted only once the Keychain holds a key.
+    static func migrateLegacyKey(keychain: KeychainStore = KeychainStore(),
+                                 defaults: UserDefaults = .standard) {
+        guard let legacy = defaults.string(forKey: legacyDefaultsKey) else { return }
+        let trimmed = legacy.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || keychain.string(for: keychainAccount) != nil
+            || keychain.set(trimmed, for: keychainAccount) {
+            defaults.removeObject(forKey: legacyDefaultsKey)
+        }
     }
 
     private static let logger = Logger(

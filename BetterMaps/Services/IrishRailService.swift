@@ -46,6 +46,21 @@ struct IrishRailArrival: Identifiable {
     let lastLocation: String
 }
 
+extension IrishRailStation {
+    /// The station closest to `coordinate`, if it is within `radius`
+    /// metres. The API's station order is alphabetical, so "first within
+    /// range" can pick the wrong one where stations sit close together.
+    static func nearest(to coordinate: CLLocationCoordinate2D,
+                        in stations: [IrishRailStation],
+                        within radius: CLLocationDistance = 800) -> IrishRailStation? {
+        stations
+            .map { ($0, WaypointGraph.meters($0.coordinate, coordinate)) }
+            .filter { $0.1 < radius }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+}
+
 // MARK: - Irish Rail Service
 
 actor IrishRailService {
@@ -139,6 +154,15 @@ enum TransitFeedError: Error, Equatable, Sendable {
 
 enum TransitFeed {
     typealias Loader = @Sendable (URL) async throws -> (Data, URLResponse)
+
+    /// True when a feed status or service message reports a genuine
+    /// disruption (cancelled, delayed, suspended...). Routine statuses
+    /// ("En Route", "On time", "Operating normally") are not.
+    static func isDisruption(_ text: String) -> Bool {
+        let keywords = ["cancel", "delay", "disrupt", "suspend", "not running", "not in service"]
+        let lower = text.lowercased()
+        return keywords.contains { lower.contains($0) }
+    }
 
     static let urlSessionLoader: Loader = { url in
         try await URLSession.shared.data(from: url)

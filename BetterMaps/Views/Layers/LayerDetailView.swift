@@ -76,7 +76,7 @@ struct LayerDetailView: View {
             if isWaypointPath {
                 if trails.isEmpty {
                     Section("Trails") {
-                        Text("No trails yet. Tap New Trail, then long-press the map to add points.")
+                        Text("No trails yet. Tap New Trail, then tap the map to add points.")
                             .foregroundStyle(.secondary)
                     }
                 } else {
@@ -138,12 +138,6 @@ struct LayerDetailView: View {
                     Button(action: { showEditForm = true }) {
                         Label("Edit Layer", systemImage: "pencil")
                     }
-                    Button(action: { layer.isFavorite.toggle() }) {
-                        Label(
-                            layer.isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                            systemImage: layer.isFavorite ? "star.slash" : "star.fill"
-                        )
-                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -204,6 +198,16 @@ struct LayerDetailView: View {
                 Text(trail.name.isEmpty ? "Untitled trail" : trail.name)
                     .textCase(nil)
                 Spacer()
+                Button {
+                    TrailCommitter.setVisible(!trail.isVisible, for: trail, in: modelContext)
+                } label: {
+                    Image(systemName: trail.isVisible ? "eye" : "eye.slash")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .foregroundStyle(trail.isVisible ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .accessibilityLabel(trail.isVisible ? "Hide \(trail.name) on map" : "Show \(trail.name) on map")
+                .accessibilityAddTraits(trail.isVisible ? .isSelected : [])
                 Button("Edit") { editorTarget = EditorTarget(trail: trail) }
                     .font(.subheadline.weight(.semibold))
                     .textCase(nil)
@@ -219,12 +223,13 @@ struct LayerDetailView: View {
         editorTarget = EditorTarget(trail: trail)
     }
 
+    /// Removes places from this layer; a place in no other layer is deleted.
     private func removePlaces(at offsets: IndexSet) {
         let sorted = layerPlaces
         for index in offsets {
-            let place = sorted[index]
-            layer.places?.removeAll { $0.id == place.id }
+            PlaceCleanup.detach(sorted[index], from: layer, in: modelContext)
         }
+        try? modelContext.save()
     }
 }
 

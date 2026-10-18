@@ -139,7 +139,7 @@ final class ViewportCullingTests: XCTestCase {
         let expected = LayerMath.intersectionLegend(
             LayerMath.filter(places, layers: layers, mode: .intersection), layers: layers)
         XCTAssertEqual(out.legend, expected)
-        XCTAssertEqual(out.legend.first?.label, "Brunch ∩ Favorites")
+        XCTAssertEqual(out.legend.first?.label, "Brunch + Favorites")
         XCTAssertEqual(out.legend.first?.count, 3, "legend counts the whole filtered set, not just the viewport")
         XCTAssertEqual(out.places.map(\.id), [shared1.id, shared2.id], "intersection drops the single, viewport drops s3")
         XCTAssertEqual(out.visibleLayerCount, 3)

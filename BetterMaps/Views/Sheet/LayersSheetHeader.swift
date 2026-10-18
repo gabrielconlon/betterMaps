@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// Always-visible top of the sheet: search field, "+" menu (and the gear or
-/// Cancel button), then one chip per layer and transit network.
+/// Cancel button), then the "Overlap only" toggle (once two place layers are
+/// showing) and one chip per layer and transit network.
 struct LayersSheetHeader: View {
     /// User layers in sortOrder.
     let layers: [Layer]
+    @Bindable var filterVM: LayerFilterViewModel
     @Bindable var searchState: SearchState
     var isSearchFocused: FocusState<Bool>.Binding
     let detent: SheetDetent
@@ -20,12 +22,20 @@ struct LayersSheetHeader: View {
     @AppStorage(FirstRunHints.storageKey) private var hintsRaw = 0
 
     var body: some View {
-        VStack(spacing: 4) {
+        // Chips carry their own 5 pt vertical hit padding (44 pt targets), so
+        // no extra spacing: grabber + 44 + 44 still fits the collapsed sheet.
+        VStack(spacing: 0) {
             searchRow
             chipRow
         }
-        .padding(.bottom, 4)
     }
+
+    private var visiblePlaceLayerCount: Int {
+        layers.reduce(0) { $1.isVisible && $1.kind == .places ? $0 + 1 : $0 }
+    }
+
+    /// The overlap filter only means something with two place layers showing.
+    private var showsOverlapToggle: Bool { visiblePlaceLayerCount >= 2 }
 
     // MARK: - Search row
 
@@ -107,6 +117,15 @@ struct LayersSheetHeader: View {
     private var chipRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                if showsOverlapToggle {
+                    OverlapToggleChip(isOn: filterVM.filterMode == .intersection) {
+                        let turningOn = filterVM.filterMode != .intersection
+                        filterVM.filterMode = turningOn ? .intersection : .union
+                        if turningOn { markHint(.overlap) }
+                    }
+                    .transition(.opacity)
+                    Divider().frame(height: 22)
+                }
                 ForEach(layers) { layer in
                     LayerChip(title: layer.name,
                               symbol: layer.kind == .waypointPath ? LayerKind.waypointPath.systemImage : layer.symbolName,
@@ -121,7 +140,8 @@ struct LayersSheetHeader: View {
                 }
                 ForEach(TransitLayerKind.allCases) { kind in
                     LayerChip(title: kind.displayName, symbol: kind.systemImage,
-                              colorHex: TransitColors.pinHex(kind),
+                              colorHex: kind == .luas ? TransitColors.luasRedPinHex : TransitColors.pinHex(kind),
+                              secondaryColorHex: kind == .luas ? TransitColors.luasGrnPinHex : nil,
                               isOn: transitSettings.isEnabled(kind)) {
                         transitSettings.toggle(kind)
                         markToggled()
@@ -129,14 +149,51 @@ struct LayersSheetHeader: View {
                 }
             }
             .padding(.horizontal, 16)
+            .animation(.easeInOut(duration: 0.2), value: showsOverlapToggle)
         }
-        .frame(height: 36)
     }
 
-    private func markToggled() {
+    private func markToggled() { markHint(.toggleLayer) }
+
+    private func markHint(_ hint: FirstRunHints.Hint) {
         var hints = FirstRunHints(rawValue: hintsRaw)
-        hints.markDone(.toggleLayer)
-        hintsRaw = hints.rawValue
+        hints.markDone(hint)
+        if hints.rawValue != hintsRaw { hintsRaw = hints.rawValue }
+    }
+}
+
+/// "Overlap only": shows just the places in every visible place layer.
+/// Off (the default) shows everything. Dark-on-white when on, matching the
+/// overlap pins' black-and-white treatment.
+struct OverlapToggleChip: View {
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle.circle")
+                    .font(.caption.weight(.semibold))
+                    .accessibilityHidden(true)
+                Text("Overlap only")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isOn ? Color(.systemBackground) : Color.primary)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 34)
+            .background(isOn ? Color.primary : Color(.secondarySystemFill), in: Capsule())
+            .overlay { Capsule().strokeBorder(Color.primary.opacity(isOn ? 0 : 0.5), lineWidth: 1.5) }
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .sensoryFeedback(.selection, trigger: isOn)
+        .accessibilityLabel("Overlap only")
+        .accessibilityValue(isOn ? "On" : "Off, showing everything")
+        .accessibilityHint(isOn ? "Shows places in any visible layer"
+                                : "Shows only places that are in every visible layer")
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }
 
@@ -146,10 +203,37 @@ struct LayerChip: View {
     let title: String
     let symbol: String
     let colorHex: String
+    /// Second line colour (Luas red/green): the chip shows a split dot and a
+    /// half-and-half fill instead of one colour.
+    var secondaryColorHex: String? = nil
     let isOn: Bool
     let action: () -> Void
 
     private var color: Color { Color(hex: colorHex) ?? .red }
+    private var secondaryColor: Color? { secondaryColorHex.flatMap { Color(hex: $0) } }
+
+    /// Hard-stop left/right split for two-line networks.
+    private func split(_ a: Color, _ b: Color) -> LinearGradient {
+        LinearGradient(stops: [.init(color: a, location: 0), .init(color: a, location: 0.5),
+                               .init(color: b, location: 0.5), .init(color: b, location: 1)],
+                       startPoint: .leading, endPoint: .trailing)
+    }
+
+    private var fill: AnyShapeStyle {
+        guard isOn else { return AnyShapeStyle(Color(.secondarySystemFill)) }
+        if let secondaryColor { return AnyShapeStyle(split(color, secondaryColor)) }
+        return AnyShapeStyle(color)
+    }
+
+    private var outline: AnyShapeStyle {
+        if let secondaryColor { return AnyShapeStyle(split(color, secondaryColor).opacity(isOn ? 0 : 0.8)) }
+        return AnyShapeStyle(color.opacity(isOn ? 0 : 0.8))
+    }
+
+    private var prefersDarkText: Bool {
+        Self.prefersDarkText(hex: colorHex)
+            && (secondaryColorHex.map(Self.prefersDarkText(hex:)) ?? true)
+    }
 
     /// Light fills (yellow, the pastel transit colors) take dark text.
     static func prefersDarkText(hex: String) -> Bool {
@@ -166,24 +250,39 @@ struct LayerChip: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                Image(systemName: symbol)
-                    .font(.caption.weight(.semibold))
-                    .accessibilityHidden(true)
+                if let secondaryColor {
+                    splitDot(secondaryColor)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.caption.weight(.semibold))
+                        .accessibilityHidden(true)
+                }
                 Text(title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
             }
-            .foregroundStyle(isOn ? (Self.prefersDarkText(hex: colorHex) ? Color.black : Color.white) : Color.primary)
+            .foregroundStyle(isOn ? (prefersDarkText ? Color.black : Color.white) : Color.primary)
             .padding(.horizontal, 12)
-            .frame(height: 34)
-            .background(isOn ? color : Color(.secondarySystemFill), in: Capsule())
-            .overlay { Capsule().strokeBorder(color.opacity(isOn ? 0 : 0.8), lineWidth: 1.5) }
-            .contentShape(Capsule())
+            .frame(minHeight: 34)
+            .background(fill, in: Capsule())
+            .overlay { Capsule().strokeBorder(outline, lineWidth: 1.5) }
+            // Visual capsule stays compact; the tap target is 44 pt tall.
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .sensoryFeedback(.selection, trigger: isOn)
         .accessibilityLabel(title)
         .accessibilityValue(isOn ? "Shown" : "Hidden")
         .accessibilityHint(isOn ? "Hides the layer" : "Shows the layer")
+    }
+
+    /// Red/green halves with a white edge so it reads on either fill.
+    private func splitDot(_ second: Color) -> some View {
+        Circle()
+            .fill(split(color, second))
+            .frame(width: 11, height: 11)
+            .overlay { Circle().strokeBorder(.white, lineWidth: 1.5) }
+            .accessibilityHidden(true)
     }
 }

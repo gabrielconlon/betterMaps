@@ -79,7 +79,7 @@ class SearchState {
         // Typing a search is an explicit request, so it may trigger the
         // one-off decode even when no transit layer is switched on.
         await transit.loadIfNeeded()
-        guard !Task.isCancelled else { return }
+        guard isCurrent(query) else { return }
         transitSearchResults = Self.searchStops(transit.stops, query: query)
         routeSearchResults = Self.searchRoutes(transit.routes, query: query)
 
@@ -92,10 +92,22 @@ class SearchState {
                 span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
             )
         }
-        if let response = try? await MKLocalSearch(request: request).start() {
-            searchResults = response.mapItems
+        let search = CancellableSearch(MKLocalSearch(request: request))
+        let response = await withTaskCancellationHandler {
+            try? await search.start()
+        } onCancel: {
+            search.cancel()
         }
+        // A newer keystroke (or Cancel) superseded this query: drop its
+        // results rather than flash stale POIs under the new text.
+        guard isCurrent(query) else { return }
+        searchResults = response?.mapItems ?? []
         showSearchResults = true
+    }
+
+    /// True while this task is live and `query` is still what's typed.
+    private func isCurrent(_ query: String) -> Bool {
+        !Task.isCancelled && searchText.trimmingCharacters(in: .whitespaces) == query
     }
 
     // MARK: - Debounced Live Search
@@ -171,4 +183,16 @@ class SearchState {
         routeSearchResults = []
         showSearchResults = false
     }
+}
+
+/// Lets the cancellation handler (a `@Sendable` closure) cancel the
+/// in-flight `MKLocalSearch`. `cancel()` is safe to call from any thread.
+private final class CancellableSearch: @unchecked Sendable {
+    private let search: MKLocalSearch
+
+    init(_ search: MKLocalSearch) { self.search = search }
+
+    func start() async throws -> MKLocalSearch.Response { try await search.start() }
+
+    func cancel() { search.cancel() }
 }

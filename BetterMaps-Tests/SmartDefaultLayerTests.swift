@@ -40,6 +40,10 @@ final class SmartDefaultLayerTests: XCTestCase {
         XCTAssertEqual(SmartDefaultLayer.placeLayer(in: all, lastUsedLayerId: nil), hidden)
     }
 
+    func testDefaultLayerNameUsesIrishSpelling() {
+        XCTAssertEqual(SmartDefaultLayer.fallbackPlaceLayerName, "Favourites")
+    }
+
     func testNoPlaceLayersMeansCreateFavorites() {
         let onlyTrails = [LayerLite(id: walks, name: "Walks", kind: .waypointPath)]
         XCTAssertNil(SmartDefaultLayer.placeLayer(in: onlyTrails, lastUsedLayerId: walks))

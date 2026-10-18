@@ -85,10 +85,10 @@ struct TrailDraft: Sendable, Equatable, Codable {
     }
 
     /// Adds a point. If the coordinate lies within
-    /// `insertionThresholdMeters` of an existing segment the point is
-    /// inserted into that segment so the line still passes through it in
-    /// order; otherwise it is appended. The first point is auto-flagged as
-    /// an endpoint.
+    /// `insertionThresholdMeters` of the interior of an existing segment the
+    /// point is inserted into that segment so the line still passes through
+    /// it in order; otherwise (including a tap just past the last point) it
+    /// is appended. The first point is auto-flagged as an endpoint.
     mutating func add(_ coordinate: CLLocationCoordinate2D) {
         recordUndo()
         let new = TrailPoint(coordinate: coordinate, isEndpoint: points.isEmpty)
@@ -138,23 +138,29 @@ struct TrailDraft: Sendable, Equatable, Codable {
 
     // MARK: - Geometry
 
-    /// If `coordinate` is within `maxMeters` of any segment connecting two
-    /// consecutive points, returns the index at which a new point should be
-    /// inserted to land on that segment. Otherwise nil (caller appends).
+    /// Finds the segment (two consecutive points) nearest `coordinate`. If
+    /// it is within `maxMeters` and the coordinate projects strictly inside
+    /// it (0 < t < 1), returns the index at which a new point should be
+    /// inserted to land on that segment. Otherwise nil and the caller
+    /// appends — so a tap beyond either end of the line extends it rather
+    /// than slotting in before the last point.
     static func nearestSegmentInsertionIndex(points: [TrailPoint],
                                              coordinate: CLLocationCoordinate2D,
                                              maxMeters: Double = insertionThresholdMeters) -> Int? {
         guard points.count >= 2 else { return nil }
         var bestDistance = Double.infinity
+        var bestT = 0.0
         var bestInsertIndex: Int? = nil
         for i in 0..<(points.count - 1) {
-            let d = distance(from: coordinate, toSegment: points[i].coordinate, points[i + 1].coordinate)
-            if d < bestDistance {
-                bestDistance = d
+            let p = projection(of: coordinate, ontoSegment: points[i].coordinate, points[i + 1].coordinate)
+            if p.distance < bestDistance {
+                bestDistance = p.distance
+                bestT = p.t
                 bestInsertIndex = i + 1
             }
         }
-        return bestDistance <= maxMeters ? bestInsertIndex : nil
+        guard bestDistance <= maxMeters, bestT > 0, bestT < 1 else { return nil }
+        return bestInsertIndex
     }
 
     /// Perpendicular distance in meters from `point` to the segment `a`–`b`,
@@ -164,6 +170,15 @@ struct TrailDraft: Sendable, Equatable, Codable {
     static func distance(from point: CLLocationCoordinate2D,
                          toSegment a: CLLocationCoordinate2D,
                          _ b: CLLocationCoordinate2D) -> Double {
+        projection(of: point, ontoSegment: a, b).distance
+    }
+
+    /// Projection of `point` onto the line through `a`–`b`: `t` is the
+    /// unclamped parameter (0 at `a`, 1 at `b`), `distance` is meters to the
+    /// segment clamped to its endpoints. A degenerate segment gives t = 0.
+    static func projection(of point: CLLocationCoordinate2D,
+                           ontoSegment a: CLLocationCoordinate2D,
+                           _ b: CLLocationCoordinate2D) -> (t: Double, distance: Double) {
         let metersPerLat = 111_320.0
         let metersPerLon = 111_320.0 * cos(a.latitude * .pi / 180)
 
@@ -173,10 +188,21 @@ struct TrailDraft: Sendable, Equatable, Codable {
         let py = (point.latitude - a.latitude) * metersPerLat
 
         let lengthSq = bx * bx + by * by
-        guard lengthSq > 0 else { return hypot(px, py) }
-        var t = (px * bx + py * by) / lengthSq
-        t = max(0, min(1, t))
-        return hypot(px - t * bx, py - t * by)
+        guard lengthSq > 0 else { return (0, hypot(px, py)) }
+        let t = (px * bx + py * by) / lengthSq
+        let c = max(0, min(1, t))
+        return (t, hypot(px - c * bx, py - c * by))
+    }
+
+    /// The same draft with a new id for every point. Used when a kept draft
+    /// outlives its trail: committing it must create new places, not reuse
+    /// ids of places that were deleted with the trail.
+    func withFreshPointIds() -> TrailDraft {
+        var copy = self
+        copy.points = points.map {
+            TrailPoint(latitude: $0.latitude, longitude: $0.longitude, isEndpoint: $0.isEndpoint)
+        }
+        return copy
     }
 }
 

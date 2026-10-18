@@ -21,8 +21,10 @@ enum AnnotationSize: Sendable, Equatable {
 /// content can be built from `MapContentStore.output` alone.
 ///
 /// Every size is tappable with a hit target of at least 24pt. Places shared
-/// by two or more visible layers (`matchCount >= 2`) get a white ring, an
-/// accent stroke and a count badge; the pin keeps its primary layer color.
+/// by two or more visible layers (`matchCount >= 2`) get a white ring, a
+/// dark outer stroke and a dark count badge; the pin keeps its primary layer
+/// colour. Black-and-white reads as "overlap" whatever the layer or transit
+/// colours around it (accent blue was indistinguishable from Bus blue).
 struct PlaceAnnotationView: View {
     let color: Color
     let symbol: String
@@ -93,20 +95,27 @@ struct PlaceAnnotationView: View {
 
     // MARK: - Overlap treatment
 
-    /// 2.5pt white ring with an accent stroke outside it.
+    /// Fixed near-black so the ring and badge contrast in light and dark mode.
+    private static let overlapInk = Color(white: 0.12)
+
+    /// 2.5pt white ring with a dark stroke outside it.
     private var overlapRing: some View {
         Circle()
             .strokeBorder(.white, lineWidth: 2.5)
-            .overlay { Circle().stroke(Color.accentColor, lineWidth: 1.5).padding(-1.5) }
+            .overlay { Circle().stroke(Self.overlapInk, lineWidth: 1.5).padding(-1.5) }
     }
 
     private var countBadge: some View {
         Text("\(matchCount)")
-            .font(.system(size: 9, weight: .bold))
+            .font(.caption2.bold())
+            .monospacedDigit()
             .foregroundStyle(.white)
-            .frame(minWidth: 14, minHeight: 14)
-            .background(Color.accentColor)
-            .clipShape(Circle())
-            .overlay { Circle().stroke(.white, lineWidth: 1) }
+            .padding(.horizontal, 3)
+            .frame(minWidth: 16, minHeight: 16)
+            .background(Self.overlapInk, in: Capsule())
+            .overlay { Capsule().stroke(.white, lineWidth: 1) }
+            // Grows with Dynamic Type, capped so it never swallows the pin.
+            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+            .accessibilityHidden(true)
     }
 }

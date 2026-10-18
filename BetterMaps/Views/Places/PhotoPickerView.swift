@@ -38,27 +38,25 @@ struct PhotoPickerView: View {
                 }
             }
 
-            // Picker
+            // Picker. The label's closure is `@Sendable`, so it gets a plain
+            // String computed here on the main actor, not `photoData` itself.
+            let pickerTitle = photoData.isEmpty ? "Add Photos" : "Add More"
             PhotosPicker(
                 selection: $selectedItems,
                 maxSelectionCount: 5,
                 matching: .images
             ) {
-                Label(
-                    photoData.isEmpty ? "Add Photos" : "Add More",
-                    systemImage: "photo.badge.plus"
-                )
+                Label(pickerTitle, systemImage: "photo.badge.plus")
             }
             .onChange(of: selectedItems) { _, newItems in
-                Task {
+                guard !newItems.isEmpty else { return }
+                Task { @MainActor in
                     isProcessing = true
                     for item in newItems {
-                        if let data = try? await item.loadTransferable(type: Data.self) {
-                            // Compress to JPEG for storage efficiency
-                            if let uiImage = UIImage(data: data),
-                               let compressed = uiImage.jpegData(compressionQuality: 0.7) {
-                                photoData.append(compressed)
-                            }
+                        guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+                        // Compress to JPEG off the main actor, then append on it.
+                        if let compressed = await Self.compressed(data) {
+                            photoData.append(compressed)
                         }
                     }
                     selectedItems = []
@@ -71,5 +69,12 @@ struct PhotoPickerView: View {
                     .font(.caption)
             }
         }
+    }
+
+    /// JPEG at 0.7 quality for storage efficiency; nil if not an image.
+    private nonisolated static func compressed(_ data: Data) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)?.jpegData(compressionQuality: 0.7)
+        }.value
     }
 }

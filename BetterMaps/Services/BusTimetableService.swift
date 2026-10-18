@@ -26,10 +26,19 @@ struct BusDeparture: Identifiable, Sendable, Hashable {
         max(0, Int(departure.timeIntervalSince(now) / 60))
     }
 
-    /// "HH:mm" wall-clock time.
+    /// "HH:mm" Dublin wall-clock time of `departure` (right on DST days,
+    /// whatever the device time zone).
     var scheduledTime: String {
-        let secs = departureSeconds % 86400
-        return String(format: "%02d:%02d", secs / 3600, (secs % 3600) / 60)
+        let c = BusTimetableService.dublin.dateComponents([.hour, .minute], from: departure)
+        return String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0)
+    }
+
+    /// Departures that have not left yet: anything more than `grace`
+    /// seconds in the past is dropped, so a bus that has gone stops showing
+    /// as "Due". Order is preserved.
+    static func upcoming(_ departures: [BusDeparture], now: Date,
+                         grace: TimeInterval = 30) -> [BusDeparture] {
+        departures.filter { $0.departure.timeIntervalSince(now) >= -grace }
     }
 }
 
@@ -54,6 +63,17 @@ actor BusTimetableService {
         case downloading(fraction: Double)
         case ready(builtDate: String?)
         case failed(message: String)
+    }
+
+    /// Outcome of an explicit "Update" check.
+    enum UpdateResult: Sendable, Equatable {
+        /// The installed build is the newest one released.
+        case upToDate
+        /// A newer build was downloaded, verified and swapped in.
+        case updated
+        /// The check or the download did not complete; the installed
+        /// timetable keeps working.
+        case failed
     }
 
     struct Manifest: Codable, Sendable, Equatable {
@@ -83,7 +103,11 @@ actor BusTimetableService {
     private(set) var state: DownloadState = .notDownloaded
     private var resolved = false
     private var downloadTask: Task<Void, Never>?
-    private var refreshTask: Task<Void, Never>?
+    private var refreshTask: Task<UpdateResult, Never>?
+    /// Bumped whenever the installed file is removed or a new download
+    /// starts. A task that finishes under an older generation (it was
+    /// cancelled by `deleteDownload()`) must not touch the state or the file.
+    private var generation = 0
     private var listeners: [UUID: AsyncStream<DownloadState>.Continuation] = [:]
 
     /// - Parameter databaseURL: where the SQLite lives. Tests point this at
@@ -164,7 +188,9 @@ actor BusTimetableService {
         }
         if downloadTask == nil {
             setState(.downloading(fraction: 0))
-            downloadTask = Task { await self.runDownload() }
+            generation &+= 1
+            let current = generation
+            downloadTask = Task { await self.runDownload(generation: current) }
         } else {
             continuation.yield(state)
         }
@@ -175,20 +201,26 @@ actor BusTimetableService {
         downloadTask?.cancel()
     }
 
-    private func runDownload() async {
+    private func runDownload(generation started: Int) async {
+        let next: DownloadState
         do {
             let manifest = try await fetchManifest()
-            try await install(manifest: manifest, reportsProgress: true)
-            setState(.ready(builtDate: db?.metaValue("built")))
+            try await install(manifest: manifest, reportsProgress: true, generation: started)
+            next = .ready(builtDate: db?.metaValue("built"))
         } catch {
+            // Superseded (removed, or a newer download started): leave the
+            // state and `downloadTask` to whoever owns them now.
+            guard started == generation else { return }
             if Task.isCancelled || (error as? URLError)?.code == .cancelled || error is CancellationError {
-                setState(openInstalled() ? .ready(builtDate: db?.metaValue("built")) : .notDownloaded)
+                next = openInstalled() ? .ready(builtDate: db?.metaValue("built")) : .notDownloaded
             } else {
                 Self.log.error("timetable download failed: \(String(describing: error))")
-                setState(.failed(message: Self.unavailableMessage))
+                next = .failed(message: Self.unavailableMessage)
             }
         }
+        guard started == generation else { return }
         downloadTask = nil
+        setState(next)
     }
 
     private func fetchManifest() async throws -> Manifest {
@@ -205,8 +237,16 @@ actor BusTimetableService {
     }
 
     /// Downloads, verifies, gunzips and validates into a temp file next to
-    /// the destination, then swaps it in atomically.
-    private func install(manifest: Manifest, reportsProgress: Bool) async throws {
+    /// the destination, then swaps it in atomically. A manifest without a
+    /// SHA-256, or a file whose size or hash does not match it, is never
+    /// installed. `generation` is the value of `self.generation` when the
+    /// caller started; the swap is skipped once it has moved on.
+    private func install(manifest: Manifest, reportsProgress: Bool, generation started: Int) async throws {
+        guard let expectedSHA = manifest.sha256?.lowercased(), expectedSHA.count == 64 else {
+            Self.log.error("timetable manifest has no sha256; refusing to install")
+            throw BusTimetableError.invalidDownload
+        }
+        let expectedBytes = manifest.bytes
         let fm = FileManager.default
         let dir = databaseURL.deletingLastPathComponent()
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -230,9 +270,12 @@ actor BusTimetableService {
         try await Self.download(Self.remoteDatabaseURL, to: gzURL, progress: progress)
         try Task.checkCancellation()
 
-        let expectedSHA = manifest.sha256?.lowercased()
         try await Task.detached(priority: .utility) {
-            if let expectedSHA, try Self.sha256Hex(of: gzURL) != expectedSHA {
+            if let expectedBytes {
+                let size = (try FileManager.default.attributesOfItem(atPath: gzURL.path)[.size] as? NSNumber)?.int64Value
+                guard size == expectedBytes else { throw BusTimetableError.invalidDownload }
+            }
+            guard try Self.sha256Hex(of: gzURL) == expectedSHA else {
                 throw BusTimetableError.invalidDownload
             }
             try Self.gunzip(gzURL, to: tmpURL)
@@ -244,6 +287,7 @@ actor BusTimetableService {
             }
         }.value
         try Task.checkCancellation()
+        guard started == generation else { throw CancellationError() }
 
         // Swap in place: no suspension points from here on.
         db?.close()
@@ -267,21 +311,41 @@ actor BusTimetableService {
         guard case .ready(let built) = state, downloadTask == nil, refreshTask == nil else { return }
         if let built, let builtDate = Self.isoDay(built),
            Date().timeIntervalSince(builtDate) < Double(days) * 86400 { return }
-        refreshTask = Task { await self.backgroundRefresh() }
+        startRefresh()
     }
 
-    private func backgroundRefresh() async {
-        defer { refreshTask = nil }
+    /// Checks the release for a newer build now and waits for the answer
+    /// (joins a check already in flight). Only meaningful once installed.
+    func checkForUpdate() async -> UpdateResult {
+        resolveIfNeeded()
+        if let refreshTask { return await refreshTask.value }
+        guard case .ready = state, downloadTask == nil else { return .failed }
+        return await startRefresh().value
+    }
+
+    @discardableResult
+    private func startRefresh() -> Task<UpdateResult, Never> {
+        let started = generation
+        let task = Task { await self.backgroundRefresh(generation: started) }
+        refreshTask = task
+        return task
+    }
+
+    private func backgroundRefresh(generation started: Int) async -> UpdateResult {
+        defer { if started == generation { refreshTask = nil } }
         do {
             let manifest = try await fetchManifest()
             let local = localManifest()
-            if let sha = manifest.sha256, sha.lowercased() == local?.sha256?.lowercased() { return }
+            if let sha = manifest.sha256, sha.lowercased() == local?.sha256?.lowercased() { return .upToDate }
             if let remoteBuilt = manifest.built, let localBuilt = db?.metaValue("built"),
-               remoteBuilt <= localBuilt { return }
-            try await install(manifest: manifest, reportsProgress: false)
+               remoteBuilt <= localBuilt { return .upToDate }
+            try await install(manifest: manifest, reportsProgress: false, generation: started)
+            guard started == generation else { return .failed }
             setState(.ready(builtDate: db?.metaValue("built")))
+            return .updated
         } catch {
             Self.log.info("timetable refresh skipped: \(String(describing: error))")
+            return .failed
         }
     }
 
@@ -292,9 +356,14 @@ actor BusTimetableService {
 
     // MARK: - Local file management
 
+    /// Removes the installed timetable. Any download or refresh in flight is
+    /// cancelled and detached, so a "Download" right after starts afresh.
     func deleteDownload() {
         downloadTask?.cancel()
         refreshTask?.cancel()
+        downloadTask = nil
+        refreshTask = nil
+        generation &+= 1
         db?.close()
         db = nil
         try? FileManager.default.removeItem(at: databaseURL)
@@ -328,11 +397,13 @@ actor BusTimetableService {
         let db = try requireDatabase()
         let ids = [stopId] + altIds
         let (day, seconds) = Self.serviceDay(containing: date)
+        let previousDay = Self.addingDays(-1, to: day)
+        let previousSeconds = Self.secondsSinceServiceDayStart(date, day: previousDay)
         let windowSecs = Int(window)
         var rows = Self.departureRows(db, stopIds: ids, serviceDay: day,
                                       from: seconds, to: seconds + windowSecs, limit: limit)
-        rows += Self.departureRows(db, stopIds: ids, serviceDay: Self.addingDays(-1, to: day),
-                                   from: seconds + 86400, to: seconds + 86400 + windowSecs, limit: limit)
+        rows += Self.departureRows(db, stopIds: ids, serviceDay: previousDay,
+                                   from: previousSeconds, to: previousSeconds + windowSecs, limit: limit)
         rows.sort { $0.departure < $1.departure }
         return Array(rows.prefix(limit))
     }
@@ -414,11 +485,19 @@ actor BusTimetableService {
         return cal
     }()
 
-    /// `yyyyMMdd` of `date` in Dublin and the seconds since local midnight.
+    /// `yyyyMMdd` of `date` in Dublin and the GTFS seconds of `date` on
+    /// that service day (counted from `serviceDayStart`, so they match
+    /// `stop_times.dep` on DST days; may be negative just after midnight on
+    /// the autumn change).
     static func serviceDay(containing date: Date) -> (day: String, seconds: Int) {
-        let c = dublin.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        let c = dublin.dateComponents([.year, .month, .day], from: date)
         let day = String(format: "%04d%02d%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
-        return (day, (c.hour ?? 0) * 3600 + (c.minute ?? 0) * 60 + (c.second ?? 0))
+        return (day, secondsSinceServiceDayStart(date, day: day))
+    }
+
+    /// `date` in GTFS seconds of service day `day`.
+    static func secondsSinceServiceDayStart(_ date: Date, day: String) -> Int {
+        Int(date.timeIntervalSince(serviceDayStart(day)).rounded(.down))
     }
 
     /// GTFS times count from "noon minus 12 h" of the service day, which

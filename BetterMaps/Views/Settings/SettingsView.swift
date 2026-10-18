@@ -1,24 +1,29 @@
 import SwiftUI
 
-/// App settings: map style, optional Yelp key, offline transit data, about.
+/// App settings: map style, offline transit data, about, and an Advanced
+/// section (collapsed) for the optional Yelp key, which lives in the Keychain.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(MapStyleOption.storageKey) private var mapStyle: MapStyleOption = .standard
-    @AppStorage("yelpAPIKey") private var yelpAPIKey = ""
 
     @State private var timetable = BusTimetableModel()
     @State private var editingKey = ""
+    /// The key as last saved, to enable Save only on a change.
+    @State private var savedKey = ""
     @State private var keySaved = false
+    @State private var showsReviewsKey = false
     @State private var confirmRemove = false
     @State private var bundleBuilt: Date?
+    /// The last "Update" outcome, shown under the button for a few seconds.
+    @State private var shownUpdateResult: String?
 
     var body: some View {
         NavigationStack {
             Form {
                 mapSection
-                placeDetailsSection
                 transitSection
                 aboutSection
+                advancedSection
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -28,7 +33,8 @@ struct SettingsView: View {
                 }
             }
             .task {
-                editingKey = yelpAPIKey
+                savedKey = YelpService.apiKey
+                editingKey = savedKey
                 bundleBuilt = TransitBundle.builtDate(in: .main)
                 await timetable.refresh()
             }
@@ -54,29 +60,31 @@ struct SettingsView: View {
         }
     }
 
-    private var placeDetailsSection: some View {
-        Section {
-            SecureField("Yelp API key", text: $editingKey)
-                .textContentType(.password)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .onChange(of: editingKey) { _, _ in keySaved = false }
-            HStack {
-                Button("Save", action: saveKey)
-                    .disabled(trimmedKey == yelpAPIKey)
-                Spacer()
-                if keySaved {
-                    Label("Saved", systemImage: "checkmark.circle.fill")
-                        .font(.subheadline)
-                        .foregroundStyle(.green)
-                        .transition(.opacity)
+    /// Collapsed by default: most people never need a Yelp key.
+    private var advancedSection: some View {
+        Section("Advanced") {
+            DisclosureGroup("Reviews and opening hours", isExpanded: $showsReviewsKey) {
+                Text("Optional. Paste a Yelp Fusion key to show ratings and hours.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                SecureField("Yelp Fusion key", text: $editingKey)
+                    .textContentType(.password)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .onChange(of: editingKey) { _, _ in keySaved = false }
+                HStack {
+                    Button("Save", action: saveKey)
+                        .disabled(trimmedKey == savedKey)
+                    Spacer()
+                    if keySaved {
+                        Label("Saved", systemImage: "checkmark.circle.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.green)
+                            .transition(.opacity)
+                    }
                 }
+                .frame(minHeight: 44)
             }
-            .frame(minHeight: 44)
-        } header: {
-            Text("Place details")
-        } footer: {
-            Text("Adds ratings and hours to places you look up. Optional.")
         }
     }
 
@@ -109,10 +117,33 @@ struct SettingsView: View {
         case .downloading(let fraction):
             ProgressView(value: fraction)
         case .ready:
-            Button(timetable.isCheckingForUpdate ? "Checking for a newer timetable…" : "Update bus timetable") {
-                timetable.checkForUpdate()
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Button(timetable.isCheckingForUpdate ? "Checking for a newer timetable…" : "Update bus timetable") {
+                        Task { await timetable.checkForUpdateNow() }
+                    }
+                    .disabled(timetable.isCheckingForUpdate)
+                    if timetable.isCheckingForUpdate {
+                        Spacer()
+                        ProgressView()
+                    }
+                }
+                if let shownUpdateResult {
+                    Text(shownUpdateResult)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
             }
-            .disabled(timetable.isCheckingForUpdate)
+            .frame(minHeight: 44)
+            // Show the last check's outcome for a few seconds, then clear it.
+            .task(id: timetable.updateResultText) {
+                shownUpdateResult = timetable.updateResultText
+                guard shownUpdateResult != nil else { return }
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled else { return }
+                withAnimation { shownUpdateResult = nil }
+            }
             Button("Remove bus timetable", role: .destructive) { confirmRemove = true }
         case nil:
             EmptyView()
@@ -132,8 +163,8 @@ struct SettingsView: View {
     private func saveKey() {
         let key = trimmedKey
         editingKey = key
-        yelpAPIKey = key
         YelpService.apiKey = key
+        savedKey = key
         withAnimation { keySaved = true }
     }
 

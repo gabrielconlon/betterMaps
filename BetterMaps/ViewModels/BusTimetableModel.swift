@@ -9,8 +9,11 @@ final class BusTimetableModel {
     private(set) var state: BusTimetableService.DownloadState?
     private(set) var bytes: Int64?
     private(set) var builtDate: Date?
-    /// Set after "Update" until the background check has had a chance to run.
+    /// True while an "Update" check (and any download it starts) runs.
     private(set) var isCheckingForUpdate = false
+    /// Outcome of the last "Update" check, for the caller to show inline
+    /// (see `updateResultText`). Cleared when a new check starts.
+    private(set) var updateResult: BusTimetableService.UpdateResult?
 
     @ObservationIgnored private var watcher: Task<Void, Never>?
     @ObservationIgnored private let service: BusTimetableService
@@ -42,20 +45,27 @@ final class BusTimetableModel {
     }
 
     /// Asks the service to fetch a newer build if one exists. The current
-    /// timetable keeps working while it checks.
+    /// timetable keeps working while it checks; `updateResult` holds the
+    /// answer once the check (and any download) has really finished.
     func checkForUpdate() {
+        Task { await checkForUpdateNow() }
+    }
+
+    /// Awaitable form of `checkForUpdate()`.
+    @discardableResult
+    func checkForUpdateNow() async -> BusTimetableService.UpdateResult {
         isCheckingForUpdate = true
-        Task { [weak self, service] in
-            await service.refreshIfStale(days: 0)
-            try? await Task.sleep(for: .seconds(4))
-            guard let self else { return }
-            await self.refresh()
-            self.isCheckingForUpdate = false
-        }
+        updateResult = nil
+        let result = await service.checkForUpdate()
+        await refresh()
+        updateResult = result
+        isCheckingForUpdate = false
+        return result
     }
 
     func remove() {
         watcher?.cancel()
+        updateResult = nil
         Task { [weak self, service] in
             await service.deleteDownload()
             await self?.refresh()
@@ -71,6 +81,21 @@ final class BusTimetableModel {
         case .downloading(let fraction): return "Downloading \(Int((fraction * 100).rounded()))%"
         case .ready: return builtDate.map { "Updated \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "On this device"
         case .failed: return BusTimetableService.unavailableMessage
+        }
+    }
+
+    /// Inline line for the last "Update" check; nil before the first one
+    /// and while a check is running.
+    var updateResultText: String? {
+        guard !isCheckingForUpdate, let updateResult else { return nil }
+        return Self.text(for: updateResult)
+    }
+
+    nonisolated static func text(for result: BusTimetableService.UpdateResult) -> String {
+        switch result {
+        case .upToDate: return "Up to date"
+        case .updated: return "Updated"
+        case .failed: return "Couldn't check for a newer timetable"
         }
     }
 

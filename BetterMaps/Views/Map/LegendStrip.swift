@@ -1,12 +1,15 @@
 import SwiftUI
 
 /// Small translucent strip listing the visible layers (swatch + name) and up
-/// to three intersection rows such as "Brunch ∩ Favorites · 3". Renders
-/// nothing when no layer is visible.
+/// to three overlap rows such as "Brunch + Favourites · 3". In Overlap only
+/// mode with nothing shared it says so ("No places in all 3 layers") rather
+/// than leaving a blank map. Renders nothing when no layer is visible.
 struct LegendStrip: View {
     /// Visible layers, in display order.
     let layers: [LayerLite]
     let entries: [LegendEntry]
+    /// Set when Overlap only finds no place in every visible place layer.
+    var emptyOverlapLayerCount: Int? = nil
 
     var body: some View {
         if !layers.isEmpty {
@@ -21,7 +24,13 @@ struct LegendStrip: View {
                             .lineLimit(1)
                     }
                 }
-                if !entries.isEmpty {
+                if let emptyOverlapLayerCount {
+                    Divider().padding(.vertical, 1)
+                    Text("No places in all \(emptyOverlapLayerCount) layers")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !entries.isEmpty {
                     Divider().padding(.vertical, 1)
                     ForEach(entries.prefix(3)) { entry in
                         Text("\(entry.label) · \(entry.count)")

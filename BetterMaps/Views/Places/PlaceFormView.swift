@@ -9,6 +9,7 @@ struct PlaceFormView: View {
     /// Optional screen-level toast host. When absent the form confirms with a haptic only.
     @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
+    @AppStorage(QuickAddPlaceSheet.lastUsedLayerKey) private var lastUsedLayerIdRaw: String = ""
 
     let place: Place?
     let initialCoordinate: CLLocationCoordinate2D?
@@ -58,7 +59,22 @@ struct PlaceFormView: View {
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    private var canSave: Bool { !trimmedName.isEmpty && pinCoordinate != nil }
+    /// Place layers only: a saved place never goes into a trail layer here.
+    private var placeKindLayers: [Layer] { allLayers.filter { $0.kind == .places } }
+
+    /// The chips show whenever there's no fixed target layer, new or editing.
+    private var showsLayerChips: Bool { targetLayer == nil && !placeKindLayers.isEmpty }
+
+    /// Trail memberships keep an edited place alive with no place layer ticked.
+    private var hasTrailMembership: Bool {
+        (place?.layers ?? []).contains { $0.kind == .waypointPath }
+    }
+
+    private var hasLayerChoice: Bool {
+        !showsLayerChips || !selectedLayerIds.isEmpty || hasTrailMembership
+    }
+
+    private var canSave: Bool { !trimmedName.isEmpty && pinCoordinate != nil && hasLayerChoice }
 
     private var currentSnapshot: Snapshot {
         Snapshot(name: name, notes: notes, rating: rating, hoursInfo: hoursInfo,
@@ -122,32 +138,22 @@ struct PlaceFormView: View {
                     PhotoPickerView(photoData: $photoData)
                 }
 
-                // Layer picker — only for new places without a pre-set target layer
-                if !isEditing && targetLayer == nil && !allLayers.isEmpty {
-                    Section("Add to Layer") {
-                        ForEach(allLayers) { layer in
-                            Button {
-                                if selectedLayerIds.contains(layer.id) {
-                                    selectedLayerIds.remove(layer.id)
-                                } else {
-                                    selectedLayerIds.insert(layer.id)
-                                }
-                            } label: {
-                                HStack {
-                                    Circle()
-                                        .fill(Color(hex: layer.colorHex) ?? .gray)
-                                        .frame(width: 12, height: 12)
-                                    Text(layer.name)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    if selectedLayerIds.contains(layer.id) {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.blue)
-                                    }
-                                }
+                // Layers — new or editing, so one place can be in several
+                // layers (the overlaps the map highlights).
+                if showsLayerChips {
+                    Section {
+                        LayerMembershipChips(layers: placeKindLayers, selected: selectedLayerIds) { layer in
+                            if selectedLayerIds.contains(layer.id) {
+                                selectedLayerIds.remove(layer.id)
+                            } else {
+                                selectedLayerIds.insert(layer.id)
                             }
-                            .accessibilityAddTraits(selectedLayerIds.contains(layer.id) ? .isSelected : [])
                         }
+                        .padding(.vertical, 4)
+                    } header: {
+                        Text("Layers")
+                    } footer: {
+                        Text("Pick one or more.")
                     }
                 }
             }
@@ -227,13 +233,20 @@ struct PlaceFormView: View {
             latitude = place.latitude
             longitude = place.longitude
             photoData = place.photoData
+            selectedLayerIds = Set((place.layers ?? []).filter { $0.kind == .places }.map(\.id))
         } else {
             if let start = initialCoordinate ?? mapCenter {
                 latitude = start.latitude
                 longitude = start.longitude
             }
             if let initialName { name = initialName }
-            if let preselectedLayerId { selectedLayerIds = [preselectedLayerId] }
+            if let preselectedLayerId {
+                selectedLayerIds = [preselectedLayerId]
+            } else if targetLayer == nil,
+                      let smart = SmartDefaultLayer.placeLayer(in: allLayers.map(LayerLite.init),
+                                                               lastUsedLayerId: UUID(uuidString: lastUsedLayerIdRaw)) {
+                selectedLayerIds = [smart]
+            }
         }
         recenterOnPin()
         initialSnapshot = currentSnapshot
@@ -279,7 +292,18 @@ struct PlaceFormView: View {
             place.latitude = pin.latitude
             place.longitude = pin.longitude
             place.photoData = photoData
+            if showsLayerChips {
+                for layer in placeKindLayers {
+                    if selectedLayerIds.contains(layer.id) {
+                        place.addMembership(layer)
+                    } else {
+                        place.removeMembership(layer)
+                    }
+                }
+            }
             place.updatedAt = Date()
+            try? modelContext.save()
+            confirm("Place updated", undo: nil)
         } else {
             let newPlace = Place(
                 name: trimmedName,
@@ -293,26 +317,39 @@ struct PlaceFormView: View {
             newPlace.photoData = photoData
             modelContext.insert(newPlace)
 
-            if let targetLayer {
-                if targetLayer.places == nil { targetLayer.places = [] }
-                targetLayer.places?.append(newPlace)
-            } else {
-                // Add to user-selected layers (from the picker)
-                for layer in allLayers where selectedLayerIds.contains(layer.id) {
-                    if layer.places == nil { layer.places = [] }
-                    layer.places?.append(newPlace)
-                }
-            }
-        }
+            let targets = targetLayer.map { [$0] } ?? placeKindLayers.filter { selectedLayerIds.contains($0.id) }
+            for layer in targets { newPlace.addMembership(layer) }
+            if let first = targets.first, first.kind == .places { lastUsedLayerIdRaw = first.id.uuidString }
+            try? modelContext.save()
 
-        // Confirm immediately and close; no artificial delay.
+            let context = modelContext
+            confirm(Self.savedMessage(layerNames: targets.map(\.name)),
+                    undo: ToastAction(label: "Undo") {
+                        context.delete(newPlace)
+                        try? context.save()
+                    })
+        }
+        dismiss()
+    }
+
+    /// Confirms and closes; no artificial delay. Without a toast host the
+    /// form confirms with a haptic only.
+    private func confirm(_ message: String, undo: ToastAction?) {
         if let toastCenter {
             // The toast host plays the success haptic when it presents.
-            toastCenter.show(isEditing ? "Place updated" : "Place saved")
+            toastCenter.show(message, action: undo, duration: .seconds(undo == nil ? 2 : 4))
         } else {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
-        dismiss()
+    }
+
+    /// "Saved to Brunch", "Saved to Brunch + Favourites", "Saved to 3 layers".
+    nonisolated static func savedMessage(layerNames: [String]) -> String {
+        switch layerNames.count {
+        case 0: return "Place saved"
+        case 1, 2: return "Saved to " + layerNames.joined(separator: " + ")
+        default: return "Saved to \(layerNames.count) layers"
+        }
     }
 
     private struct Snapshot: Equatable {

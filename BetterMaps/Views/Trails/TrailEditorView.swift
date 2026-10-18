@@ -5,7 +5,8 @@ import MapKit
 /// Full-screen trail editor (Flow: one focused mode, no modal interruptions
 /// mid-draw).
 ///
-/// - Long-press the map to add a point (inserted mid-line when near a segment).
+/// - Tap (or long-press) the map to add a point (inserted mid-line when
+///   near a segment). With a point selected, a tap on the map deselects.
 /// - Tap a handle to select it; drag a handle to move it (one undo step).
 /// - The selection bar deletes (undoable via toast), marks start/end, or
 ///   deselects. There is no destructive gesture without an undo.
@@ -22,6 +23,9 @@ struct TrailEditorView: View {
     let layer: Layer
     let trail: Trail?
     let onFinish: (Trail?) -> Void
+    /// Trail id the kept draft is filed under in `TrailDraftStore`. Differs
+    /// from `trail?.id` when resuming a draft whose trail was deleted since.
+    private let draftTrailId: UUID?
 
     @State private var draft: TrailDraft
     /// Baseline for "has changes": the trail as loaded, or the resumed draft.
@@ -48,13 +52,34 @@ struct TrailEditorView: View {
     ///   - trail: the trail to edit, or nil to draw a new one.
     ///   - resuming: a kept draft to start from. When nil, a draft kept in
     ///     `TrailDraftStore` for the same layer and trail is resumed.
+    ///   - draftTrailId: the trail id the resumed draft was kept under (the
+    ///     request's original trail id). Inferred from `TrailDraftStore` when
+    ///     nil.
     ///   - onFinish: called once with the saved trail, or nil when the user
     ///     leaves without saving.
-    init(layer: Layer, trail: Trail?, resuming: TrailDraft? = nil, onFinish: @escaping (Trail?) -> Void) {
+    init(layer: Layer, trail: Trail?, resuming: TrailDraft? = nil, draftTrailId: UUID? = nil,
+         onFinish: @escaping (Trail?) -> Void) {
         self.layer = layer
         self.trail = trail
         self.onFinish = onFinish
-        let kept = resuming ?? TrailDraftStore.shared.pending(layerId: layer.id, trailId: trail?.id)?.draft
+        let store = TrailDraftStore.shared
+        let keyId: UUID?
+        if let trail {
+            keyId = trail.id
+        } else if let draftTrailId {
+            keyId = draftTrailId
+        } else if let resuming, let p = store.pending, p.layerId == layer.id, p.draft == resuming {
+            keyId = p.trailId
+        } else {
+            keyId = nil
+        }
+        self.draftTrailId = keyId
+        var kept = resuming ?? store.pending(layerId: layer.id, trailId: trail?.id)?.draft
+        // The draft's trail was deleted: its point ids belonged to places
+        // deleted with it, so commit it as a brand-new trail.
+        if trail == nil, keyId != nil, let k = kept {
+            kept = k.withFreshPointIds()
+        }
         let initial = kept ?? trail.map { TrailDraft(trail: $0, places: layer.places ?? []) } ?? TrailDraft()
         _draft = State(initialValue: initial)
         _original = State(initialValue: initial)
@@ -105,11 +130,11 @@ struct TrailEditorView: View {
         }
         .confirmationDialog("Leave the trail editor?", isPresented: $showCancelDialog, titleVisibility: .visible) {
             Button("Keep draft") {
-                TrailDraftStore.shared.save(draft, layerId: layer.id, trailId: trail?.id)
+                TrailDraftStore.shared.save(draft, layerId: layer.id, trailId: draftTrailId)
                 onFinish(nil)
             }
             Button("Discard", role: .destructive) {
-                TrailDraftStore.shared.clear(layerId: layer.id, trailId: trail?.id)
+                TrailDraftStore.shared.clear(layerId: layer.id, trailId: draftTrailId)
                 onFinish(nil)
             }
             Button("Keep editing", role: .cancel) {}
@@ -124,7 +149,7 @@ struct TrailEditorView: View {
     private var floatingStack: some View {
         VStack(spacing: 8) {
             if draft.points.count < 2 {
-                Text(draft.points.isEmpty ? "Long-press the map to add a point" : "Long-press to add the next point")
+                Text(draft.points.isEmpty ? "Tap the map to add points" : "Tap to add the next point")
                     .font(.subheadline.weight(.medium))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -268,7 +293,7 @@ struct TrailEditorView: View {
                 geometry = TrailGeometry.straight(through: draft.coordinates)
             }
             let saved = TrailCommitter.commit(draft, geometry: geometry, to: layer, trail: trail, in: modelContext)
-            TrailDraftStore.shared.clear(layerId: layer.id, trailId: trail?.id)
+            TrailDraftStore.shared.clear(layerId: layer.id, trailId: draftTrailId)
             appToasts?.show(TrailFormat.savedMessage(for: saved))
             isSaving = false
             onFinish(saved)

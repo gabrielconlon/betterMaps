@@ -27,6 +27,10 @@ final class Trail {
     @Attribute(.externalStorage)
     var geometryData: Data? = nil
     var layer: Layer? = nil
+    /// Per-trail map visibility. Hidden trails stay listed in their layer but
+    /// are not drawn. Defaults to true so CloudKit records written before
+    /// this field existed read as visible.
+    var isVisible: Bool = true
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 

@@ -167,17 +167,33 @@ enum TransitColors {
         }
     }
 
+    /// The one colour source for a network + Luas line: Luas Red is coral,
+    /// Luas Green mint, DART peach, other rail lilac, bus cornflower.
+    /// Pins, network lines and route chips all resolve through here.
+    static func pin(_ kind: TransitLayerKind, line: String?) -> Color {
+        if kind == .luas && line?.lowercased() == "red" { return luasRedPin }
+        return pin(kind)
+    }
+
     /// Pin color for a stop: Luas Red-line stops are coral, everything else
     /// takes its network color.
     static func pin(for stop: TransitStop) -> Color {
-        if stop.kind == .luas && stop.line == "red" { return luasRedPin }
-        return pin(stop.kind)
+        pin(stop.kind, line: stop.line)
+    }
+
+    /// Colour for a GTFS route (route chips): same hue as its stops' pins.
+    static func pin(for route: TransitRoute) -> Color {
+        pin(route.kind, line: route.kind == .luas ? route.short : nil)
+    }
+
+    /// `pin(for:)` from a stored route's GTFS type and short name.
+    static func pin(routeType: Int, shortName: String) -> Color {
+        pin(for: TransitRoute(id: "", short: shortName, long: "", type: routeType))
     }
 
     /// Stroke for a network line; the Luas Red line is coral.
     static func line(for line: TransitLine) -> Color {
-        if line.kind == .luas && line.line == "red" { return luasRedLayer }
-        return layer(line.kind)
+        pin(line.kind, line: line.line).opacity(0.7)
     }
 
     /// Highlighted (favorite-chip) route stroke.

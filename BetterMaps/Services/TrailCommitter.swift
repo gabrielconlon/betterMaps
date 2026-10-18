@@ -82,10 +82,22 @@ enum TrailCommitter {
         layer.pathNames = names
 
         try? context.save()
+        TrailSnapshotter.postChange()
         return target
     }
 
-    /// Deletes the trail and every `Place` on its path.
+    /// Shows or hides one trail on the map. Bumps `updatedAt` so cached map
+    /// snapshots rebuild, saves, and announces the change.
+    static func setVisible(_ visible: Bool, for trail: Trail, in context: ModelContext) {
+        guard trail.isVisible != visible else { return }
+        trail.isVisible = visible
+        trail.updatedAt = Date()
+        try? context.save()
+        TrailSnapshotter.postChange()
+    }
+
+    /// Deletes the trail and the `Place`s on its path. A place that is also
+    /// in another layer is only unlinked from this one, never deleted.
     static func delete(_ trail: Trail, in context: ModelContext) {
         let pathId = trail.pathId
         if let layer = trail.layer {
@@ -99,6 +111,7 @@ enum TrailCommitter {
         }
         context.delete(trail)
         try? context.save()
+        TrailSnapshotter.postChange()
     }
 
     // MARK: - Helpers
@@ -114,10 +127,6 @@ enum TrailCommitter {
     /// Detaches `place` from `layer` and deletes it unless another layer
     /// still references it.
     private static func removePlace(_ place: Place, from layer: Layer, in context: ModelContext) {
-        layer.places?.removeAll { $0.id == place.id }
-        let others = (place.layers ?? []).filter { $0.id != layer.id }
-        if others.isEmpty {
-            context.delete(place)
-        }
+        PlaceCleanup.detach(place, from: layer, in: context)
     }
 }

@@ -5,20 +5,38 @@ import MapKit
 struct PlaceDetailSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
     @Bindable var place: Place
 
     @State private var showEditForm = false
+    /// Set when the user un-ticks the place's last layer.
+    @State private var confirmDeleteOnLastLayer = false
+    /// Set once the place is being deleted so the body stops reading it.
+    @State private var isDeleting = false
     @State private var yelpBusiness: YelpBusiness?
     @State private var yelpReviews: [YelpReview] = []
     @State private var yelpStatus: InlineStatus?
     @State private var mapItem: MKMapItem?
 
-    var placeLayers: [Layer] {
-        (place.layers ?? []).sorted { $0.sortOrder < $1.sortOrder }
+    /// Every place layer the user could put this place in (never trails).
+    private var placeKindLayers: [Layer] {
+        allLayers.filter { $0.kind == .places }
+    }
+
+    private var memberLayerIds: Set<UUID> {
+        Set((place.layers ?? []).map(\.id))
     }
 
     var body: some View {
+        if isDeleting {
+            Color.clear
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 // Drag indicator
@@ -61,6 +79,19 @@ struct PlaceDetailSheet: View {
                 PlaceActionRow(name: place.name, coordinate: place.coordinate,
                                primaryTitle: "Edit", primarySystemImage: "pencil",
                                onPrimary: { showEditForm = true })
+
+                // Layers: tap to add or remove; a place in two layers is an
+                // overlap on the map.
+                if !placeKindLayers.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Layers")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.secondary)
+                        LayerMembershipChips(layers: placeKindLayers,
+                                             selected: memberLayerIds,
+                                             onToggle: toggleMembership)
+                    }
+                }
 
                 // --- Extended details ---
                 Divider()
@@ -122,24 +153,6 @@ struct PlaceDetailSheet: View {
                             .foregroundStyle(.secondary)
                         Text(place.notes)
                             .font(.subheadline)
-                    }
-                }
-
-                // Layers this place belongs to
-                if !placeLayers.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("In Layers")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.secondary)
-                        ForEach(placeLayers) { layer in
-                            HStack(spacing: 8) {
-                                Image(systemName: layer.symbolName)
-                                    .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
-                                    .frame(width: 20)
-                                Text(layer.name)
-                                    .font(.subheadline)
-                            }
-                        }
                     }
                 }
 
@@ -231,6 +244,39 @@ struct PlaceDetailSheet: View {
         .sheet(isPresented: $showEditForm) {
             PlaceFormView(place: place)
         }
+        .confirmationDialog("Remove from all layers?", isPresented: $confirmDeleteOnLastLayer,
+                            titleVisibility: .visible) {
+            Button("Delete place", role: .destructive, action: deletePlace)
+            Button("Keep", role: .cancel) {}
+        } message: {
+            Text("The place will be deleted.")
+        }
+    }
+
+    // MARK: - Layers
+
+    /// Adds or removes the place from `layer` right away. Un-ticking its
+    /// only layer would orphan it, so that asks to delete instead.
+    private func toggleMembership(_ layer: Layer) {
+        if place.isMember(of: layer) {
+            guard (place.layers ?? []).count > 1 else {
+                confirmDeleteOnLastLayer = true
+                return
+            }
+            place.removeMembership(layer)
+        } else {
+            place.addMembership(layer)
+        }
+        try? modelContext.save()
+    }
+
+    private func deletePlace() {
+        let name = place.name
+        isDeleting = true
+        modelContext.delete(place)
+        try? modelContext.save()
+        toastCenter?.show("Deleted \(name)", systemImage: "trash")
+        dismiss()
     }
 
     private func loadMapItem() async {

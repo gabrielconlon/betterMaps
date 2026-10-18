@@ -319,10 +319,16 @@ struct POIAddToLayerView: View {
 
 // MARK: - Add to Layer Sheet (with Create Layer option)
 
+/// Picks the place layers a POI goes in. If the POI is already saved (same
+/// name within 30 m, or anything within 8 m) it edits that place's layers
+/// instead of inserting a duplicate, so saving a restaurant to Brunch and
+/// then Favourites makes one place in both: an overlap.
 struct AddToLayerSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Query(sort: \Layer.sortOrder) private var layers: [Layer]
+    @Query private var places: [Place]
 
     let mapItem: MKMapItem
     let yelpBusiness: YelpBusiness?
@@ -333,55 +339,54 @@ struct AddToLayerSheet: View {
     @State private var rating: Int = 0
     @State private var selectedLayerIDs: Set<UUID> = []
     @State private var showCreateLayer = false
+    /// The saved place this POI already is, resolved once on appear.
+    @State private var existingPlace: Place?
+    @State private var didResolve = false
+
+    /// Only place layers; trails are never offered.
+    private var placeLayers: [Layer] { layers.filter { $0.kind == .places } }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Select Layers") {
-                    if layers.isEmpty {
-                        Text("No layers yet — create one below.")
+                Section {
+                    if placeLayers.isEmpty {
+                        Text("No layers yet. Create one below.")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(layers) { layer in
-                            Button(action: { toggleLayer(layer) }) {
-                                HStack {
-                                    Image(systemName: layer.symbolName)
-                                        .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
-                                        .frame(width: 24)
-                                    Text(layer.name)
-                                    Spacer()
-                                    if selectedLayerIDs.contains(layer.id) {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(.blue)
-                                    } else {
-                                        Image(systemName: "circle")
-                                            .foregroundStyle(.gray.opacity(0.4))
-                                    }
-                                }
-                            }
-                            .tint(.primary)
+                        LayerMembershipChips(layers: placeLayers, selected: selectedLayerIDs) { layer in
+                            toggleLayer(layer)
                         }
+                        .padding(.vertical, 4)
                     }
 
                     Button(action: { showCreateLayer = true }) {
                         Label("Create New Layer", systemImage: "plus.circle")
                     }
+                } header: {
+                    Text("Layers")
+                } footer: {
+                    if existingPlace != nil {
+                        Text("Already saved. Pick more layers to see it where they overlap.")
+                    }
                 }
 
-                Section("Personal Notes (optional)") {
-                    RatingView(rating: $rating)
-                    TextField("Notes about this place...", text: $notes, axis: .vertical)
-                        .lineLimit(3)
+                if existingPlace == nil {
+                    Section("Personal Notes (optional)") {
+                        RatingView(rating: $rating)
+                        TextField("Notes about this place...", text: $notes, axis: .vertical)
+                            .lineLimit(3)
+                    }
                 }
             }
-            .navigationTitle("Add to Layer")
+            .navigationTitle(existingPlace == nil ? "Add to Layer" : "Layers")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") { savePlace() }
+                    Button(existingPlace == nil ? "Add" : "Save") { savePlace() }
                         .disabled(selectedLayerIDs.isEmpty)
                         .bold()
                 }
@@ -389,6 +394,7 @@ struct AddToLayerSheet: View {
             .sheet(isPresented: $showCreateLayer) {
                 LayerFormView(layer: nil)
             }
+            .onAppear(perform: resolveExisting)
         }
     }
 
@@ -400,7 +406,41 @@ struct AddToLayerSheet: View {
         }
     }
 
+    /// Finds the already-saved place, if any, and ticks its layers.
+    private func resolveExisting() {
+        guard !didResolve else { return }
+        didResolve = true
+        let lites = PlaceMatcher.candidates(places.map(PlaceLite.init), layers: layers.map(LayerLite.init))
+        guard let id = PlaceMatcher.match(name: mapItem.name ?? "",
+                                          coordinate: mapItem.placemark.coordinate,
+                                          among: lites),
+              let place = places.first(where: { $0.id == id }) else { return }
+        existingPlace = place
+        selectedLayerIDs = Set((place.layers ?? []).filter { $0.kind == .places }.map(\.id))
+    }
+
     private func savePlace() {
+        let chosen = placeLayers.filter { selectedLayerIDs.contains($0.id) }
+        if let existingPlace {
+            let added = chosen.filter { !existingPlace.isMember(of: $0) }
+            for layer in placeLayers {
+                if selectedLayerIDs.contains(layer.id) {
+                    existingPlace.addMembership(layer)
+                } else {
+                    existingPlace.removeMembership(layer)
+                }
+            }
+            try? modelContext.save()
+            toastCenter?.show(added.isEmpty ? "Layers updated"
+                                            : "Added to " + added.map(\.name).joined(separator: " + "))
+        } else {
+            insertPlace(into: chosen)
+        }
+        onSaved()
+        dismiss()
+    }
+
+    private func insertPlace(into chosen: [Layer]) {
         let coordinate = mapItem.placemark.coordinate
         var tags: [String] = []
         if let category = categoryName { tags.append(category) }
@@ -409,28 +449,25 @@ struct AddToLayerSheet: View {
             tags.append(contentsOf: cats.map { $0.title })
         }
 
-        var hoursInfo = ""
-        if let hours = yelpBusiness?.todayHours {
-            hoursInfo = hours
-        }
-
         let newPlace = Place(
             name: mapItem.name ?? "Unknown",
             latitude: coordinate.latitude,
             longitude: coordinate.longitude,
             notes: notes,
             rating: rating > 0 ? rating : Int(yelpBusiness?.rating ?? 0),
-            hoursInfo: hoursInfo,
+            hoursInfo: yelpBusiness?.todayHours ?? "",
             tags: Array(Set(tags)) // deduplicate
         )
         modelContext.insert(newPlace)
+        for layer in chosen { newPlace.addMembership(layer) }
+        try? modelContext.save()
 
-        for layer in layers where selectedLayerIDs.contains(layer.id) {
-            if layer.places == nil { layer.places = [] }
-            layer.places?.append(newPlace)
-        }
-
-        onSaved()
-        dismiss()
+        let context = modelContext
+        toastCenter?.show(PlaceFormView.savedMessage(layerNames: chosen.map(\.name)),
+                          action: ToastAction(label: "Undo") {
+                              context.delete(newPlace)
+                              try? context.save()
+                          },
+                          duration: .seconds(4))
     }
 }

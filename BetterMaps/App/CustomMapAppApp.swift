@@ -24,6 +24,16 @@ enum AppModelContainer {
     /// cloud-side schema rejected), fall back to the same on-disk store
     /// without sync. If even that fails, launch with an in-memory store so
     /// the UI still comes up; nothing is persisted in that mode.
+    /// Throwaway in-memory container (test host).
+    static func makeInMemory() -> ModelContainer {
+        let memory = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        do {
+            return try ModelContainer(for: schema, configurations: [memory])
+        } catch {
+            preconditionFailure("BetterMaps could not create an in-memory SwiftData store: \(error)")
+        }
+    }
+
     static func make() -> ModelContainer {
         do {
             let cloud = ModelConfiguration(
@@ -65,16 +75,23 @@ enum AppModelContainer {
 
 @main
 struct CustomMapAppApp: App {
-    let sharedModelContainer: ModelContainer = AppModelContainer.make()
+    /// True when this process only hosts the unit tests. The map UI (and the
+    /// CloudKit store, location, transit loading it starts) then stays down so
+    /// background app work can't race or crash whichever test is running.
+    private static let isHostingTests =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
+    let sharedModelContainer: ModelContainer = isHostingTests
+        ? AppModelContainer.makeInMemory()
+        : AppModelContainer.make()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .onAppear {
-                    if let key = UserDefaults.standard.string(forKey: "yelpAPIKey"), !key.isEmpty {
-                        YelpService.apiKey = key
-                    }
-                }
+            if Self.isHostingTests {
+                Color.clear
+            } else {
+                ContentView()
+            }
         }
         .modelContainer(sharedModelContainer)
     }

@@ -11,8 +11,8 @@ struct SheetSearchActions {
 }
 
 /// Body of the persistent sheet at medium / expanded: search results while a
-/// query is typed, otherwise hints, your layers, filter mode, transit,
-/// pinned routes and "+ New layer" last.
+/// query is typed, otherwise hints, your layers, transit, pinned routes and
+/// "+ New layer" last. (The Any/All filter lives in the sheet header.)
 struct LayersSheetContent: View {
     @Environment(\.modelContext) private var modelContext
 
@@ -34,10 +34,6 @@ struct LayersSheetContent: View {
         !searchState.searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    private var visiblePlaceLayerCount: Int {
-        layers.filter { $0.isVisible && $0.kind == .places }.count
-    }
-
     private var visibleLayerCount: Int { layers.filter(\.isVisible).count }
 
     private var hints: Binding<FirstRunHints> {
@@ -57,7 +53,8 @@ struct LayersSheetContent: View {
                     FirstRunHintsView(hints: hints)
                     layersSection
                     TransitSheetSection(transitSettings: transitSettings, timetable: timetable,
-                                        onToggle: markToggled)
+                                        onToggle: markToggled,
+                                        onOpenStop: { stop in viewModel.showTransitArrivals(for: stop) })
                     PinnedRoutesSection(highlightedRouteId: transitStore.highlightedRouteId) { route in
                         transitStore.toggleHighlightedRoute(route.routeId)
                     }
@@ -73,12 +70,12 @@ struct LayersSheetContent: View {
         .onChange(of: visibleLayerCount, initial: true) { _, _ in updateHints() }
         .confirmationDialog(deleteTitle, isPresented: isConfirmingDelete,
                             titleVisibility: .visible, presenting: layerPendingDelete) { layer in
-            Button("Delete layer", role: .destructive) { modelContext.delete(layer) }
+            Button("Delete layer", role: .destructive) { PlaceCleanup.deleteLayer(layer, in: modelContext) }
             Button("Cancel", role: .cancel) {}
         } message: { layer in
             Text(layer.kind == .waypointPath
-                 ? "Its trails are deleted too. This can't be undone."
-                 : "Places in it stay saved in your other layers.")
+                 ? "Its trails and their points are deleted too. This can't be undone."
+                 : "Places only in this layer will be deleted. Places also in other layers stay there. This can't be undone.")
         }
     }
 
@@ -107,9 +104,6 @@ struct LayersSheetContent: View {
                     }
                 }
             }
-            if visiblePlaceLayerCount >= 2 {
-                filterControl.padding(.top, 10)
-            }
         }
     }
 
@@ -123,22 +117,6 @@ struct LayersSheetContent: View {
         }
         Button(role: .destructive) { layerPendingDelete = layer } label: {
             Label("Delete", systemImage: "trash")
-        }
-    }
-
-    private var filterControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("Show places in", selection: $filterVM.filterMode) {
-                Text("Any layer").tag(FilterMode.union)
-                Text("All layers").tag(FilterMode.intersection)
-            }
-            .pickerStyle(.segmented)
-            .frame(minHeight: 44)
-            if filterVM.filterMode == .intersection {
-                Text("Showing places in every visible layer")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 

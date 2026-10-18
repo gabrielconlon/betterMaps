@@ -7,14 +7,45 @@ import CoreLocation
 /// models; the expensive/side-effecting `TrailMigrator.ensureTrails` call is
 /// cached per layer id + `Fingerprint` (place count, trail count, newest
 /// trail `updatedAt`) so it runs once per change, not per body pass. Edits
-/// that keep the point count (rename, snap toggle, moved point) bump
-/// `updatedAt` and so miss the cache; `invalidate` covers anything else.
+/// that keep the point count (rename, snap toggle, moved point, show/hide)
+/// bump `updatedAt` and so miss the cache; `invalidate` covers anything else.
+/// Hidden trails (`Trail.isVisible == false`) are never returned.
+///
+/// The screen learns that trails changed without a places/layers change in
+/// two ways: `didChangeNotification`, posted by every local trail write, and
+/// `fingerprint(in:)`, a cheap store-wide check that also catches CloudKit
+/// imports.
 @MainActor
 final class TrailSnapshotter {
+    /// Posted on the main actor after any local trail write (commit, delete,
+    /// show/hide, layer delete).
+    nonisolated static let didChangeNotification = Notification.Name("TrailSnapshotter.didChange")
+
+    static func postChange() {
+        NotificationCenter.default.post(name: didChangeNotification, object: nil)
+    }
+
+    /// Store-wide change detector: number of trails plus the newest
+    /// `updatedAt`. Two small fetches; cheap enough for a body pass.
+    struct StoreFingerprint: Equatable, Sendable {
+        let trailCount: Int
+        let latestUpdate: Date?
+    }
+
+    static func fingerprint(in context: ModelContext) -> StoreFingerprint {
+        let count = (try? context.fetchCount(FetchDescriptor<Trail>())) ?? 0
+        var newest = FetchDescriptor<Trail>(sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
+        newest.fetchLimit = 1
+        newest.propertiesToFetch = [\.updatedAt]
+        let latest = (try? context.fetch(newest))?.first?.updatedAt
+        return StoreFingerprint(trailCount: count, latestUpdate: latest)
+    }
+
     private struct TrailMeta {
         let id: UUID
         let pathId: UUID
         let name: String
+        let isVisible: Bool
         /// Directions-provider geometry, kept only when the trail is snapped.
         /// Unsnapped trails are rebuilt from their current places every time
         /// so adding or moving a waypoint extends the line immediately.
@@ -27,18 +58,21 @@ final class TrailSnapshotter {
         let placeCount: Int
         let trailCount: Int
         let latestUpdate: Date?
+        let hiddenCount: Int
 
-        init(placeCount: Int, trailCount: Int, latestUpdate: Date?) {
+        init(placeCount: Int, trailCount: Int, latestUpdate: Date?, hiddenCount: Int = 0) {
             self.placeCount = placeCount
             self.trailCount = trailCount
             self.latestUpdate = latestUpdate
+            self.hiddenCount = hiddenCount
         }
 
         init(layer: Layer) {
             let trails = layer.trails ?? []
             self.init(placeCount: layer.places?.count ?? 0,
                       trailCount: trails.count,
-                      latestUpdate: trails.map(\.updatedAt).max())
+                      latestUpdate: trails.map(\.updatedAt).max(),
+                      hiddenCount: trails.filter { !$0.isVisible }.count)
         }
     }
 
@@ -67,7 +101,7 @@ final class TrailSnapshotter {
         for layer in layers where layer.isVisible && layer.kind == .waypointPath {
             let places = layer.places ?? []
             let metas = metas(for: layer, in: context)
-            for meta in metas {
+            for meta in metas where meta.isVisible {
                 let segments: [TrailSegmentLite]
                 if let snapped = meta.snappedSegments, !snapped.isEmpty {
                     segments = snapped
@@ -96,7 +130,8 @@ final class TrailSnapshotter {
             } else {
                 snapped = nil
             }
-            return TrailMeta(id: trail.id, pathId: trail.pathId, name: trail.name, snappedSegments: snapped)
+            return TrailMeta(id: trail.id, pathId: trail.pathId, name: trail.name,
+                             isVisible: trail.isVisible, snappedSegments: snapped)
         }
         // Fingerprint after ensureTrails, which may have created trails.
         cache[layer.id] = CacheEntry(fingerprint: Fingerprint(layer: layer), metas: metas)

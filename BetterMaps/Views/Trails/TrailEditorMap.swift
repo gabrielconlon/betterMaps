@@ -1,8 +1,9 @@
 import SwiftUI
 import MapKit
 
-/// The editor's map: the trail line, one draggable handle per point,
-/// long-press to add, tap empty map to deselect.
+/// The editor's map: the trail line, one draggable handle per point. A tap
+/// on empty map adds a point, or deselects when a point is selected;
+/// long-press also adds.
 struct TrailEditorMap: View {
     @Binding var draft: TrailDraft
     @Binding var selectedId: UUID?
@@ -39,7 +40,9 @@ struct TrailEditorMap: View {
             }
             .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll))
             .mapControls { MapCompass(); MapScaleView() }
-            .onTapGesture { selectedId = nil }
+            .onTapGesture(coordinateSpace: .local) { location in
+                handleMapTap(at: location, proxy: proxy)
+            }
             .gesture(
                 // A plain long press has no location; sequencing a zero-distance
                 // drag after it captures where the finger is.
@@ -52,6 +55,21 @@ struct TrailEditorMap: View {
                         onAdd(coordinate)
                     }
             )
+        }
+    }
+
+    /// Handles have their own tap gesture, but the map's tap can fire for the
+    /// same touch; a tap within a handle's 44 pt frame is left to the handle.
+    private func handleMapTap(at location: CGPoint, proxy: MapProxy) {
+        let onHandle = draft.points.contains { point in
+            guard let p = proxy.convert(point.coordinate, to: .local) else { return false }
+            return abs(p.x - location.x) <= 22 && abs(p.y - location.y) <= 22
+        }
+        guard !onHandle else { return }
+        if selectedId != nil {
+            selectedId = nil
+        } else if let coordinate = proxy.convert(location, from: .local) {
+            onAdd(coordinate)
         }
     }
 

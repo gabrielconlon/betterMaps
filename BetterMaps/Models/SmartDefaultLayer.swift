@@ -5,13 +5,13 @@ import SwiftUI
 /// Pure choices of which layer a quick action lands in, so capture is one
 /// tap (Tesler: the app absorbs the "which layer?" decision).
 enum SmartDefaultLayer {
-    static let fallbackPlaceLayerName = "Favorites"
+    static let fallbackPlaceLayerName = "Favourites"
     static let fallbackTrailLayerName = "Trails"
 
     /// The place layer a dropped pin is saved to: the last used layer when it
     /// is still a visible place layer, else the first visible place layer,
     /// else the first place layer. `nil` means none exists and the caller
-    /// creates "Favorites".
+    /// creates "Favourites".
     static func placeLayer(in layers: [LayerLite], lastUsedLayerId: UUID?) -> UUID? {
         let placeLayers = layers.filter { $0.kind == .places }.sorted { $0.sortOrder < $1.sortOrder }
         if let lastUsedLayerId,

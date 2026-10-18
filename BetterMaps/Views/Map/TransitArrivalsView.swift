@@ -18,12 +18,19 @@ struct TransitArrivalsView: View {
     /// "just now" → "30s ago" → ... while the sheet stays open.
     @State private var refreshTick: Int = 0
     @State private var isRefreshing: Bool = false
+    /// The last live fetch failed. Whatever loaded before stays on screen
+    /// (with its own "Updated …" time) under a "Can't reach live times" row.
+    @State private var liveFeedFailed = false
+    /// A live source (Luas stop / rail station) was found and answered at
+    /// least once, so an empty list really means "nothing due".
+    @State private var liveLoadedOnce = false
 
     // Bus timetable (downloadable SQLite)
     @State private var timetable: BusTimetableService.DownloadState?
     @State private var busDepartures: [BusDeparture] = []
     @State private var busRoutes: [TransitRoute] = []
     @State private var busLoaded = false
+    @State private var busLoadedAt: Date?
     @State private var downloadWatcher: Task<Void, Never>?
 
     private let railService = IrishRailService()
@@ -33,6 +40,13 @@ struct TransitArrivalsView: View {
     private var showsLuas: Bool { stop.isServed(by: .luas) }
     private var showsDart: Bool { stop.isServed(by: .dart) }
     private var showsRail: Bool { stop.isServed(by: .rail) }
+    private var showsLive: Bool { showsLuas || showsDart || showsRail }
+
+    private var hasLiveData: Bool {
+        !filteredRailArrivals.isEmpty
+            || !(luasForecast?.inbound.isEmpty ?? true)
+            || !(luasForecast?.outbound.isEmpty ?? true)
+    }
 
     /// DART-only stops show DART trains, rail-only stops the rest; shared
     /// stations (Connolly) show everything.
@@ -94,19 +108,20 @@ struct TransitArrivalsView: View {
                         .id(refreshTick)  // force re-eval so the label ticks even without state change
                     Spacer()
                     Button(action: { Task { await refreshArrivals() } }) {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                            .font(.caption2)
-                            .labelStyle(.iconOnly)
-                            .padding(6)
-                            .background(.thinMaterial)
-                            .clipShape(Circle())
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                            .padding(7)
+                            .background(.thinMaterial, in: Circle())
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(isRefreshing)
+                    .accessibilityLabel("Refresh times")
                 }
 
                 // Only show the live-feed spinner when no data has arrived yet
-                if (showsLuas || showsDart || showsRail) && isLoading
+                if showsLive && isLoading && !liveLoadedOnce
                     && luasForecast == nil && railArrivals.isEmpty {
                     HStack { Spacer(); ProgressView("Loading arrivals..."); Spacer() }
                         .padding()
@@ -115,16 +130,16 @@ struct TransitArrivalsView: View {
                 // Luas arrivals
                 if let forecast = luasForecast {
                     if !forecast.message.isEmpty {
-                        let isNormal = forecast.message.localizedCaseInsensitiveContains("operating normally")
-                            || forecast.message.localizedCaseInsensitiveContains("normal service")
-                        if isNormal {
-                            Label(forecast.message, systemImage: "checkmark.circle")
-                                .font(.caption)
-                                .foregroundStyle(.green)
-                        } else {
+                        // Orange only for a real disruption; routine notices
+                        // read as plain secondary text.
+                        if TransitFeed.isDisruption(forecast.message) {
                             Label(forecast.message, systemImage: "exclamationmark.triangle")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
+                        } else {
+                            Text(forecast.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -159,16 +174,15 @@ struct TransitArrivalsView: View {
                                     if !arrival.status.isEmpty {
                                         Text(arrival.status)
                                             .font(.caption2)
-                                            .foregroundStyle(.orange)
+                                            .foregroundStyle(TransitFeed.isDisruption(arrival.status)
+                                                             ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                                     }
                                 }
 
                                 Spacer()
 
                                 VStack(alignment: .trailing, spacing: 2) {
-                                    Text(arrival.dueIn == 0 ? "DUE" : "\(arrival.dueIn) min")
-                                        .font(.headline)
-                                        .foregroundStyle(arrival.dueIn <= 3 ? .red : .primary)
+                                    dueText(minutes: arrival.dueIn)
                                     Text(arrival.expectedArrival)
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
@@ -182,15 +196,17 @@ struct TransitArrivalsView: View {
                     }
                 }
 
-                if showsBus {
-                    busSection
-                }
-
-                if !showsBus && !isLoading && filteredRailArrivals.isEmpty && luasForecast == nil {
-                    Text("No real-time arrivals available for this stop.")
+                if showsLive && liveFeedFailed {
+                    liveFailureRow
+                } else if showsLive && !isLoading && !hasLiveData {
+                    Text(liveLoadedOnce ? "No departures in the next hour" : "No live times for this stop")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding()
+                        .padding(.vertical, 4)
+                }
+
+                if showsBus {
+                    busSection
                 }
             }
             .padding(.horizontal)
@@ -207,14 +223,53 @@ struct TransitArrivalsView: View {
             // Detaches from the download; the download itself keeps going.
             downloadWatcher?.cancel()
         }
-        // Auto-refresh the freshness label every 5s without re-fetching.
+        // Every 5 s: tick the freshness label and drop buses that have
+        // left (no re-fetch of the live feeds).
         .task(id: lastUpdated) {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
                 if Task.isCancelled { break }
                 refreshTick &+= 1
+                await reloadBusIfRunningLow()
             }
         }
+    }
+
+    /// Inline, non-alarming failure line with a retry. Last good times stay
+    /// on screen above it.
+    private var liveFailureRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.slash")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("Can't reach live times")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Retry") { Task { await refreshArrivals() } }
+                .font(.caption.bold())
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(isRefreshing)
+        }
+        .padding(.horizontal, 10)
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// "Due" in bold primary, otherwise "N min". No alarm colours: a train
+    /// being close is not a problem.
+    private func dueText(minutes: Int?, fallback: String = "") -> some View {
+        let text: String
+        switch minutes {
+        case .some(let m) where m <= 0: text = "Due"
+        case .some(let m): text = "\(m) min"
+        case .none: text = fallback
+        }
+        return Text(text)
+            .font(.headline)
+            .foregroundStyle(.primary)
     }
 
     // MARK: - Bus timetable section
@@ -297,14 +352,20 @@ struct TransitArrivalsView: View {
                     .font(.subheadline.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let built {
-                    Text("Timetable \(built)")
+                if let built, let label = Self.timetableUpdatedLabel(built) {
+                    Text(label)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
 
-            if busLoaded && busDepartures.isEmpty {
+            // `refreshTick` re-renders this every 5 s, so a bus that has
+            // left drops off instead of staying "Due".
+            let _ = refreshTick
+            let now = Date()
+            let upcoming = BusDeparture.upcoming(busDepartures, now: now)
+
+            if busLoaded && upcoming.isEmpty {
                 timetableCard {
                     Label("No scheduled departures in the next 2 hours", systemImage: "bus.fill")
                         .font(.caption)
@@ -312,8 +373,7 @@ struct TransitArrivalsView: View {
                 }
             }
 
-            let now = Date()
-            ForEach(busDepartures.prefix(10)) { dep in
+            ForEach(upcoming.prefix(10)) { dep in
                 Button(action: { onSelectRoute?(dep.routeId) }) {
                     HStack {
                         Text(dep.routeShortName)
@@ -329,10 +389,7 @@ struct TransitArrivalsView: View {
                         Spacer()
 
                         VStack(alignment: .trailing, spacing: 2) {
-                            let due = dep.minutesUntil(now)
-                            Text(due == 0 ? "DUE" : "\(due) min")
-                                .font(.headline)
-                                .foregroundStyle(due <= 3 ? .red : .primary)
+                            dueText(minutes: dep.minutesUntil(now))
                             Text(dep.scheduledTime)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -384,14 +441,35 @@ struct TransitArrivalsView: View {
         busDepartures = (try? await departures) ?? []
         busRoutes = (try? await routes) ?? []
         busLoaded = true
-        if lastUpdated == nil || !(showsLuas || showsDart || showsRail) { lastUpdated = Date() }
+        busLoadedAt = Date()
+        if lastUpdated == nil || !showsLive { lastUpdated = Date() }
+    }
+
+    /// Re-queries the timetable once fewer than 5 departures remain, at
+    /// most once a minute (a quiet stop may simply have few buses).
+    private func reloadBusIfRunningLow() async {
+        guard showsBus, busLoaded, case .ready = timetable else { return }
+        let now = Date()
+        guard BusDeparture.upcoming(busDepartures, now: now).count < 5,
+              now.timeIntervalSince(busLoadedAt ?? .distantPast) >= 60 else { return }
+        await loadBus()
+    }
+
+    /// `"2026-10-18"` → "Timetable updated 18 Oct". The build date is a
+    /// calendar day, so it is formatted in UTC to stay on the same day in
+    /// every time zone.
+    nonisolated static func timetableUpdatedLabel(_ built: String) -> String? {
+        guard let date = BusTimetableService.isoDay(built) else { return nil }
+        var style = Date.FormatStyle.dateTime.day().month(.abbreviated)
+        style.timeZone = TimeZone(identifier: "UTC") ?? .gmt
+        return "Timetable updated \(date.formatted(style))"
     }
 
     /// "Live" (green) or "Schedule" (gray) pill next to each arrival time.
     @ViewBuilder
     private func sourceBadge(isRealTime: Bool) -> some View {
         Text(isRealTime ? "Live" : "Schedule")
-            .font(.system(size: 9, weight: .bold))
+            .font(.caption2.weight(.bold))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(isRealTime ? Color.green.opacity(0.18) : Color.secondary.opacity(0.15))
@@ -438,9 +516,7 @@ struct TransitArrivalsView: View {
                         .font(.subheadline)
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(forecast.dueIn)
-                            .font(.headline)
-                            .foregroundStyle(forecast.dueMinutes == 0 ? .red : .primary)
+                        dueText(minutes: forecast.dueMinutes, fallback: forecast.dueIn)
                         sourceBadge(isRealTime: true)
                     }
                 }
@@ -452,8 +528,13 @@ struct TransitArrivalsView: View {
     }
 
     /// Live feeds only (Luas, Irish Rail). Never waits on the timetable.
+    /// On failure the last good data and its timestamp stay; only a fully
+    /// successful pass moves `lastUpdated`.
     private func loadArrivals() async {
+        guard showsLive else { isLoading = false; return }
         isLoading = true
+        var failed = false
+        var answered = false
 
         if showsLuas {
             // Match by station name against the Luas forecast API stop list.
@@ -463,25 +544,31 @@ struct TransitArrivalsView: View {
                 return lowerName.contains(luasName) || luasName.contains(lowerName)
             }
             if let matchedStop {
-                luasForecast = await luasService.fetchForecast(stopCode: matchedStop.id)
+                do {
+                    luasForecast = try await luasService.forecast(stopCode: matchedStop.id)
+                    answered = true
+                } catch {
+                    failed = true
+                }
             }
         }
 
         if showsDart || showsRail {
-            let allStations = await railService.fetchStations()
-            let nearbyStation = allStations.first { station in
-                WaypointGraph.meters(
-                    CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude),
-                    stop.coordinate
-                ) < 800
-            }
-            if let station = nearbyStation {
-                railArrivals = await railService.fetchArrivals(stationCode: station.id)
+            do {
+                let allStations = try await railService.stations()
+                if let station = IrishRailStation.nearest(to: stop.coordinate, in: allStations) {
+                    railArrivals = try await railService.arrivals(stationCode: station.id, withinMinutes: 60)
+                    answered = true
+                }
+            } catch {
+                failed = true
             }
         }
 
+        liveFeedFailed = failed
+        if answered { liveLoadedOnce = true }
         isLoading = false
-        if showsLuas || showsDart || showsRail { lastUpdated = Date() }
+        if !failed && answered { lastUpdated = Date() }
     }
 }
 
@@ -540,7 +627,11 @@ struct FavoriteStopButton: View {
             Image(systemName: isFavorite ? "star.fill" : "star")
                 .foregroundStyle(isFavorite ? .yellow : .secondary)
                 .font(.title3)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isFavorite ? "Unpin stop" : "Pin stop")
     }
 }
 

@@ -6,6 +6,9 @@ import CoreLocation
 /// nearest POI or street address, and one 50 pt button saves into a smart
 /// default layer (Tesler: the app absorbs the "which layer?" decision).
 /// Other layers are one chip away; "More details…" opens the full form.
+/// Saving where a place already exists (same name within 30 m, or anything
+/// within 8 m) adds that place to the layer instead of duplicating it, so
+/// overlaps can form.
 struct QuickAddPlaceSheet: View {
     static let lastUsedLayerKey = "lastUsedLayerId"
 
@@ -14,6 +17,7 @@ struct QuickAddPlaceSheet: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Query(sort: \Layer.sortOrder) private var layers: [Layer]
+    @Query private var places: [Place]
     @AppStorage(QuickAddPlaceSheet.lastUsedLayerKey) private var lastUsedLayerIdRaw: String = ""
 
     let coordinate: CLLocationCoordinate2D
@@ -26,8 +30,10 @@ struct QuickAddPlaceSheet: View {
     @State private var name = ""
     @State private var isLookingUp = true
     @State private var pulse = false
-    @State private var showNewLayerPrompt = false
+    @State private var isAddingLayer = false
     @State private var newLayerName = ""
+    @State private var detent: PresentationDetent = .height(320)
+    @FocusState private var isLayerNameFocused: Bool
 
     init(coordinate: CLLocationCoordinate2D,
          lookup: @escaping @Sendable (CLLocationCoordinate2D) async -> String? = { await PlaceLookupService.lookup($0) },
@@ -59,6 +65,8 @@ struct QuickAddPlaceSheet: View {
 
     private var showsSkeleton: Bool { isLookingUp && name.isEmpty }
 
+    private var trimmedLayerName: String { newLayerName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     // MARK: Body
 
     var body: some View {
@@ -82,6 +90,10 @@ struct QuickAddPlaceSheet: View {
 
             layerChips
 
+            if isAddingLayer {
+                newLayerRow
+            }
+
             Button("More details…") { onMoreDetails(trimmedName, defaultLayerId) }
                 .font(.subheadline)
                 .frame(minHeight: 44)
@@ -89,7 +101,7 @@ struct QuickAddPlaceSheet: View {
         .padding(.horizontal, 20)
         .padding(.top, 22)
         .frame(maxHeight: .infinity, alignment: .top)
-        .presentationDetents([.height(320), .medium])
+        .presentationDetents([.height(320), .medium], selection: $detent)
         .presentationDragIndicator(.visible)
         .presentationBackgroundInteraction(.enabled(upThrough: .height(320)))
         .task {
@@ -97,14 +109,25 @@ struct QuickAddPlaceSheet: View {
             isLookingUp = false
             if let found, name.isEmpty { name = found }
         }
-        .alert("New layer", isPresented: $showNewLayerPrompt) {
+    }
+
+    /// Inline "new layer" entry (no alert): the place is saved into it.
+    private var newLayerRow: some View {
+        HStack(spacing: 8) {
             TextField("Layer name", text: $newLayerName)
                 .textInputAutocapitalization(.words)
-            Button("Add") { addToNewLayer() }
-            Button("Cancel", role: .cancel) { newLayerName = "" }
-        } message: {
-            Text("The place is saved into the new layer.")
+                .submitLabel(.done)
+                .focused($isLayerNameFocused)
+                .onSubmit(addToNewLayer)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+            Button("Add", action: addToNewLayer)
+                .buttonStyle(.borderedProminent)
+                .frame(minHeight: 44)
+                .disabled(trimmedLayerName.isEmpty)
         }
+        .transition(.opacity)
     }
 
     private var nameField: some View {
@@ -154,7 +177,9 @@ struct QuickAddPlaceSheet: View {
                 }
                 Button {
                     newLayerName = ""
-                    showNewLayerPrompt = true
+                    withAnimation(.easeInOut(duration: 0.2)) { isAddingLayer = true }
+                    detent = .medium
+                    isLayerNameFocused = true
                 } label: {
                     Label("New layer…", systemImage: "plus")
                         .chipStyle()
@@ -168,39 +193,80 @@ struct QuickAddPlaceSheet: View {
     // MARK: Actions
 
     private func add(to layer: Layer?) {
-        let target = layer ?? Layer.insertDefault(named: SmartDefaultLayer.fallbackPlaceLayerName,
-                                                  kind: .places, symbolName: "star.fill",
-                                                  after: layers, in: modelContext)
-        save(into: target)
+        if let layer {
+            save(into: layer, createdLayer: false)
+        } else {
+            let created = Layer.insertDefault(named: SmartDefaultLayer.fallbackPlaceLayerName,
+                                              kind: .places, symbolName: "star.fill",
+                                              after: layers, in: modelContext)
+            save(into: created, createdLayer: true)
+        }
     }
 
     private func addToNewLayer() {
-        let layerName = newLayerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let layerName = trimmedLayerName
         guard !layerName.isEmpty else { return }
         let layer = Layer.insertDefault(named: layerName, kind: .places, symbolName: "mappin",
                                         after: layers, in: modelContext)
-        save(into: layer)
+        save(into: layer, createdLayer: true)
     }
 
-    private func save(into layer: Layer) {
-        let place = Place(name: trimmedName.isEmpty ? "Dropped Pin" : trimmedName,
-                          latitude: coordinate.latitude,
-                          longitude: coordinate.longitude)
-        modelContext.insert(place)
-        if layer.places == nil { layer.places = [] }
-        layer.places?.append(place)
-        try? modelContext.save()
+    /// An existing saved place this capture stands for, if any.
+    private var matchingPlace: Place? {
+        let lites = PlaceMatcher.candidates(places.map(PlaceLite.init), layers: layers.map(LayerLite.init))
+        guard let id = PlaceMatcher.match(name: trimmedName, coordinate: coordinate, among: lites) else { return nil }
+        return places.first { $0.id == id }
+    }
+
+    /// Saves into `layer`: adds the matching existing place when there is
+    /// one, else inserts a new place. Undo reverses exactly that, and also
+    /// deletes a layer this quick add created if it is left empty.
+    private func save(into layer: Layer, createdLayer: Bool) {
+        let context = modelContext
+        let message: String
+        let undo: (@MainActor () -> Void)?
+
+        if let existing = matchingPlace {
+            let wasMember = existing.isMember(of: layer)
+            existing.addMembership(layer)
+            message = wasMember ? "Already in \(layer.name)" : "Added to \(layer.name)"
+            if wasMember {
+                undo = nil
+            } else {
+                undo = {
+                    existing.removeMembership(layer)
+                    Self.deleteIfEmpty(layer, created: createdLayer, in: context)
+                    try? context.save()
+                }
+            }
+        } else {
+            let newPlace = Place(name: trimmedName.isEmpty ? "Dropped Pin" : trimmedName,
+                                 latitude: coordinate.latitude,
+                                 longitude: coordinate.longitude)
+            context.insert(newPlace)
+            newPlace.addMembership(layer)
+            message = "Saved to \(layer.name)"
+            undo = {
+                context.delete(newPlace)
+                Self.deleteIfEmpty(layer, created: createdLayer, in: context)
+                try? context.save()
+            }
+        }
+        try? context.save()
         lastUsedLayerIdRaw = layer.id.uuidString
 
-        let context = modelContext
         // Peak-end: the last thing the user sees is a confirmation they can undo.
-        toastCenter?.show("Saved to \(layer.name)",
-                          action: ToastAction(label: "Undo") {
-                              context.delete(place)
-                              try? context.save()
-                          },
-                          duration: .seconds(4))
+        toastCenter?.show(message,
+                          action: undo.map { ToastAction(label: "Undo", handler: $0) },
+                          duration: .seconds(undo == nil ? 2 : 4))
         dismiss()
+    }
+
+    /// Undo of a quick add that created `layer` removes it again once empty.
+    @MainActor
+    private static func deleteIfEmpty(_ layer: Layer, created: Bool, in context: ModelContext) {
+        guard created, !(layer.places ?? []).contains(where: { !$0.isDeleted }) else { return }
+        context.delete(layer)
     }
 }
 

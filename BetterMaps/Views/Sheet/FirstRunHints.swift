@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 // MARK: - Model (pure)
 
@@ -19,7 +20,7 @@ struct FirstRunHints: Equatable, Sendable {
             switch self {
             case .savePlace: return "Long-press the map to save a place"
             case .toggleLayer: return "Tap a layer chip to show or hide it"
-            case .overlap: return "Turn on two layers to see where they overlap"
+            case .overlap: return "Show two layers, then tap Overlap only to see places in both"
             }
         }
 
@@ -32,7 +33,8 @@ struct FirstRunHints: Equatable, Sendable {
         }
     }
 
-    static let maxVisible = 3
+    /// One hint at a time: the first one not yet done.
+    static let maxVisible = 1
 
     private(set) var rawValue: Int
 
@@ -50,59 +52,67 @@ struct FirstRunHints: Equatable, Sendable {
 
     var allDone: Bool { visible.isEmpty }
 
+    /// The hint to show now: the first incomplete one, except that "save a
+    /// place" is left to the sheet's own empty state while there are no
+    /// layers (it says the same thing), and no other hint jumps the queue.
+    func current(hasLayers: Bool) -> Hint? {
+        guard let first = Hint.allCases.first(where: { !isDone($0) }) else { return nil }
+        if first == .savePlace && !hasLayers { return nil }
+        return first
+    }
+
     mutating func markDone(_ hint: Hint) {
         rawValue |= hint.rawValue
     }
 
     /// Marks hints whose action the user has already performed: any saved
-    /// place completes "save a place", two or more visible layers complete
-    /// "overlap".
-    mutating func update(placeCount: Int, visibleLayerCount: Int) {
+    /// place completes "save a place". Visible layers alone never complete
+    /// "overlap": only turning on Overlap only (or tapping an overlap pin)
+    /// does, via `markDone(.overlap)`.
+    mutating func update(placeCount: Int, visibleLayerCount _: Int) {
         if placeCount > 0 { markDone(.savePlace) }
-        if visibleLayerCount >= 2 { markDone(.overlap) }
     }
 }
 
 // MARK: - View
 
-/// Dismissible one-line hint rows shown at the top of the sheet's medium
-/// content. Renders nothing once every hint is done.
+/// One dismissible one-line hint shown at the top of the sheet's medium
+/// content. Renders nothing once every hint is done, and nothing while the
+/// "No layers yet" empty state already says the same thing.
 struct FirstRunHintsView: View {
     @Binding var hints: FirstRunHints
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Query private var layers: [Layer]
 
     var body: some View {
-        if !hints.allDone {
-            VStack(spacing: 6) {
-                ForEach(hints.visible) { hint in
-                    HStack(spacing: 10) {
-                        Image(systemName: hint.systemImage)
-                            .foregroundStyle(.tint)
-                            .frame(width: 24)
-                            .accessibilityHidden(true)
-                        Text(hint.text)
-                            .font(.subheadline)
-                            .lineLimit(2)
-                        Spacer(minLength: 4)
-                        Button {
-                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                                hints.markDone(hint)
-                            }
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Dismiss hint")
+        if let hint = hints.current(hasLayers: !layers.isEmpty) {
+            HStack(spacing: 10) {
+                Image(systemName: hint.systemImage)
+                    .foregroundStyle(.tint)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+                Text(hint.text)
+                    .font(.subheadline)
+                    .lineLimit(2)
+                Spacer(minLength: 4)
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                        hints.markDone(hint)
                     }
-                    .padding(.leading, 12)
-                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                    .transition(.opacity)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss hint")
             }
+            .padding(.leading, 12)
+            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .transition(.opacity)
+            .id(hint)
         }
     }
 }

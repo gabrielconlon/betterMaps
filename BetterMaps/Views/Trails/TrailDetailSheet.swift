@@ -3,8 +3,8 @@ import SwiftData
 import MapKit
 
 /// Summary of one trail: name, length, point count, snapped/straight, a
-/// static preview, and Edit / Open in Maps / Delete. Present as a sheet; it
-/// sets its own `.medium` detent.
+/// static preview, and Edit / Open in Maps / Delete / Hide on map. Present
+/// as a sheet; it sets its own `.medium` detent.
 struct TrailDetailSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -110,6 +110,15 @@ struct TrailDetailSheet: View {
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Delete trail")
             }
+
+            Button {
+                TrailCommitter.setVisible(!trail.isVisible, for: trail, in: modelContext)
+            } label: {
+                Label(trail.isVisible ? "Hide on map" : "Show on map",
+                      systemImage: trail.isVisible ? "eye.slash" : "eye")
+                    .frame(maxWidth: .infinity, minHeight: 36)
+            }
+            .buttonStyle(.bordered)
         }
         .padding(20)
         .frame(maxHeight: .infinity, alignment: .top)

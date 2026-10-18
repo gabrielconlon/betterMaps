@@ -80,4 +80,40 @@ final class TrailSnapshotterCacheTests: XCTestCase {
         XCTAssertNotEqual(base, TrailSnapshotter.Fingerprint(placeCount: 3, trailCount: 2, latestUpdate: t0))
         XCTAssertNotEqual(base, TrailSnapshotter.Fingerprint(placeCount: 4, trailCount: 1, latestUpdate: t0))
     }
+
+    func testHiddenTrailIsNotDrawnAndToggleRefreshes() throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+        let layer = Layer(name: "Walks", kind: .waypointPath)
+        context.insert(layer)
+        let canal = TrailCommitter.commit(draft([TestCoords.a, TestCoords.b], name: "Canal"),
+                                          geometry: nil, to: layer, trail: nil, in: context)
+        TrailCommitter.commit(draft([TestCoords.e, TestCoords.f], name: "Park"),
+                              geometry: nil, to: layer, trail: nil, in: context)
+        let snapshotter = TrailSnapshotter()
+        XCTAssertEqual(Set(snapshotter.trails(for: [layer], in: context).map(\.name)), ["Canal", "Park"])
+
+        let before = TrailSnapshotter.fingerprint(in: context)
+        TrailCommitter.setVisible(false, for: canal, in: context)
+        XCTAssertNotEqual(TrailSnapshotter.fingerprint(in: context), before)
+        XCTAssertEqual(snapshotter.trails(for: [layer], in: context).map(\.name), ["Park"])
+
+        TrailCommitter.setVisible(true, for: canal, in: context)
+        XCTAssertEqual(Set(snapshotter.trails(for: [layer], in: context).map(\.name)), ["Canal", "Park"])
+    }
+
+    func testStoreFingerprintCountsTrails() throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+        let empty = TrailSnapshotter.fingerprint(in: context)
+        XCTAssertEqual(empty.trailCount, 0)
+        XCTAssertNil(empty.latestUpdate)
+        let layer = Layer(name: "Walks", kind: .waypointPath)
+        context.insert(layer)
+        TrailCommitter.commit(draft([TestCoords.a, TestCoords.b], name: "Canal"),
+                              geometry: nil, to: layer, trail: nil, in: context)
+        let one = TrailSnapshotter.fingerprint(in: context)
+        XCTAssertEqual(one.trailCount, 1)
+        XCTAssertNotNil(one.latestUpdate)
+    }
 }

@@ -45,6 +45,42 @@ final class TrailDraftTests: XCTestCase {
         XCTAssertEqual(draft.points.last?.latitude, far.latitude)
     }
 
+    func testTapJustPastTheEndAppends() {
+        var draft = TrailDraft()
+        draft.add(TestCoords.a)
+        draft.add(TestCoords.b)   // a -> b runs east along lat 53.34
+        // ~10 m east of b, in line with a–b: within 30 m of the segment, but
+        // its projection falls past b, so it extends the trail.
+        let pastB = CLLocationCoordinate2D(latitude: 53.3400, longitude: -6.2500 + 0.00015)
+        draft.add(pastB)
+        XCTAssertEqual(draft.points.count, 3)
+        XCTAssertEqual(draft.points.last?.longitude, pastB.longitude, "appended after b, not inserted before it")
+        XCTAssertEqual(draft.points[1].longitude, TestCoords.b.longitude)
+
+        // Same before the start: appended too (only interior taps insert).
+        let beforeA = CLLocationCoordinate2D(latitude: 53.3400, longitude: -6.2600 - 0.00015)
+        XCTAssertNil(TrailDraft.nearestSegmentInsertionIndex(points: draft.points, coordinate: beforeA))
+    }
+
+    func testProjectionParameterIsUnclamped() {
+        let mid = CLLocationCoordinate2D(latitude: 53.3400, longitude: -6.2550)
+        let past = CLLocationCoordinate2D(latitude: 53.3400, longitude: -6.2400)
+        XCTAssertEqual(TrailDraft.projection(of: mid, ontoSegment: TestCoords.a, TestCoords.b).t, 0.5, accuracy: 0.01)
+        XCTAssertGreaterThan(TrailDraft.projection(of: past, ontoSegment: TestCoords.a, TestCoords.b).t, 1)
+    }
+
+    func testFreshPointIdsKeepsCoordinatesAndFlags() {
+        var draft = TrailDraft(name: "Canal")
+        draft.add(TestCoords.a)
+        draft.add(TestCoords.b)
+        let fresh = draft.withFreshPointIds()
+        XCTAssertEqual(fresh.points.count, 2)
+        XCTAssertTrue(Set(fresh.points.map(\.id)).isDisjoint(with: Set(draft.points.map(\.id))))
+        XCTAssertEqual(fresh.points.map(\.latitude), draft.points.map(\.latitude))
+        XCTAssertEqual(fresh.points.map(\.isEndpoint), draft.points.map(\.isEndpoint))
+        XCTAssertEqual(fresh.name, "Canal")
+    }
+
     func testNearestSegmentInsertionIndexThresholdAndEmptyCases() {
         let pts = [TrailPoint(coordinate: TestCoords.a), TrailPoint(coordinate: TestCoords.b)]
         let onLine = CLLocationCoordinate2D(latitude: 53.3400, longitude: -6.2550)

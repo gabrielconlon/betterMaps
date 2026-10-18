@@ -53,6 +53,15 @@ struct MapScreen: View {
     @State private var pendingTrailEdit: DrawTrailRequest?
     @State private var draftStore = TrailDraftStore.shared
     @AppStorage("lastTrailLayerId") private var lastTrailLayerIdRaw: String = ""
+    @AppStorage(FirstRunHints.storageKey) private var hintsRaw = 0
+    /// Cached value snapshot of places and layers, rebuilt only when
+    /// `snapshotToken` changes (not on every camera-driven body pass).
+    @State private var snapshot = Snapshot(places: [], layers: [])
+    @State private var cachedToken: SnapshotToken?
+    /// "No places in all N layers" when Overlap only finds nothing.
+    @State private var emptyOverlapLayerCount: Int?
+    /// The locate button asked for permission; centre on the first fix.
+    @State private var pendingLocate = false
 
     private static var initialDetent: SheetDetent {
         #if DEBUG
@@ -63,27 +72,65 @@ struct MapScreen: View {
 
     // MARK: - Snapshots
 
-    /// Value snapshot of the SwiftData graph. Reading it in `body` is what
-    /// makes the screen re-feed the store when a place or layer changes.
+    /// Value snapshot of the SwiftData graph that feeds the store.
     private struct Snapshot: Equatable {
         var places: [PlaceLite]
         var layers: [LayerLite]
+        var layersById: [UUID: LayerLite] = [:]
+        /// Visible layers in sortOrder, for the legend.
+        var visibleLayers: [LayerLite] = []
     }
 
-    private var snapshot: Snapshot {
-        Snapshot(places: places.map(PlaceLite.init), layers: layers.map(LayerLite.init))
+    /// Cheap change detector for the snapshot: counts, newest place edit,
+    /// per-layer fields (including membership counts, so adding a place to
+    /// a second layer is seen) and the trail store fingerprint. Building
+    /// this is O(places) property reads with no allocation per place,
+    /// unlike mapping every place to `PlaceLite`.
+    private struct SnapshotToken: Equatable {
+        let placeCount: Int
+        let latestPlaceUpdate: Date?
+        let layerCount: Int
+        let layerHash: Int
+        let trails: TrailSnapshotter.StoreFingerprint
     }
 
-    private var layersById: [UUID: LayerLite] {
-        Dictionary(layers.map { (LayerLite($0).id, LayerLite($0)) }, uniquingKeysWith: { first, _ in first })
+    private var snapshotToken: SnapshotToken {
+        var hasher = Hasher()
+        for layer in layers {
+            hasher.combine(layer.id)
+            hasher.combine(layer.isVisible)
+            hasher.combine(layer.sortOrder)
+            hasher.combine(layer.name)
+            hasher.combine(layer.colorHex)
+            hasher.combine(layer.symbolName)
+            hasher.combine(layer.kindRaw)
+            hasher.combine(layer.lineWidth)
+            hasher.combine(layer.places?.count ?? 0)
+        }
+        return SnapshotToken(placeCount: places.count,
+                             latestPlaceUpdate: places.lazy.map(\.updatedAt).max(),
+                             layerCount: layers.count,
+                             layerHash: hasher.finalize(),
+                             trails: TrailSnapshotter.fingerprint(in: modelContext))
     }
+
+    private var layersById: [UUID: LayerLite] { snapshot.layersById }
 
     private var sortedLayers: [Layer] {
         layers.sorted { $0.sortOrder < $1.sortOrder }
     }
 
-    private var visibleLayerLites: [LayerLite] {
-        sortedLayers.filter(\.isVisible).map(LayerLite.init)
+    private var visibleLayerLites: [LayerLite] { snapshot.visibleLayers }
+
+    /// Bus is on but zoomed out past where bus stops are drawn.
+    private var showsBusZoomPrompt: Bool {
+        transitSettings.isEnabled(.bus)
+            && transitStore.region.span.latitudeDelta > TransitViewportCuller.busMaxLatDelta
+    }
+
+    private var canLocateUser: Bool {
+        let status = locationManager.authorizationStatus
+        return status == .authorizedWhenInUse || status == .authorizedAlways
     }
 
     // MARK: - Body
@@ -99,6 +146,9 @@ struct MapScreen: View {
                 transit: TransitLayerContent.Inputs(transitStore),
                 droppedPin: droppedPin,
                 onTapPlace: { id in
+                    if store.output.places.contains(where: { $0.id == id && $0.matchCount >= 2 }) {
+                        markHintDone(.overlap)
+                    }
                     if let place = places.first(where: { $0.id == id }) { viewModel.selectPlace(place) }
                 },
                 onTapCluster: zoom(to:),
@@ -117,8 +167,13 @@ struct MapScreen: View {
                       mapStyle: mapStyleOption,
                       legendLayers: visibleLayerLites,
                       legendEntries: store.output.legend,
+                      emptyOverlapLayerCount: emptyOverlapLayerCount,
                       isHidden: sheetDetent == .expanded,
                       draftChip: draftChip,
+                      showsBusZoomPrompt: showsBusZoomPrompt,
+                      canLocateUser: canLocateUser,
+                      onZoomForBus: zoomForBusStops,
+                      onRequestLocation: locateUser,
                       onCycleMapStyle: cycleMapStyle)
                 .animation(.easeInOut(duration: 0.2), value: draftStore.hasDraft)
 
@@ -149,18 +204,32 @@ struct MapScreen: View {
         .animation(.easeInOut(duration: 0.15), value: lookupPill)
         .sensoryFeedback(.impact(weight: .medium), trigger: dropCount)
         .sensoryFeedback(.selection, trigger: trailHitCount)
-        .onAppear { locationManager.requestPermission() }
+        // Location is requested on first use (locate, quick add, search),
+        // not at launch; an existing grant still shows the blue dot.
+        .onChange(of: locationManager.userLocation?.latitude) { _, _ in centreOnUserIfPending() }
+        .onChange(of: locationManager.authorizationStatus) { _, status in
+            if status == .denied || status == .restricted { pendingLocate = false }
+        }
         .onChange(of: viewModel.activeSheet?.id) { _, _ in
             // The dropped pin lives exactly as long as the quick-add sheet.
             if !viewModel.isQuickAddOpen { droppedPin = nil }
         }
-        .onChange(of: snapshot, initial: true) { _, new in feedStore(new) }
-        .onChange(of: filterVM.filterMode, initial: true) { _, mode in store.filterMode = mode }
+        .onChange(of: snapshotToken, initial: true) { _, token in rebuildSnapshot(token) }
+        .onReceive(NotificationCenter.default.publisher(for: TrailSnapshotter.didChangeNotification)) { _ in
+            feedStore(snapshot)
+        }
+        .onChange(of: filterVM.filterMode, initial: true) { _, mode in
+            store.filterMode = mode
+            updateEmptyOverlap()
+        }
         .onChange(of: transitSettings.enabledKinds, initial: true) { _, kinds in
             transitStore.enabledKinds = kinds
         }
         .onChange(of: isSearchFocused) { _, focused in
-            if focused { sheetDetent = .expanded }
+            if focused {
+                sheetDetent = .expanded
+                requestLocationIfUndetermined()
+            }
         }
         .onChange(of: sheetDetent) { _, detent in
             if detent == .collapsed, isSearchFocused { isSearchFocused = false }
@@ -191,6 +260,7 @@ struct MapScreen: View {
     private var sheetHeader: some View {
         LayersSheetHeader(
             layers: sortedLayers,
+            filterVM: filterVM,
             searchState: searchState,
             isSearchFocused: $isSearchFocused,
             detent: sheetDetent,
@@ -203,7 +273,10 @@ struct MapScreen: View {
                 dismissSearch()
                 sheetDetent = .collapsed
             },
-            onAddPlace: { viewModel.startNewPlace(at: nil) },
+            onAddPlace: {
+                requestLocationIfUndetermined()
+                viewModel.startNewPlace(at: nil)
+            },
             onDrawTrail: { startDrawTrail(in: nil) },
             onNewLayer: { viewModel.activeSheet = .newLayer },
             onOpenSettings: { viewModel.activeSheet = .settings }
@@ -243,6 +316,34 @@ struct MapScreen: View {
     }
 
     // MARK: - Store feeding
+
+    /// Rebuilds the value snapshot when the cheap token says something
+    /// changed, then feeds the store. Skips work on camera-only body passes.
+    private func rebuildSnapshot(_ token: SnapshotToken) {
+        guard token != cachedToken else { return }
+        cachedToken = token
+        let layerLites = layers.map(LayerLite.init)
+        snapshot = Snapshot(
+            places: places.map(PlaceLite.init),
+            layers: layerLites,
+            layersById: Dictionary(layerLites.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+            visibleLayers: layerLites.filter(\.isVisible).sorted { $0.sortOrder < $1.sortOrder }
+        )
+        feedStore(snapshot)
+        updateEmptyOverlap()
+    }
+
+    private func updateEmptyOverlap() {
+        let count = LayerMath.emptyOverlapLayerCount(snapshot.places, layers: snapshot.layers,
+                                                     mode: filterVM.filterMode)
+        if count != emptyOverlapLayerCount { emptyOverlapLayerCount = count }
+    }
+
+    private func markHintDone(_ hint: FirstRunHints.Hint) {
+        var hints = FirstRunHints(rawValue: hintsRaw)
+        hints.markDone(hint)
+        if hints.rawValue != hintsRaw { hintsRaw = hints.rawValue }
+    }
 
     private func feedStore(_ snapshot: Snapshot) {
         let trails = trailSnapshotter.trails(for: layers, in: modelContext)
@@ -321,7 +422,55 @@ struct MapScreen: View {
         if isSearchFocused { isSearchFocused = false }
         dropCount += 1
         droppedPin = coordinate
+        requestLocationIfUndetermined()
         viewModel.startQuickAdd(at: coordinate)
+    }
+
+    // MARK: - Location
+
+    /// Asks for When-In-Use access the first time a feature needs it.
+    private func requestLocationIfUndetermined() {
+        if locationManager.authorizationStatus == .notDetermined {
+            locationManager.requestPermission()
+        }
+    }
+
+    /// The locate button before access is granted: ask, then centre on the
+    /// first fix. If access was turned off, offer Settings in a toast.
+    private func locateUser() {
+        switch locationManager.authorizationStatus {
+        case .denied, .restricted:
+            toastCenter.show("Location is off for BetterMaps", systemImage: "location.slash",
+                             action: ToastAction(label: "Settings") {
+                                 if let url = URL(string: UIApplication.openSettingsURLString) {
+                                     UIApplication.shared.open(url)
+                                 }
+                             },
+                             duration: .seconds(4))
+        default:
+            pendingLocate = true
+            locationManager.requestPermission()
+            centreOnUserIfPending()
+        }
+    }
+
+    private func centreOnUserIfPending() {
+        guard pendingLocate, let location = locationManager.userLocation else { return }
+        pendingLocate = false
+        withAnimation(.easeInOut(duration: 0.35)) {
+            cameraPosition = .region(MKCoordinateRegion(
+                center: location,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+        }
+    }
+
+    /// Zooms to a span where bus stops draw, keeping the current centre.
+    private func zoomForBusStops() {
+        withAnimation(.easeInOut(duration: 0.35)) {
+            cameraPosition = .region(MKCoordinateRegion(
+                center: transitStore.region.center,
+                span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)))
+        }
     }
 
     // MARK: - Trails

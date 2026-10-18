@@ -21,6 +21,10 @@ struct LayerFormView: View {
 
     var isEditing: Bool { layer != nil }
 
+    /// A layer's type is fixed once it holds places or trails: switching a
+    /// Places layer to Trails would turn saved places into trail points.
+    private var canChangeKind: Bool { !(layer?.hasItems ?? false) }
+
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var currentSnapshot: Snapshot {
@@ -42,19 +46,29 @@ struct LayerFormView: View {
                 }
 
                 Section {
-                    Picker("Type", selection: $selectedKind) {
-                        ForEach(LayerKind.allCases) { kind in
-                            Label(kind.displayName, systemImage: kind.systemImage)
-                                .tag(kind)
+                    if canChangeKind {
+                        Picker("Type", selection: $selectedKind) {
+                            ForEach(LayerKind.allCases) { kind in
+                                Label(kind.displayName, systemImage: kind.systemImage)
+                                    .tag(kind)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    } else {
+                        LabeledContent("Type") {
+                            Label(selectedKind.displayName, systemImage: selectedKind.systemImage)
                         }
                     }
-                    .pickerStyle(.segmented)
 
                     Text(selectedKind.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
                     Text("Layer Type")
+                } footer: {
+                    if !canChangeKind {
+                        Text("Type can't change once a layer has items.")
+                    }
                 }
 
                 if selectedKind == .waypointPath {
@@ -70,26 +84,33 @@ struct LayerFormView: View {
                                 .tint(Color(hex: selectedColorHex) ?? .red)
                         }
                     } header: {
-                        Text("Path Style")
+                        Text("Line")
                     }
                 }
 
                 Section("Color") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 12) {
                         ForEach(Color.layerPalette, id: \.hex) { item in
-                            Circle()
-                                .fill(Color(hex: item.hex) ?? .red)
-                                .frame(width: 40, height: 40)
-                                .overlay {
-                                    if selectedColorHex == item.hex {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.white)
-                                            .font(.caption.bold())
+                            let isSelected = selectedColorHex == item.hex
+                            Button {
+                                selectedColorHex = item.hex
+                            } label: {
+                                Circle()
+                                    .fill(Color(hex: item.hex) ?? .red)
+                                    .frame(width: 40, height: 40)
+                                    .overlay {
+                                        if isSelected {
+                                            Image(systemName: "checkmark")
+                                                .foregroundStyle(.white)
+                                                .font(.caption.bold())
+                                        }
                                     }
-                                }
-                                .onTapGesture {
-                                    selectedColorHex = item.hex
-                                }
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.name)
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
                         }
                     }
                     .padding(.vertical, 4)
@@ -98,23 +119,29 @@ struct LayerFormView: View {
                 Section("Icon") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 12) {
                         ForEach(Color.layerSymbols, id: \.symbol) { item in
-                            Image(systemName: item.symbol)
-                                .font(.title2)
-                                .frame(width: 44, height: 44)
-                                .background(
-                                    selectedSymbol == item.symbol
-                                        ? Color(hex: selectedColorHex)?.opacity(0.2) ?? Color.red.opacity(0.2)
-                                        : Color.clear
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .foregroundStyle(
-                                    selectedSymbol == item.symbol
-                                        ? Color(hex: selectedColorHex) ?? .red
-                                        : .secondary
-                                )
-                                .onTapGesture {
-                                    selectedSymbol = item.symbol
-                                }
+                            let isSelected = selectedSymbol == item.symbol
+                            Button {
+                                selectedSymbol = item.symbol
+                            } label: {
+                                Image(systemName: item.symbol)
+                                    .font(.title2)
+                                    .frame(width: 44, height: 44)
+                                    .background(
+                                        isSelected
+                                            ? Color(hex: selectedColorHex)?.opacity(0.2) ?? Color.red.opacity(0.2)
+                                            : Color.clear
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .foregroundStyle(
+                                        isSelected
+                                            ? Color(hex: selectedColorHex) ?? .red
+                                            : .secondary
+                                    )
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.name)
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
                         }
                     }
                     .padding(.vertical, 4)
@@ -171,7 +198,8 @@ struct LayerFormView: View {
             layer.name = finalName
             layer.colorHex = selectedColorHex
             layer.symbolName = selectedSymbol
-            layer.kind = selectedKind
+            // Defensive: never retype a layer that already holds items.
+            if !layer.hasItems { layer.kind = selectedKind }
             layer.lineWidth = lineWidth
         } else {
             let nextOrder = (allLayers.map(\.sortOrder).max() ?? -1) + 1

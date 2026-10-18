@@ -108,4 +108,132 @@ final class TrailMigratorTests: XCTestCase {
         XCTAssertEqual(trails[0].id, existing.id)
         XCTAssertEqual(try context.fetch(FetchDescriptor<Trail>()).count, 2)
     }
+
+    // MARK: - Saved places are never waypoints
+
+    func testNeverAssignsPathIdToPlaceAlsoInPlacesLayer() throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+        let trails = Layer(name: "Walks", kind: .waypointPath)
+        let coffee = Layer(name: "Coffee", kind: .places)
+        context.insert(trails)
+        context.insert(coffee)
+
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let shared = makePlace("Two Boys Brew", lat: 53.34, lon: -6.26, pathId: nil, sortIndex: 0,
+                               createdAt: t, in: context)
+        let w0 = makePlace("Waypoint", lat: 53.35, lon: -6.25, pathId: nil, sortIndex: 0,
+                           createdAt: t.addingTimeInterval(1), in: context)
+        let w1 = makePlace("Waypoint", lat: 53.36, lon: -6.24, pathId: nil, sortIndex: 1,
+                           createdAt: t.addingTimeInterval(2), in: context)
+        coffee.places = [shared]
+        trails.places = [shared, w0, w1]
+
+        let result = TrailMigrator.ensureTrails(for: trails, in: context)
+
+        XCTAssertNil(shared.pathId, "a place in a Places layer must never become a waypoint")
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(w0.pathId, result.first?.pathId)
+        XCTAssertEqual(w1.pathId, result.first?.pathId)
+        XCTAssertEqual(result.first?.geometry?.segments.count, 1, "only the two waypoints are on the line")
+
+        // Deleting that trail keeps the shared place.
+        TrailCommitter.delete(try XCTUnwrap(result.first), in: context)
+        let left = try context.fetch(FetchDescriptor<Place>())
+        XCTAssertEqual(left.map(\.id), [shared.id])
+        XCTAssertEqual(coffee.places?.map(\.id), [shared.id])
+    }
+
+    func testLegacyPlaceWithUserContentIsLeftAlone() throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+        let layer = Layer(name: "Switched", kind: .waypointPath)
+        context.insert(layer)
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let rich = makePlace("Brunch spot", lat: 1, lon: 1, pathId: nil, sortIndex: 0, createdAt: t, in: context)
+        rich.notes = "Great eggs"
+        layer.places = [rich]
+
+        XCTAssertTrue(TrailMigrator.ensureTrails(for: layer, in: context).isEmpty)
+        XCTAssertNil(rich.pathId)
+    }
+
+    // MARK: - Multi-device safety
+
+    func testLegacyPathIdIsDeterministicFromLayerId() throws {
+        let layerId = UUID()
+        let first = TrailMigrator.legacyPathId(for: layerId)
+        XCTAssertEqual(first, TrailMigrator.legacyPathId(for: layerId))
+        XCTAssertNotEqual(first, layerId)
+        XCTAssertNotEqual(first, TrailMigrator.legacyPathId(for: UUID()))
+
+        // Two "devices" (separate stores) migrating the same layer agree.
+        func migrate() throws -> UUID? {
+            let container = try makeTestContainer()
+            let context = container.mainContext
+            let layer = Layer(name: "Walks", kind: .waypointPath)
+            layer.id = layerId
+            context.insert(layer)
+            let t = Date(timeIntervalSince1970: 1_700_000_000)
+            layer.places = [
+                makePlace("Waypoint", lat: 1, lon: 1, pathId: nil, sortIndex: 0, createdAt: t, in: context),
+                makePlace("Waypoint", lat: 2, lon: 2, pathId: nil, sortIndex: 1, createdAt: t, in: context),
+            ]
+            return TrailMigrator.ensureTrails(for: layer, in: context).first?.pathId
+        }
+        let deviceA = try migrate()
+        let deviceB = try migrate()
+        XCTAssertEqual(deviceA, first)
+        XCTAssertEqual(deviceB, first)
+    }
+
+    func testDuplicateTrailsForSamePathCollapseToSnappedOne() throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+        let layer = Layer(name: "Walks", kind: .waypointPath)
+        context.insert(layer)
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let pid = UUID()
+        layer.places = [
+            makePlace("Waypoint", lat: 1, lon: 1, pathId: pid, sortIndex: 0, createdAt: t, in: context),
+            makePlace("Waypoint", lat: 2, lon: 2, pathId: pid, sortIndex: 1, createdAt: t, in: context),
+        ]
+        let older = Trail(pathId: pid, name: "Older", createdAt: t)
+        let snapped = Trail(pathId: pid, name: "Snapped", isSnapped: true, createdAt: t.addingTimeInterval(60))
+        let newer = Trail(pathId: pid, name: "Newer", createdAt: t.addingTimeInterval(120))
+        for trail in [older, snapped, newer] {
+            context.insert(trail)
+            trail.layer = layer
+        }
+
+        let result = TrailMigrator.ensureTrails(for: layer, in: context)
+        XCTAssertEqual(result.map(\.id), [snapped.id])
+        XCTAssertEqual(layer.trails?.map(\.id), [snapped.id])
+        try context.save()
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Trail>()).map(\.id), [snapped.id])
+
+        // Idempotent.
+        XCTAssertEqual(TrailMigrator.ensureTrails(for: layer, in: context).map(\.id), [snapped.id])
+    }
+
+    func testDuplicateUnsnappedTrailsKeepEarliest() throws {
+        let container = try makeTestContainer()
+        let context = container.mainContext
+        let layer = Layer(name: "Walks", kind: .waypointPath)
+        context.insert(layer)
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let pid = UUID()
+        layer.places = [makePlace("Waypoint", lat: 1, lon: 1, pathId: pid, sortIndex: 0, createdAt: t, in: context)]
+        let later = Trail(pathId: pid, name: "Later", createdAt: t.addingTimeInterval(5))
+        let earliest = Trail(pathId: pid, name: "Earliest", createdAt: t)
+        for trail in [later, earliest] {
+            context.insert(trail)
+            trail.layer = layer
+        }
+
+        let result = TrailMigrator.ensureTrails(for: layer, in: context)
+        XCTAssertEqual(result.map(\.name), ["Earliest"])
+        try context.save()
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Trail>()).count, 1)
+    }
 }

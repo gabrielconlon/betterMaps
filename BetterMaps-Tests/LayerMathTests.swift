@@ -121,7 +121,7 @@ final class LayerMathTests: XCTestCase {
         let matched = LayerMath.filter(places, layers: layers, mode: .union)
         let legend = LayerMath.intersectionLegend(matched, layers: layers)
 
-        XCTAssertEqual(legend.map(\.label), ["Brunch ∩ Favorites", "Brunch ∩ Favorites ∩ Coffee"])
+        XCTAssertEqual(legend.map(\.label), ["Brunch + Favorites", "Brunch + Favorites + Coffee"])
         XCTAssertEqual(legend.map(\.count), [3, 1])
         XCTAssertEqual(legend[0].layerIds, [brunch.id, favorites.id])
         XCTAssertEqual(legend[1].layerIds, [brunch.id, favorites.id, coffee.id])
@@ -137,7 +137,7 @@ final class LayerMathTests: XCTestCase {
         let matched = LayerMath.filter(places, layers: layers, mode: .union)
         XCTAssertEqual(LayerMath.intersectionLegend(matched, layers: layers).count, 3)
         let top1 = LayerMath.intersectionLegend(matched, layers: layers, limit: 1)
-        XCTAssertEqual(top1.map(\.label), ["Favorites ∩ Coffee"])
+        XCTAssertEqual(top1.map(\.label), ["Favorites + Coffee"])
         XCTAssertEqual(top1.first?.count, 2)
         XCTAssertTrue(LayerMath.intersectionLegend(matched, layers: layers, limit: 0).isEmpty)
     }
@@ -146,5 +146,30 @@ final class LayerMathTests: XCTestCase {
         let p = place("p", in: [brunch.id, hidden.id])
         let matched = LayerMath.filter([p], layers: layers, mode: .union)
         XCTAssertTrue(LayerMath.intersectionLegend(matched, layers: layers).isEmpty)
+    }
+
+    // MARK: - Overlap emptiness
+
+    func testOverlapCountNeedsEveryVisiblePlaceLayer() {
+        let places = [
+            place("all", in: [brunch.id, favorites.id, coffee.id]),
+            place("two", in: [brunch.id, favorites.id]),
+            place("all+trail", in: [brunch.id, favorites.id, coffee.id, trail.id]),
+        ]
+        XCTAssertEqual(LayerMath.overlapCount(places, layers: layers), 2, "trail and hidden layers never count")
+        XCTAssertEqual(LayerMath.overlapCount(places, layers: [trail]), 0, "no visible place layer")
+    }
+
+    func testEmptyOverlapLayerCount() {
+        let none = [place("a", in: [brunch.id, favorites.id]), place("b", in: [coffee.id])]
+        XCTAssertEqual(LayerMath.emptyOverlapLayerCount(none, layers: layers, mode: .intersection), 3)
+        XCTAssertNil(LayerMath.emptyOverlapLayerCount(none, layers: layers, mode: .union), "only in Overlap only")
+
+        let shared = none + [place("c", in: [brunch.id, favorites.id, coffee.id])]
+        XCTAssertNil(LayerMath.emptyOverlapLayerCount(shared, layers: layers, mode: .intersection))
+
+        let oneLayer = [brunch, trail]
+        XCTAssertNil(LayerMath.emptyOverlapLayerCount([], layers: oneLayer, mode: .intersection),
+                     "fewer than two place layers is not an overlap")
     }
 }
