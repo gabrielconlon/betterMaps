@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import os
 
 // MARK: - Irish Rail Models
 
@@ -48,42 +49,122 @@ struct IrishRailArrival: Identifiable {
 // MARK: - Irish Rail Service
 
 actor IrishRailService {
-    private let baseURL = "http://api.irishrail.ie/realtime/realtime.asmx"
+    /// The station list changes a few times a year; one fetch a day is plenty.
+    static let stationCacheLifetime: TimeInterval = 24 * 60 * 60
 
-    /// Fetch all stations, optionally filtered by type
-    func fetchStations(type: IrishRailStation.StationType = .all) async -> [IrishRailStation] {
-        let endpoint: String
-        if type == .all {
-            endpoint = "\(baseURL)/getAllStationsXML"
-        } else {
-            endpoint = "\(baseURL)/getAllStationsXML_WithStationType?StationType=\(type.rawValue)"
+    private let baseURL = "http://api.irishrail.ie/realtime/realtime.asmx"
+    private let load: TransitFeed.Loader
+    private let now: @Sendable () -> Date
+    private let stationCache: StationCache
+
+    /// Views create their own `IrishRailService()`, so by default every
+    /// instance shares one process-wide station cache.
+    init(
+        load: @escaping TransitFeed.Loader = TransitFeed.urlSessionLoader,
+        now: @escaping @Sendable () -> Date = { Date() },
+        stationCache: StationCache = .shared
+    ) {
+        self.load = load
+        self.now = now
+        self.stationCache = stationCache
+    }
+
+    /// Station lists keyed by type, with the time each was fetched.
+    final class StationCache: Sendable {
+        static let shared = StationCache()
+        private let entries = OSAllocatedUnfairLock<[IrishRailStation.StationType: (stations: [IrishRailStation], fetchedAt: Date)]>(initialState: [:])
+
+        init() {}
+
+        func get(_ type: IrishRailStation.StationType) -> (stations: [IrishRailStation], fetchedAt: Date)? {
+            entries.withLock { $0[type] }
         }
 
-        guard let url = URL(string: endpoint) else { return [] }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let parser = IrishRailStationParser(data: data)
-            return parser.parse()
-        } catch {
-            print("[Irish Rail] getAllStations failed: \(error.localizedDescription)")
-            return []
+        func set(_ type: IrishRailStation.StationType, _ stations: [IrishRailStation], at date: Date) {
+            entries.withLock { $0[type] = (stations, date) }
         }
     }
 
-    /// Fetch real-time arrivals for a station
-    func fetchArrivals(stationCode: String, withinMinutes: Int = 30) async -> [IrishRailArrival] {
-        let endpoint = "\(baseURL)/getStationDataByCodeXML_WithNumMins?StationCode=\(stationCode)&NumMins=\(withinMinutes)"
-        guard let url = URL(string: endpoint) else { return [] }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let parser = IrishRailArrivalParser(data: data)
-            return parser.parse()
-        } catch {
-            print("[Irish Rail] getStationData/\(stationCode) failed: \(error.localizedDescription)")
-            return []
+    /// All stations, optionally filtered by type. Served from a 24 h cache;
+    /// an empty or failed response is never cached.
+    func stations(type: IrishRailStation.StationType = .all) async throws(TransitFeedError) -> [IrishRailStation] {
+        if let cached = stationCache.get(type),
+           now().timeIntervalSince(cached.fetchedAt) < Self.stationCacheLifetime {
+            return cached.stations
         }
+        let path = type == .all
+            ? "getAllStationsXML"
+            : "getAllStationsXML_WithStationType?StationType=\(type.rawValue)"
+        guard let url = URL(string: "\(baseURL)/\(path)") else { throw .unavailable }
+        let data = try await TransitFeed.fetch(url, feed: "irishrail.stations", using: load)
+        let stations = IrishRailStationParser(data: data).parse()
+        guard !stations.isEmpty else {
+            TransitFeed.logger.error("irishrail.stations returned no stations")
+            throw .unavailable
+        }
+        stationCache.set(type, stations, at: now())
+        return stations
+    }
+
+    /// Real-time arrivals for a station. An empty list means no trains due.
+    func arrivals(stationCode: String, withinMinutes: Int = 30) async throws(TransitFeedError) -> [IrishRailArrival] {
+        var components = URLComponents(string: "\(baseURL)/getStationDataByCodeXML_WithNumMins")
+        components?.queryItems = [
+            URLQueryItem(name: "StationCode", value: stationCode),
+            URLQueryItem(name: "NumMins", value: String(withinMinutes)),
+        ]
+        guard let url = components?.url else { throw .unavailable }
+        let data = try await TransitFeed.fetch(url, feed: "irishrail.arrivals", using: load)
+        return IrishRailArrivalParser(data: data).parse()
+    }
+
+    /// Non-throwing convenience: `[]` when the feed is unavailable.
+    func fetchStations(type: IrishRailStation.StationType = .all) async -> [IrishRailStation] {
+        (try? await stations(type: type)) ?? []
+    }
+
+    /// Non-throwing convenience: `[]` when the feed is unavailable.
+    func fetchArrivals(stationCode: String, withinMinutes: Int = 30) async -> [IrishRailArrival] {
+        (try? await arrivals(stationCode: stationCode, withinMinutes: withinMinutes)) ?? []
+    }
+}
+
+// MARK: - Shared live-feed plumbing
+
+/// The only error live transit feeds (Irish Rail, Luas) surface. Transport
+/// details (URLError, HTTP status) go to the log, never to views.
+enum TransitFeedError: Error, Equatable, Sendable {
+    case unavailable
+}
+
+enum TransitFeed {
+    typealias Loader = @Sendable (URL) async throws -> (Data, URLResponse)
+
+    static let urlSessionLoader: Loader = { url in
+        try await URLSession.shared.data(from: url)
+    }
+
+    static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gabrielconlon.CustomMapApp",
+        category: "transit"
+    )
+
+    /// Runs `load` and maps every failure (transport, non-2xx) to
+    /// `TransitFeedError.unavailable`. Never logs response bodies.
+    static func fetch(_ url: URL, feed: String, using load: Loader) async throws(TransitFeedError) -> Data {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await load(url)
+        } catch {
+            logger.error("\(feed, privacy: .public) request failed: \(String(describing: type(of: error)), privacy: .public) \((error as? URLError)?.code.rawValue ?? 0)")
+            throw .unavailable
+        }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            logger.error("\(feed, privacy: .public) HTTP \(http.statusCode)")
+            throw .unavailable
+        }
+        return data
     }
 }
 
