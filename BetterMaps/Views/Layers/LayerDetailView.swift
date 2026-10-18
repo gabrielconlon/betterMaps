@@ -3,19 +3,27 @@ import SwiftData
 
 struct LayerDetailView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Bindable var layer: Layer
     @State private var showEditForm = false
     @State private var showAddPlace = false
-    @State private var showAddWaypoint = false
-    @State private var showDrawMode = false
-    /// Per-pathId expansion state for the trail-grouped waypoint list.
-    /// Default state (set on first appear): all trails expanded.
-    @State private var expandedPathIds: Set<UUID> = []
-    @State private var didSeedExpansion: Bool = false
-    /// Place currently open in the edit form. Tapping a row in the list
-    /// (place layers) sets this to push the precision-edit form. The user
-    /// reported tap-to-edit was missing — every row was non-interactive.
+    /// Place currently open in the edit form (place layers only).
     @State private var editingPlace: Place?
+    /// Trail editor presentation. `trail == nil` draws a new trail.
+    @State private var editorTarget: EditorTarget?
+    @State private var detailTrail: Trail?
+    /// Set by the detail sheet's Edit button; the editor opens once the
+    /// sheet has finished dismissing so the two presentations don't collide.
+    @State private var pendingEditTrail: Trail?
+    /// Fallback "Trail saved" confirmation when no screen-level ToastCenter
+    /// is injected (the editor posts to that center when there is one).
+    @State private var showSavedToast = false
+    @State private var savedMessage = ""
+
+    private struct EditorTarget: Identifiable {
+        let id = UUID()
+        let trail: Trail?
+    }
 
     var layerPlaces: [Place] {
         (layer.places ?? []).sorted { $0.name < $1.name }
@@ -23,56 +31,23 @@ struct LayerDetailView: View {
 
     var isWaypointPath: Bool { layer.kind == .waypointPath }
 
+    private var trails: [Trail] {
+        (layer.trails ?? []).sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+
     var pointsLabel: String {
-        let count = layerPlaces.count
-        return isWaypointPath ? "\(count) waypoints" : "\(count) places"
+        if isWaypointPath {
+            let count = trails.count
+            return "\(count) \(count == 1 ? "trail" : "trails") · \(layerPlaces.count) points"
+        }
+        return "\(layerPlaces.count) places"
     }
 
-    /// Sort function shared by all trail groupings: tap-order first, then
-    /// creation date as a tiebreaker for legacy waypoints (sortIndex == 0).
-    private func sortByTapOrder(_ places: [Place]) -> [Place] {
-        places.sorted { lhs, rhs in
-            if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
-            return lhs.createdAt < rhs.createdAt
-        }
-    }
-
-    /// Groups the layer's waypoints by pathId for the trail-grouped section
-    /// rendering. Returns ordered (id, name, places) tuples — id is nil for
-    /// the legacy "Ungrouped" bucket of waypoints predating multi-path
-    /// support. Stable order: named trails alphabetically, then a single
-    /// "Ungrouped" bucket if any nil-pathId waypoints exist.
-    private var trailGroups: [(id: UUID?, name: String, places: [Place])] {
-        let all = layer.places ?? []
-        var byPathId: [UUID?: [Place]] = [:]
-        for place in all { byPathId[place.pathId, default: []].append(place) }
-
-        var result: [(UUID?, String, [Place])] = []
-        let pathNames = layer.pathNames
-
-        // Named trails sorted alphabetically. Trails that have a UUID but no
-        // name in pathNames get a fallback "Trail (unnamed)" so they're still
-        // visible (defensive — shouldn't normally happen).
-        let knownIds: [UUID] = byPathId.keys.compactMap { $0 }
-        let sortedKnown = knownIds.sorted { (a, b) in
-            let na = pathNames[a] ?? "Trail (unnamed)"
-            let nb = pathNames[b] ?? "Trail (unnamed)"
-            return na.localizedCaseInsensitiveCompare(nb) == .orderedAscending
-        }
-        for id in sortedKnown {
-            result.append((
-                id,
-                pathNames[id] ?? "Trail (unnamed)",
-                sortByTapOrder(byPathId[id] ?? [])
-            ))
-        }
-
-        // Legacy bucket — only show if non-empty.
-        if let nilPlaces = byPathId[nil], !nilPlaces.isEmpty {
-            result.append((nil, "Ungrouped", sortByTapOrder(nilPlaces)))
-        }
-
-        return result
+    private func pointCount(_ trail: Trail) -> Int {
+        (layer.places ?? []).filter { $0.pathId == trail.pathId }.count
     }
 
     var body: some View {
@@ -99,24 +74,14 @@ struct LayerDetailView: View {
             }
 
             if isWaypointPath {
-                Section {
-                    Text("Trails draw their lines in tap-order. Use Draw Path to add or rearrange waypoints; the flag icon marks the start and end.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if isWaypointPath {
-                if layerPlaces.isEmpty {
-                    Section("Waypoints") {
-                        Text("No waypoints yet. Tap Draw Path to start a trail.")
+                if trails.isEmpty {
+                    Section("Trails") {
+                        Text("No trails yet. Tap New Trail, then long-press the map to add points.")
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    // One section per trail. Each section is collapsible
-                    // independently — long lists never wall off the others.
-                    ForEach(trailGroups, id: \.id) { group in
-                        trailSection(group)
+                    ForEach(trails) { trail in
+                        trailSection(trail)
                     }
                 }
             } else {
@@ -126,12 +91,6 @@ struct LayerDetailView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(layerPlaces) { place in
-                            // Tap a place row to open its edit form. The user
-                            // reported this regressed — rows used to be
-                            // tappable for edit, but the recent rebuilds
-                            // turned them into static cells. Use Button +
-                            // .plain style so the cell still looks like a
-                            // List row but actually responds.
                             Button(action: { editingPlace = place }) {
                                 HStack {
                                     PlaceRowView(place: place)
@@ -152,32 +111,26 @@ struct LayerDetailView: View {
         .navigationTitle(layer.name)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            // Seed expansion state once, defaulting to all trails expanded.
-            // Subsequent views preserve the user's manual collapse choices.
-            if !didSeedExpansion {
-                expandedPathIds = Set(trailGroups.compactMap(\.id))
-                didSeedExpansion = true
+            // Legacy waypoint layers predate `Trail`; create records so every
+            // trail shows its name and length here.
+            if isWaypointPath {
+                TrailMigrator.ensureTrails(for: layer, in: modelContext)
+                try? modelContext.save()
             }
         }
         .toolbar {
-            // Draw Path is the primary action for waypoint layers — surface it
-            // outside the menu so it's one tap (Fitts's Law). The "Add Waypoint"
-            // form remains available in the menu as the precision-entry escape
-            // hatch.
+            // New Trail is the primary action for waypoint layers — one tap,
+            // outside the menu (Fitts's Law).
             if isWaypointPath {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: { showDrawMode = true }) {
-                        Label("Draw Path", systemImage: "scribble.variable")
+                    Button(action: { editorTarget = EditorTarget(trail: nil) }) {
+                        Label("New Trail", systemImage: "scribble.variable")
                     }
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if isWaypointPath {
-                        Button(action: { showAddWaypoint = true }) {
-                            Label("Add Waypoint (Form)", systemImage: "plus")
-                        }
-                    } else {
+                    if !isWaypointPath {
                         Button(action: { showAddPlace = true }) {
                             Label("Add Place", systemImage: "plus")
                         }
@@ -202,103 +155,68 @@ struct LayerDetailView: View {
         .sheet(isPresented: $showAddPlace) {
             AddPlaceToLayerView(layer: layer)
         }
-        .sheet(isPresented: $showAddWaypoint) {
-            WaypointFormView(layer: layer)
-        }
         .sheet(item: $editingPlace) { place in
             PlaceFormView(place: place)
         }
-        .fullScreenCover(isPresented: $showDrawMode) {
-            // Full-screen cover — Draw Mode owns the entire screen so the
-            // user can rapid-tap without other UI competing for hits.
-            NavigationStack {
-                WaypointDrawView(layer: layer)
+        .sheet(item: $detailTrail, onDismiss: openPendingEdit) { trail in
+            TrailDetailSheet(trail: trail) { pendingEditTrail = trail }
+        }
+        .fullScreenCover(item: $editorTarget) { target in
+            TrailEditorView(layer: layer, trail: target.trail) { saved in
+                editorTarget = nil
+                if let saved, toastCenter == nil {
+                    savedMessage = TrailFormat.savedMessage(for: saved)
+                    showSavedToast = true
+                }
             }
         }
+        .toast(isPresented: $showSavedToast, message: savedMessage)
     }
 
     @ViewBuilder
-    private func trailSection(_ group: (id: UUID?, name: String, places: [Place])) -> some View {
-        let isExpanded = group.id.map { expandedPathIds.contains($0) } ?? true
+    private func trailSection(_ trail: Trail) -> some View {
         Section {
-            if isExpanded {
-                ForEach(group.places) { place in
-                    Button(action: { editingPlace = place }) {
-                        HStack {
-                            WaypointRowView(place: place)
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .onDelete { offsets in removeFromTrail(group: group, at: offsets) }
-                .onMove { source, destination in
-                    moveInTrail(group: group, from: source, to: destination)
-                }
-            }
-        } header: {
-            // Tappable section header to toggle expansion. Only shown for
-            // waypoint-path layers; the chevron mirrors the side-panel UX
-            // in WaypointDrawView for visual consistency.
-            HStack(spacing: 8) {
-                if let id = group.id {
-                    Button(action: { toggleExpand(id) }) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .font(.caption.weight(.semibold))
+            Button(action: { detailTrail = trail }) {
+                HStack(spacing: 10) {
+                    Image(systemName: trail.isSnapped
+                          ? "point.topleft.down.to.point.bottomright.curvepath"
+                          : "line.diagonal")
+                        .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(TrailFormat.summary(meters: trail.distanceMeters, points: pointCount(trail)))
+                            .font(.body.monospacedDigit())
+                        Text(trail.isSnapped ? "Follows paths" : "Straight lines")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
-                } else {
-                    // Legacy "Ungrouped" bucket — non-collapsible since it
-                    // doesn't have a stable id we can use.
-                    Image(systemName: "questionmark.circle")
-                        .font(.caption)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-                Text(group.name)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows trail details")
+        } header: {
+            HStack {
+                Text(trail.name.isEmpty ? "Untitled trail" : trail.name)
                     .textCase(nil)
                 Spacer()
-                Text("\(group.places.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                Button("Edit") { editorTarget = EditorTarget(trail: trail) }
+                    .font(.subheadline.weight(.semibold))
                     .textCase(nil)
+                    .frame(minHeight: 44)
+                    .accessibilityLabel("Edit \(trail.name)")
             }
         }
     }
 
-    private func toggleExpand(_ id: UUID) {
-        if expandedPathIds.contains(id) {
-            expandedPathIds.remove(id)
-        } else {
-            expandedPathIds.insert(id)
-        }
-    }
-
-    /// Reorder places within a trail. Writes incremental sortIndex values to
-    /// the underlying Place rows so the ordering persists across launches and
-    /// CloudKit syncs. The endpoint flag stays as the user set it — drag
-    /// only affects order, not flag state.
-    private func moveInTrail(group: (id: UUID?, name: String, places: [Place]), from source: IndexSet, to destination: Int) {
-        var reordered = group.places
-        reordered.move(fromOffsets: source, toOffset: destination)
-        for (index, place) in reordered.enumerated() {
-            place.sortIndex = index
-        }
-    }
-
-    private func removeFromTrail(group: (id: UUID?, name: String, places: [Place]), at offsets: IndexSet) {
-        for index in offsets {
-            guard index < group.places.count else { continue }
-            let place = group.places[index]
-            layer.places?.removeAll { $0.id == place.id }
-            if isWaypointPath, (place.layers?.isEmpty ?? true) {
-                modelContext.delete(place)
-            }
-        }
+    private func openPendingEdit() {
+        guard let trail = pendingEditTrail else { return }
+        pendingEditTrail = nil
+        editorTarget = EditorTarget(trail: trail)
     }
 
     private func removePlaces(at offsets: IndexSet) {
@@ -306,33 +224,6 @@ struct LayerDetailView: View {
         for index in offsets {
             let place = sorted[index]
             layer.places?.removeAll { $0.id == place.id }
-            // For waypoint-path layers, points exist only inside the layer — also delete the Place.
-            if isWaypointPath, (place.layers?.isEmpty ?? true) {
-                modelContext.delete(place)
-            }
-        }
-    }
-}
-
-struct WaypointRowView: View {
-    @Bindable var place: Place
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(place.name.isEmpty ? "Waypoint" : place.name)
-                    .font(.body)
-                Text(String(format: "%.5f, %.5f", place.latitude, place.longitude))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Toggle(isOn: $place.isWaypointEndpoint) {
-                Label("Start/End", systemImage: place.isWaypointEndpoint ? "flag.fill" : "flag")
-                    .labelStyle(.iconOnly)
-            }
-            .toggleStyle(.button)
-            .tint(.orange)
         }
     }
 }
