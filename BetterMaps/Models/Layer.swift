@@ -85,6 +85,10 @@ final class Layer {
     /// Use `pathNames` (computed) to read/write — handles encode/decode and
     /// returns an empty dict on a malformed string instead of crashing.
     var pathNamesJSON: String = "{}"
+    /// Named trails in this waypoint-path layer, one per distinct `Place.pathId`.
+    /// Populated lazily by `TrailMigrator.ensureTrails`.
+    @Relationship(deleteRule: .cascade, inverse: \Trail.layer)
+    var trails: [Trail]? = []
 
     var kind: LayerKind {
         get { LayerKind(rawValue: kindRaw) ?? .places }
