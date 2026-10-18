@@ -49,7 +49,6 @@ struct PlaceAnnotationView: View {
             .fill(color)
             .frame(width: 12, height: 12)
             .overlay { if isOverlap { overlapRing } }
-            .shadow(color: color.opacity(0.5), radius: 2)
             .frame(width: 24, height: 24)
             .contentShape(Circle())
     }
@@ -65,7 +64,6 @@ struct PlaceAnnotationView: View {
             .clipShape(Circle())
             .overlay { if isOverlap { overlapRing } }
             .overlay(alignment: .topTrailing) { if isOverlap { countBadge.offset(x: 5, y: -5) } }
-            .shadow(color: color.opacity(0.4), radius: 2, y: 1)
             .contentShape(Circle().inset(by: -4))
     }
 

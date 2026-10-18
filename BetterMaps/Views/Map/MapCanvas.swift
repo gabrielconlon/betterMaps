@@ -1,9 +1,10 @@
 import SwiftUI
 import MapKit
 
-/// The `Map` itself plus its gesture plumbing. Renders only from
-/// `store.output` and the value arrays it is handed; continuous camera
-/// changes feed the store (region + size) and nothing else.
+/// The `Map` itself plus its gesture plumbing. Renders only from a coalesced
+/// copy of `store.output` and the transit store's culled arrays. The stores
+/// are fed once per camera move, when it ends — never per frame, so a
+/// gesture rebuilds no annotation.
 struct MapCanvas: View {
     @Binding var cameraPosition: MapCameraPosition
     let store: MapContentStore
@@ -12,7 +13,8 @@ struct MapCanvas: View {
     /// Shared with `MapChrome` so its standalone location button and compass
     /// drive this map.
     let mapScope: Namespace.ID
-    let transit: TransitLayerContent.Inputs
+    /// Read here (not by the screen) so a transit publish only redraws the map.
+    let transitStore: TransitLayerStore
     /// Long-press pin shown while the quick-add sheet is open.
     let droppedPin: CLLocationCoordinate2D?
 
@@ -26,31 +28,36 @@ struct MapCanvas: View {
     /// Long press on the map, fired as soon as the press is recognised (not
     /// on release): screen point and coordinate.
     let onLongPress: (CGPoint, CLLocationCoordinate2D?) -> Void
-    /// Every camera change while it moves (cancels in-flight tap lookups).
+    /// Every camera change while it moves. Must not write observed state:
+    /// it only cancels an in-flight tap lookup.
     var onCameraChange: (MKCoordinateRegion) -> Void = { _ in }
-    /// Fires once when a camera gesture settles (keyboard dismissal, transit
-    /// viewport refresh).
+    /// Fires once when a camera move settles, after `store.region` is set
+    /// (keyboard dismissal, transit viewport refresh).
     let onCameraSettled: (MKCoordinateRegion) -> Void
 
     /// True once the current long press has fired, until the finger lifts.
     @State private var longPressFired = false
+    /// What the `Map` draws: a coalesced copy of both stores (see
+    /// `MapContentSync`). The body reads only this, never the stores, so the
+    /// two stores' publishes after a camera move cost one map pass, not two.
+    @State private var shown = MapCanvasContent()
 
     var body: some View {
         GeometryReader { geo in
             MapReader { proxy in
                 Map(position: $cameraPosition, scope: mapScope) {
                     UserAnnotation()
-                    PlacesLayerContent(places: store.output.places,
-                                       clusters: store.output.clusters,
+                    PlacesLayerContent(places: shown.output.places,
+                                       clusters: shown.output.clusters,
                                        layersById: layersById,
-                                       size: store.output.annotationSize,
+                                       size: shown.output.annotationSize,
                                        onTapPlace: onTapPlace,
                                        onTapCluster: onTapCluster)
-                    TrailsLayerContent(trails: store.output.trails)
-                    TransitLayerContent(stops: transit.stops,
-                                        lines: transit.lines,
-                                        highlightedRoute: transit.highlightedRoute,
-                                        latitudeDelta: transit.latitudeDelta,
+                    TrailsLayerContent(trails: shown.output.trails)
+                    TransitLayerContent(stops: shown.stops,
+                                        lines: shown.lines,
+                                        highlightedRoute: shown.highlightedRoute,
+                                        zoomBucket: shown.zoomBucket,
                                         onTapStop: onTapStop)
                     if let droppedPin {
                         Annotation("Dropped Pin", coordinate: droppedPin, anchor: .bottom) {
@@ -91,17 +98,73 @@ struct MapCanvas: View {
                         }
                 )
                 .onMapCameraChange(frequency: .continuous) { context in
-                    store.region = context.region
                     onCameraChange(context.region)
-                    if store.mapSize != geo.size { store.mapSize = geo.size }
                 }
                 .onMapCameraChange(frequency: .onEnd) { context in
+                    if store.mapSize != geo.size { store.mapSize = geo.size }
+                    store.region = context.region
                     onCameraSettled(context.region)
                 }
                 .onAppear {
                     store.mapSize = geo.size
                 }
+                .onChange(of: geo.size) { _, size in
+                    store.mapSize = size
+                }
             }
         }
+        .background {
+            MapContentSync(store: store, transitStore: transitStore, shown: $shown)
+        }
+    }
+}
+
+/// Value snapshot of everything the map content draws.
+struct MapCanvasContent {
+    var output: CullOutput = .empty
+    var stops: [TransitStop] = []
+    var lines: [TransitLine] = []
+    var highlightedRoute: [[CLLocationCoordinate2D]]?
+    var zoomBucket = TransitZoomBucket(latitudeDelta: 0.2)
+
+    @MainActor
+    init() {}
+
+    @MainActor
+    init(_ store: MapContentStore, _ transit: TransitLayerStore) {
+        output = store.output
+        stops = transit.visibleStops
+        lines = transit.visibleLines
+        highlightedRoute = transit.highlightedRoute
+        zoomBucket = transit.zoomBucket
+    }
+}
+
+/// Invisible observer of both stores' `version`s. When either changes it
+/// waits `coalesceWindow` (restarting on a further change) and then copies
+/// both stores into `shown` at once. Each map content pass re-syncs every
+/// annotation, so one pass per settle instead of one per store halves the
+/// hitches after a camera move.
+private struct MapContentSync: View {
+    let store: MapContentStore
+    let transitStore: TransitLayerStore
+    @Binding var shown: MapCanvasContent
+
+    static let coalesceWindow: Duration = .milliseconds(40)
+
+    private struct Versions: Equatable {
+        let places: Int
+        let transit: Int
+    }
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .task(id: Versions(places: store.version, transit: transitStore.version)) {
+                try? await Task.sleep(for: Self.coalesceWindow)
+                guard !Task.isCancelled else { return }
+                shown = MapCanvasContent(store, transitStore)
+            }
     }
 }

@@ -59,7 +59,7 @@ struct PlaceLite: Sendable, Hashable, Identifiable {
 
 /// A place that passed the layer filter, annotated with how many visible
 /// *place* layers it belongs to and which layer should style its pin.
-struct MatchedPlace: Sendable, Identifiable {
+struct MatchedPlace: Sendable, Identifiable, Equatable {
     let place: PlaceLite
     /// Number of visible place-kind layers the place is a member of.
     /// Trail layers never count. A trail-only endpoint has matchCount 0.

@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import SwiftData
+import CoreData
 
 /// The map screen: owns the SwiftData queries, view models and the
 /// `MapContentStore`, routes sheets, and composes `MapCanvas`, the map
@@ -54,10 +55,14 @@ struct MapScreen: View {
     @State private var draftStore = TrailDraftStore.shared
     @AppStorage("lastTrailLayerId") private var lastTrailLayerIdRaw: String = ""
     @AppStorage(FirstRunHints.storageKey) private var hintsRaw = 0
-    /// Cached value snapshot of places and layers, rebuilt only when
-    /// `snapshotToken` changes (not on every camera-driven body pass).
+    /// Cached value snapshot of places and layers, rebuilt only when the
+    /// full `SnapshotToken` changes. That token is computed outside the body,
+    /// only when the cheap `snapshotTrigger` changes.
     @State private var snapshot = Snapshot(places: [], layers: [])
     @State private var cachedToken: SnapshotToken?
+    /// Bumped on every SwiftData save (local or remote) so edits that keep
+    /// the counts (rename, move, membership) still refresh the snapshot.
+    @State private var dataChangeToken = 0
     /// "No places in all N layers" when Overlap only finds nothing.
     @State private var emptyOverlapLayerCount: Int?
     /// The locate button asked for permission; centre on the first fix.
@@ -81,11 +86,11 @@ struct MapScreen: View {
         var visibleLayers: [LayerLite] = []
     }
 
-    /// Cheap change detector for the snapshot: counts, newest place edit,
+    /// Change detector for the snapshot: counts, newest place edit,
     /// per-layer fields (including membership counts, so adding a place to
-    /// a second layer is seen) and the trail store fingerprint. Building
-    /// this is O(places) property reads with no allocation per place,
-    /// unlike mapping every place to `PlaceLite`.
+    /// a second layer is seen) and the trail store fingerprint. O(places)
+    /// reads plus two fetches, so it is built only from `rebuildSnapshot`,
+    /// never in the body.
     private struct SnapshotToken: Equatable {
         let placeCount: Int
         let latestPlaceUpdate: Date?
@@ -94,7 +99,7 @@ struct MapScreen: View {
         let trails: TrailSnapshotter.StoreFingerprint
     }
 
-    private var snapshotToken: SnapshotToken {
+    private func currentSnapshotToken() -> SnapshotToken {
         var hasher = Hasher()
         for layer in layers {
             hasher.combine(layer.id)
@@ -114,6 +119,32 @@ struct MapScreen: View {
                              trails: TrailSnapshotter.fingerprint(in: modelContext))
     }
 
+    /// Cheap body-side key: query counts, the save counter and the layers'
+    /// own scalar fields (a handful of layers; no relationships, no places),
+    /// which catches unsaved show/hide toggles.
+    private struct SnapshotTrigger: Equatable {
+        let placeCount: Int
+        let layerCount: Int
+        let layerHash: Int
+        let dataChange: Int
+    }
+
+    private var snapshotTrigger: SnapshotTrigger {
+        var hasher = Hasher()
+        for layer in layers {
+            hasher.combine(layer.id)
+            hasher.combine(layer.isVisible)
+            hasher.combine(layer.sortOrder)
+            hasher.combine(layer.name)
+            hasher.combine(layer.colorHex)
+            hasher.combine(layer.symbolName)
+            hasher.combine(layer.kindRaw)
+            hasher.combine(layer.lineWidth)
+        }
+        return SnapshotTrigger(placeCount: places.count, layerCount: layers.count,
+                               layerHash: hasher.finalize(), dataChange: dataChangeToken)
+    }
+
     private var layersById: [UUID: LayerLite] { snapshot.layersById }
 
     private var sortedLayers: [Layer] {
@@ -122,11 +153,9 @@ struct MapScreen: View {
 
     private var visibleLayerLites: [LayerLite] { snapshot.visibleLayers }
 
-    /// Bus is on but zoomed out past where bus stops are drawn.
-    private var showsBusZoomPrompt: Bool {
-        transitSettings.isEnabled(.bus)
-            && transitStore.region.span.latitudeDelta > TransitViewportCuller.busMaxLatDelta
-    }
+    /// Settled map centre for "add a place here" forms. The stores' region
+    /// is unobserved, so reading it never ties a body to the camera.
+    private var settledMapCenter: CLLocationCoordinate2D { store.region.center }
 
     private var canLocateUser: Bool {
         let status = locationManager.authorizationStatus
@@ -143,7 +172,7 @@ struct MapScreen: View {
                 layersById: layersById,
                 mapStyle: mapStyleOption.mapStyle,
                 mapScope: mapScope,
-                transit: TransitLayerContent.Inputs(transitStore),
+                transitStore: transitStore,
                 droppedPin: droppedPin,
                 onTapPlace: { id in
                     if store.output.places.contains(where: { $0.id == id && $0.matchCount >= 2 }) {
@@ -166,13 +195,11 @@ struct MapScreen: View {
             MapChrome(mapScope: mapScope,
                       mapStyle: mapStyleOption,
                       legendLayers: visibleLayerLites,
-                      legendEntries: store.output.legend,
+                      legendEntries: store.legend,
                       emptyOverlapLayerCount: emptyOverlapLayerCount,
                       isHidden: sheetDetent == .expanded,
                       draftChip: draftChip,
-                      showsBusZoomPrompt: showsBusZoomPrompt,
                       canLocateUser: canLocateUser,
-                      onZoomForBus: zoomForBusStops,
                       onRequestLocation: locateUser,
                       onCycleMapStyle: cycleMapStyle)
                 .animation(.easeInOut(duration: 0.2), value: draftStore.hasDraft)
@@ -200,7 +227,6 @@ struct MapScreen: View {
         }
         .mapScope(mapScope)
         .environment(toastCenter)
-        .environment(\.mapCenter, transitStore.region.center)
         .animation(.easeInOut(duration: 0.15), value: lookupPill)
         .sensoryFeedback(.impact(weight: .medium), trigger: dropCount)
         .sensoryFeedback(.selection, trigger: trailHitCount)
@@ -214,7 +240,12 @@ struct MapScreen: View {
             // The dropped pin lives exactly as long as the quick-add sheet.
             if !viewModel.isQuickAddOpen { droppedPin = nil }
         }
-        .onChange(of: snapshotToken, initial: true) { _, token in rebuildSnapshot(token) }
+        .onChange(of: snapshotTrigger, initial: true) { _, _ in rebuildSnapshot() }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
+            .merge(with: NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange))
+            .receive(on: RunLoop.main)) { _ in
+            dataChangeToken &+= 1
+        }
         .onReceive(NotificationCenter.default.publisher(for: TrailSnapshotter.didChangeNotification)) { _ in
             feedStore(snapshot)
         }
@@ -243,11 +274,16 @@ struct MapScreen: View {
         }
         #if DEBUG
         .task { openDebugScreens() }
+        .task {
+            await PerfHarness.runIfRequested(camera: $cameraPosition, contentStore: store,
+                                             transitStore: transitStore, settings: transitSettings,
+                                             modelContext: modelContext)
+        }
         #endif
         .sheet(item: $viewModel.activeSheet, onDismiss: openPendingTrailEdit) { sheet in
             sheetContent(for: sheet)
                 .environment(toastCenter)
-                .environment(\.mapCenter, transitStore.region.center)
+                .environment(\.mapCenter, settledMapCenter)
         }
         .fullScreenCover(item: $viewModel.drawTrailRequest) { request in
             trailEditor(for: request)
@@ -317,9 +353,10 @@ struct MapScreen: View {
 
     // MARK: - Store feeding
 
-    /// Rebuilds the value snapshot when the cheap token says something
-    /// changed, then feeds the store. Skips work on camera-only body passes.
-    private func rebuildSnapshot(_ token: SnapshotToken) {
+    /// Runs when `snapshotTrigger` changes: rebuilds the value snapshot if
+    /// the full token says something changed, then feeds the store.
+    private func rebuildSnapshot() {
+        let token = currentSnapshotToken()
         guard token != cachedToken else { return }
         cachedToken = token
         let layerLites = layers.map(LayerLite.init)
@@ -352,8 +389,12 @@ struct MapScreen: View {
 
     // MARK: - Gestures
 
-    /// Tap on the map: a trail under the finger opens its detail; otherwise
-    /// look up the place there, with a status pill shown within 100 ms.
+    /// Screen radius within which a tap opens a far-zoom transit dot.
+    private static let stopDotTapRadius: CGFloat = 22
+
+    /// Tap on the map: a transit dot or trail under the finger opens its
+    /// detail; otherwise look up the place there, with a status pill shown
+    /// within 100 ms.
     private func handleTap(_ screenPoint: CGPoint, _ coordinate: CLLocationCoordinate2D?, _ proxy: MapProxy) {
         // First tap on the map only dismisses the keyboard.
         if isSearchFocused {
@@ -367,12 +408,17 @@ struct MapScreen: View {
         // is exactly where the user tapped.
         let candidates = TrailHitTester.project(store.output.trails, using: proxy, bboxContaining: coordinate)
         let hitTrail = TrailHitTester.hit(tap: screenPoint, trails: candidates)
+        let hitStop = stopDot(near: screenPoint, coordinate: coordinate, proxy: proxy)
         cancelLookup()
         poiSearchTask = Task {
             // Short disambiguation window: a tap on a pin or stop also reaches
             // the map's tap gesture, and their own handler sets the sheet.
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled, viewModel.activeSheet == nil else { return }
+            if let hitStop {
+                viewModel.showTransitArrivals(for: hitStop)
+                return
+            }
             if let hitTrail {
                 trailHitCount += 1
                 viewModel.showTrailDetail(hitTrail)
@@ -392,6 +438,18 @@ struct MapScreen: View {
             guard !Task.isCancelled else { return }
             lookupPill = nil
         }
+    }
+
+    /// The transit dot (dots ignore touches) within `stopDotTapRadius` of a
+    /// tap, using the camera as it is at tap time.
+    private func stopDot(near screenPoint: CGPoint, coordinate: CLLocationCoordinate2D,
+                         proxy: MapProxy) -> TransitStop? {
+        guard !transitStore.visibleStops.isEmpty,
+              let edge = proxy.convert(CGPoint(x: screenPoint.x + Self.stopDotTapRadius, y: screenPoint.y),
+                                       from: .local) else { return nil }
+        let meters = WaypointGraph.meters(coordinate, edge)
+        guard meters > 0 else { return nil }
+        return transitStore.nearestDotStop(to: coordinate, within: meters)
     }
 
     /// Stops any tap lookup and hides its pill.
@@ -461,15 +519,6 @@ struct MapScreen: View {
             cameraPosition = .region(MKCoordinateRegion(
                 center: location,
                 span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
-        }
-    }
-
-    /// Zooms to a span where bus stops draw, keeping the current centre.
-    private func zoomForBusStops() {
-        withAnimation(.easeInOut(duration: 0.35)) {
-            cameraPosition = .region(MKCoordinateRegion(
-                center: transitStore.region.center,
-                span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)))
         }
     }
 
@@ -620,7 +669,7 @@ struct MapScreen: View {
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
 
         case .newPlace(let coordinate, let name, let layerId):
-            PlaceFormView(coordinate: coordinate, mapCenter: transitStore.region.center,
+            PlaceFormView(coordinate: coordinate, mapCenter: settledMapCenter,
                           name: name, preselectedLayerId: layerId)
 
         case .quickAdd(let coordinate):

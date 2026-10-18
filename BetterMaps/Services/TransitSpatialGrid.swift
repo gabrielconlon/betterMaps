@@ -73,25 +73,47 @@ struct TransitSpatialGrid: Sendable {
     }
 }
 
+/// Coarse zoom bucket for transit pins: the pin size of bus stops and of
+/// Luas/DART/rail stops at a span. It only changes when a size threshold is
+/// crossed, so views keyed on it don't redraw on every camera move.
+struct TransitZoomBucket: Sendable, Equatable {
+    var bus: AnnotationSize
+    var rail: AnnotationSize
+
+    init(bus: AnnotationSize, rail: AnnotationSize) {
+        self.bus = bus
+        self.rail = rail
+    }
+
+    init(latitudeDelta: Double) {
+        self.init(bus: TransitViewportCuller.pinSize(for: .bus, latitudeDelta: latitudeDelta),
+                  rail: TransitViewportCuller.pinSize(for: .rail, latitudeDelta: latitudeDelta))
+    }
+
+    /// Pin size for a stop whose primary network is `kind`.
+    func size(for kind: TransitLayerKind) -> AnnotationSize {
+        kind == .bus ? bus : rail
+    }
+}
+
 /// Pure viewport filtering for the transit layer; runs off-main.
 enum TransitViewportCuller {
-    /// Bus stops are hidden above this latitude span.
-    static let busMaxLatDelta = 0.08
-    /// Above this span (up to `busMaxLatDelta`) the regional bus budget applies.
-    static let cityLatDelta = 0.04
-    /// At or below this span the street budget applies; between it and
-    /// `cityLatDelta`, the city one.
-    static let streetLatDelta = 0.012
-    static let busBudgetStreet = 400
-    static let busBudgetCity = 250
-    static let busBudgetRegional = 150
+    /// Bus stops are hidden above this latitude span (country-wide view).
+    static let busMaxLatDelta = 1.0
+    /// Above this span (up to `busMaxLatDelta`) the regional bus budget
+    /// applies; at or below it, the city one.
+    static let regionalLatDelta = 0.3
+    static let busBudgetCity = 220
+    static let busBudgetRegional = 120
     /// Each side of the viewport is grown by this fraction before querying,
     /// so small pans don't pop stops in at the edge.
-    static let padding = 0.25
+    static let padding = 0.1
+    /// Bus sampling grid: a power-of-two span level is split into this many
+    /// cells per side, and each cell shows at most one stop.
+    static let sampleCellsPerLevel = 32.0
 
     static func busBudget(latDelta: Double) -> Int {
-        if latDelta <= streetLatDelta { return busBudgetStreet }
-        return latDelta <= cityLatDelta ? busBudgetCity : busBudgetRegional
+        latDelta <= regionalLatDelta ? busBudgetCity : busBudgetRegional
     }
 
     // MARK: Pin size by zoom
@@ -100,9 +122,9 @@ enum TransitViewportCuller {
     static let busCompactBelow = 0.012
     /// Bus stops: `.full` (icon pin + name) only below this span.
     static let busFullBelow = 0.005
-    /// Luas/DART/rail switch one level earlier: compact below the point bus
-    /// stops appear, full where bus turns compact.
-    static let railCompactBelow = busMaxLatDelta
+    /// Luas/DART/rail switch one level earlier: compact below 0.08 (the
+    /// place-pin dot threshold), full where bus turns compact.
+    static let railCompactBelow = 0.08
     static let railFullBelow = busCompactBelow
 
     /// Pin presentation for a stop of `kind` at `latitudeDelta`. Keeps a city
@@ -118,33 +140,61 @@ enum TransitViewportCuller {
     }
 
     /// Visible stops for `viewport`: Luas/DART/rail first and uncapped, then
-    /// bus (if enabled and zoomed in enough) nearest the centre up to the
-    /// zoom's budget.
+    /// a stable sample of bus stops (if enabled and not zoomed out past
+    /// `busMaxLatDelta`) up to the zoom's budget.
+    ///
+    /// Bus sampling is deterministic so a pan only adds and removes stops at
+    /// the edges: the span is quantized to a power-of-two level, that level's
+    /// fixed lat/lon grid keeps one stop per cell (lowest `priority`), and if
+    /// that is still over budget the lowest-priority representatives win.
+    /// Grids of neighbouring levels nest, so zooming in keeps the stops
+    /// already shown.
     static func visibleStops(grid: TransitSpatialGrid, viewport: GeoBox,
                              enabled: Set<TransitLayerKind>) -> [TransitStop] {
         guard !enabled.isEmpty else { return [] }
         let candidates = grid.stops(in: viewport.padded(by: padding))
         var rail: [TransitStop] = []
-        var bus: [TransitStop] = []
         let showBus = enabled.contains(.bus) && viewport.latDelta <= busMaxLatDelta
+        let cell = sampleCellSize(latDelta: viewport.latDelta, centerLat: viewport.centerLat)
+        var best: [TransitSpatialGrid.Cell: (stop: TransitStop, priority: UInt64)] = [:]
         for stop in candidates {
             if stop.kinds.contains(where: { $0 != .bus && enabled.contains($0) }) {
                 rail.append(stop)
             } else if showBus && stop.isServed(by: .bus) {
-                bus.append(stop)
+                let key = TransitSpatialGrid.Cell(row: Int((stop.latitude / cell.lat).rounded(.down)),
+                                                  col: Int((stop.longitude / cell.lon).rounded(.down)))
+                let p = priority(of: stop)
+                if let current = best[key], current.priority <= p { continue }
+                best[key] = (stop, p)
             }
         }
-        let budget = busBudget(latDelta: viewport.latDelta)
-        if bus.count > budget {
-            let cLat = viewport.centerLat, cLon = viewport.centerLon
-            let lonScale = cos(cLat * .pi / 180)
-            func d2(_ s: TransitStop) -> Double {
-                let dy = s.latitude - cLat, dx = (s.longitude - cLon) * lonScale
-                return dx * dx + dy * dy
-            }
-            bus = Array(bus.sorted { d2($0) < d2($1) }.prefix(budget))
-        }
+        let bus = best.values
+            .sorted { $0.priority < $1.priority }
+            .prefix(busBudget(latDelta: viewport.latDelta))
+            .map(\.stop)
         return rail + bus
+    }
+
+    /// Sampling cell for a span: `2^ceil(log2 latDelta) / sampleCellsPerLevel`
+    /// degrees of latitude, and roughly square on screen in longitude (the
+    /// cosine is taken at latitude rounded to 5° so a pan never changes it).
+    static func sampleCellSize(latDelta: Double, centerLat: Double) -> (lat: Double, lon: Double) {
+        let level = pow(2, log2(max(latDelta, 1e-6)).rounded(.up))
+        let lat = level / sampleCellsPerLevel
+        let roundedLat = (centerLat / 5).rounded() * 5
+        let lon = lat / max(cos(roundedLat * .pi / 180), 0.1)
+        return (lat, lon)
+    }
+
+    /// Fixed per-stop priority (FNV-1a of the stop id): the same stop wins
+    /// its cell on every query and in every process.
+    static func priority(of stop: TransitStop) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in stop.id.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01B3
+        }
+        return hash
     }
 
     /// Network lines of enabled kinds that overlap the padded viewport.

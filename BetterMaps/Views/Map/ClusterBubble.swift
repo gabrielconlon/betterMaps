@@ -27,7 +27,6 @@ struct ClusterBubble: View {
             .background(color)
             .clipShape(Circle())
             .overlay { Circle().stroke(.white, lineWidth: 2) }
-            .shadow(color: color.opacity(0.4), radius: 3, y: 1)
             .contentShape(Circle())
             .onTapGesture { onTap(cluster) }
             .accessibilityLabel("\(cluster.count) places")

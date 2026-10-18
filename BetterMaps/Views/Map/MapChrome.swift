@@ -2,7 +2,7 @@ import SwiftUI
 import MapKit
 
 /// Floating map chrome: the legend top-left (with the trail-draft resume
-/// chip and the bus zoom prompt under it) and a top-right control stack
+/// chip under it) and a top-right control stack
 /// (user location, map style, compass). Both sit at the top so they never
 /// meet the bottom sheet; they fade out while the sheet is expanded and
 /// covers them.
@@ -16,12 +16,9 @@ struct MapChrome: View {
     let isHidden: Bool
     /// Shown while a kept trail draft exists.
     var draftChip: DraftResumeChip? = nil
-    /// Bus is on but the camera is too far out for bus stops to draw.
-    var showsBusZoomPrompt: Bool = false
     /// Location access granted: the system location button can centre the
     /// map. Otherwise a plain button asks for access first.
     var canLocateUser: Bool = true
-    var onZoomForBus: () -> Void = {}
     var onRequestLocation: () -> Void = {}
     let onCycleMapStyle: () -> Void
 
@@ -32,10 +29,6 @@ struct MapChrome: View {
                             emptyOverlapLayerCount: emptyOverlapLayerCount)
                 if let draftChip {
                     draftChip
-                        .transition(.opacity)
-                }
-                if showsBusZoomPrompt {
-                    busZoomPrompt
                         .transition(.opacity)
                 }
             }
@@ -49,23 +42,6 @@ struct MapChrome: View {
         .allowsHitTesting(!isHidden)
         .accessibilityHidden(isHidden)
         .animation(.easeInOut(duration: 0.2), value: isHidden)
-        .animation(.easeInOut(duration: 0.2), value: showsBusZoomPrompt)
-    }
-
-    /// Bus stops are culled when zoomed out; say so and offer the fix.
-    private var busZoomPrompt: some View {
-        Button(action: onZoomForBus) {
-            Label("Zoom in to see bus stops", systemImage: "plus.magnifyingglass")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 12)
-                .frame(minHeight: 44)
-                .background(.regularMaterial, in: Capsule())
-                .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Zooms the map in so bus stops appear")
     }
 
     private var controls: some View {

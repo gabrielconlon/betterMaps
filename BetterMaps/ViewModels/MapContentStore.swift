@@ -122,7 +122,7 @@ struct ClusterLite: Sendable, Identifiable, Hashable {
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
 }
 
-struct CullOutput: Sendable {
+struct CullOutput: Sendable, Equatable {
     var places: [MatchedPlace]
     var clusters: [ClusterLite]
     var trails: [TrailLite]
@@ -139,7 +139,9 @@ struct CullOutput: Sendable {
 
 /// Owns everything the `Map` draws. Inputs are value snapshots set by the
 /// screen; any change debounces (120 ms) and reruns `cull` off the main
-/// actor, then publishes `output`. The map content never touches SwiftData.
+/// actor, then publishes `output` — only when it differs, so a pan that
+/// changes nothing on screen invalidates no view. The map content never
+/// touches SwiftData.
 @Observable
 @MainActor
 final class MapContentStore {
@@ -149,16 +151,25 @@ final class MapContentStore {
     /// Target on-screen size of one clustering cell.
     nonisolated static let clusterCellPoints = 48.0
 
+    /// Includes `annotationSize`, the coarse zoom bucket views size pins by.
     private(set) var output: CullOutput = .empty
-    private(set) var isComputing = false
+    /// `output.legend` on its own, so the screen (which shows only the
+    /// legend) is not invalidated by a pan; the legend covers the whole
+    /// filtered set and so rarely changes with the camera.
+    private(set) var legend: [LegendEntry] = []
+    /// Bumped whenever `output` is replaced; lets the map coalesce this
+    /// store's and the transit store's publishes into one redraw.
+    private(set) var version = 0
 
-    var region: MKCoordinateRegion {
+    /// Settled camera region, set when a camera move ends. Not observed:
+    /// views render from `output`, never the raw region.
+    @ObservationIgnored var region: MKCoordinateRegion {
         didSet { scheduleRecompute() }
     }
-    var filterMode: FilterMode = .union {
+    @ObservationIgnored var filterMode: FilterMode = .union {
         didSet { if filterMode != oldValue { scheduleRecompute() } }
     }
-    var mapSize: CGSize = .zero {
+    @ObservationIgnored var mapSize: CGSize = .zero {
         didSet { if mapSize != oldValue { scheduleRecompute() } }
     }
 
@@ -183,7 +194,6 @@ final class MapContentStore {
         let places = places, layers = layers, trails = trails, mode = filterMode
         let viewport = GeoBox(region: region)
         let width = Double(mapSize.width), height = Double(mapSize.height)
-        isComputing = true
         recomputeTask = Task { [weak self] in
             try? await Task.sleep(for: Self.debounce)
             guard !Task.isCancelled else { return }
@@ -192,10 +202,27 @@ final class MapContentStore {
                           viewport: viewport, mapWidth: width, mapHeight: height)
             }.value
             guard !Task.isCancelled, let self else { return }
-            self.output = result
-            self.isComputing = false
+            if self.output != result {
+                self.output = result
+                self.version &+= 1
+                if self.legend != result.legend { self.legend = result.legend }
+                #if DEBUG
+                self.debugPublishCount += 1
+                #endif
+            }
+            #if DEBUG
+            self.debugLastSettle = ContinuousClock.now
+            #endif
         }
     }
+
+    #if DEBUG
+    /// When the last recompute finished (published or not); `PerfHarness` only.
+    @ObservationIgnored private(set) var debugLastSettle: ContinuousClock.Instant?
+    /// Number of times `output` was actually replaced; lets tests check that
+    /// an identical recompute publishes nothing.
+    @ObservationIgnored private(set) var debugPublishCount = 0
+    #endif
 
     // MARK: Pure culling
 

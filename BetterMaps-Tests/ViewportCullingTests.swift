@@ -1,4 +1,6 @@
 import XCTest
+import MapKit
+import Observation
 @testable import CustomMapApp
 
 /// `MapContentStore.cull` is pure, so these tests need no SwiftData.
@@ -143,6 +145,44 @@ final class ViewportCullingTests: XCTestCase {
         XCTAssertEqual(out.legend.first?.count, 3, "legend counts the whole filtered set, not just the viewport")
         XCTAssertEqual(out.places.map(\.id), [shared1.id, shared2.id], "intersection drops the single, viewport drops s3")
         XCTAssertEqual(out.visibleLayerCount, 3)
+    }
+
+    // MARK: - Store publishing
+
+    func testCullOutputEquality() {
+        let p = place("p", lat: 53.35, lon: -6.26, in: [brunch.id])
+        XCTAssertEqual(cull([p], viewport: cityViewport), cull([p], viewport: cityViewport))
+        XCTAssertNotEqual(cull([p], viewport: cityViewport), cull([], viewport: cityViewport))
+    }
+
+    /// Recomputing with identical inputs (a settle at the same camera) must
+    /// not replace `output` or notify observers.
+    @MainActor
+    func testIdenticalRecomputeDoesNotPublish() async throws {
+        let store = MapContentStore(region: MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+        store.mapSize = CGSize(width: 390, height: 844)
+        let places = [place("p", lat: 53.35, lon: -6.26, in: [brunch.id])]
+        store.update(places: places, layers: layers, trails: [])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.output.places.count, 1)
+        let published = store.debugPublishCount
+
+        let changed = ChangeFlag()
+        withObservationTracking { _ = store.output } onChange: { changed.set() }
+        store.update(places: places, layers: layers, trails: [])
+        let sameRegion = store.region
+        store.region = sameRegion
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.debugPublishCount, published)
+        XCTAssertFalse(changed.isSet, "an identical recompute must not publish")
+
+        // A real change still publishes.
+        store.update(places: [], layers: layers, trails: [])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(store.debugPublishCount, published + 1)
+        XCTAssertTrue(changed.isSet)
     }
 
     // MARK: - GeoBox
