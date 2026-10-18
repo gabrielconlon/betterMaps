@@ -2,7 +2,7 @@ import Foundation
 import CoreLocation
 
 /// One editable waypoint in a `TrailDraft`.
-struct TrailPoint: Sendable, Hashable, Identifiable {
+struct TrailPoint: Sendable, Hashable, Identifiable, Codable {
     let id: UUID
     var latitude: Double
     var longitude: Double
@@ -33,7 +33,7 @@ struct TrailPoint: Sendable, Hashable, Identifiable {
 /// Every mutation that should be undoable snapshots `points` first. A drag
 /// is many `move` calls but one undo step, so the caller brackets it with
 /// `beginMove()` (snapshot) and `move(_:to:)` (no snapshot).
-struct TrailDraft: Sendable, Equatable {
+struct TrailDraft: Sendable, Equatable, Codable {
     /// Maximum number of undo snapshots retained.
     static let undoLimit = 50
     /// Taps closer than this to an existing segment insert mid-line.
@@ -42,7 +42,12 @@ struct TrailDraft: Sendable, Equatable {
     var points: [TrailPoint]
     var name: String
     var isSnapped: Bool
-    private(set) var undoStack: [[TrailPoint]]
+    /// Not persisted: a resumed draft starts with a fresh history.
+    private(set) var undoStack: [[TrailPoint]] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case points, name, isSnapped
+    }
 
     init(points: [TrailPoint] = [], name: String = "", isSnapped: Bool = false) {
         self.points = points
