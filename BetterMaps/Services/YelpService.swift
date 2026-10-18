@@ -127,6 +127,11 @@ actor YelpService {
         set { apiKeyStorage.withLock { $0 = newValue } }
     }
 
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gabrielconlon.CustomMapApp",
+        category: "yelp"
+    )
+
     static var isConfigured: Bool {
         !apiKey.isEmpty
     }
@@ -161,38 +166,12 @@ actor YelpService {
             guard let business = await fetchBusinessDetails(id: match.id) else { return .failed }
             return .found(business, reviews: await fetchReviews(businessId: business.id))
         } catch {
+            Self.logger.error("search failed: \(String(describing: type(of: error)), privacy: .public)")
             return .failed
         }
     }
 
-    func searchBusiness(name: String, coordinate: CLLocationCoordinate2D) async -> YelpBusiness? {
-        guard YelpService.isConfigured else { return nil }
-
-        var components = URLComponents(string: "https://api.yelp.com/v3/businesses/search")!
-        components.queryItems = [
-            URLQueryItem(name: "term", value: name),
-            URLQueryItem(name: "latitude", value: String(coordinate.latitude)),
-            URLQueryItem(name: "longitude", value: String(coordinate.longitude)),
-            URLQueryItem(name: "limit", value: "1"),
-            URLQueryItem(name: "radius", value: "200"),
-        ]
-
-        guard let url = components.url else { return nil }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
-
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let decoded = try JSONDecoder().decode(YelpSearchResponse.self, from: data)
-            guard let business = decoded.businesses.first else { return nil }
-            return await fetchBusinessDetails(id: business.id)
-        } catch {
-            print("[Yelp] businesses/search failed: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    func fetchBusinessDetails(id: String) async -> YelpBusiness? {
+    private func fetchBusinessDetails(id: String) async -> YelpBusiness? {
         guard YelpService.isConfigured else { return nil }
         guard let url = URL(string: "https://api.yelp.com/v3/businesses/\(id)") else { return nil }
 
@@ -200,15 +179,19 @@ actor YelpService {
         request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                Self.logger.error("business details HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return nil
+            }
             return try JSONDecoder().decode(YelpBusiness.self, from: data)
         } catch {
-            print("Yelp detail error: \(error)")
+            Self.logger.error("business details failed: \(String(describing: type(of: error)), privacy: .public)")
             return nil
         }
     }
 
-    func fetchReviews(businessId: String) async -> [YelpReview] {
+    private func fetchReviews(businessId: String) async -> [YelpReview] {
         guard YelpService.isConfigured else { return [] }
         guard let url = URL(string: "https://api.yelp.com/v3/businesses/\(businessId)/reviews?limit=3&sort_by=yelp_sort") else { return [] }
 
@@ -216,11 +199,14 @@ actor YelpService {
         request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let response = try JSONDecoder().decode(YelpReviewsResponse.self, from: data)
-            return response.reviews
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                Self.logger.error("reviews HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return []
+            }
+            return try JSONDecoder().decode(YelpReviewsResponse.self, from: data).reviews
         } catch {
-            print("Yelp reviews error: \(error)")
+            Self.logger.error("reviews failed: \(String(describing: type(of: error)), privacy: .public)")
             return []
         }
     }

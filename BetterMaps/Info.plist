@@ -36,7 +36,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to attach to your saved places.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>We need your location to show it on the map and find nearby places.</string>
+	<string>Shows where you are on the map and finds places near you.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Attach photos to your saved places.</string>
 	<key>UIApplicationSceneManifest</key>
