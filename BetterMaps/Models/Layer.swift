@@ -39,7 +39,7 @@ final class FavoriteTransitRoute {
     /// configured with cloudKitDatabase: .automatic, and CloudKit-mirrored
     /// SwiftData containers reject unique constraints with a
     /// loadIssueModelContainer fatal at startup. Dedup is enforced in
-    /// MapTabView.toggleFavoriteRoute by checking existing favorites.
+    /// MapSearchResults.toggleFavoriteRoute by checking existing favorites.
     var routeId: String = ""
     /// Display string for the chip label, e.g. "S8" or "39A".
     var shortName: String = ""

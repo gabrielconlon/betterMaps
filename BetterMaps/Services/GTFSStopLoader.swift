@@ -275,7 +275,7 @@ actor GTFSStopLoader {
 
     /// Initial stop classification based on ID/name patterns.
     /// This is a rough guess — stops are reclassified using actual GTFS route_type
-    /// data after the schedule database loads (see MapTabView.loadTransitData).
+    /// data after the schedule database loads (see TransitMapState.loadTransitData).
     /// Only match when we're very confident to avoid false positives like
     /// bus stops named "Connolly Road" being tagged as DART.
     private func classifyStop(id: String, name: String) -> TransitStop.TransitStopType {
