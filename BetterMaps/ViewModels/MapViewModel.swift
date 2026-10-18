@@ -4,32 +4,53 @@ import Observation
 
 // MARK: - Active Sheet Enum (single-sheet pattern)
 
-struct RouteContext {
-    let name: String
-    let coordinate: CLLocationCoordinate2D
-}
-
 enum ActiveSheet: Identifiable {
     case placeDetail(Place)
     case poiDetail(MKMapItem)
-    case layerSidebar
-    case routing(RouteContext?)
-    case newPlace(CLLocationCoordinate2D)
-    case transitArrivals(String, CLLocationCoordinate2D, TransitStop.TransitStopType?, String?, String?)
-    case vehicleDetail(GTFSVehiclePosition)
-    case trainDetail(IrishRailTrainPosition)
+    /// New place form. `nil` coordinate starts the pin at the map centre;
+    /// `name` and `layerId` prefill it (from the quick-add sheet).
+    case newPlace(CLLocationCoordinate2D?, name: String? = nil, layerId: UUID? = nil)
+    /// Long-press fast capture: name + one-tap "Add to <layer>".
+    case quickAdd(CLLocationCoordinate2D)
+    case transitArrivals(TransitStop)
+    case layerDetail(UUID)
+    case newLayer
+    case editLayer(UUID)
+    case trailDetail(UUID)
+    case settings
 
     var id: String {
         switch self {
         case .placeDetail(let place): return "place-\(place.id)"
         case .poiDetail(let item): return "poi-\(item.name ?? "unknown")-\(item.placemark.coordinate.latitude)"
-        case .layerSidebar: return "layerSidebar"
-        case .routing: return "routing"
         case .newPlace: return "newPlace"
-        case .transitArrivals(let name, _, _, _, _): return "transit-\(name)"
-        case .vehicleDetail(let v): return "vehicle-\(v.id)"
-        case .trainDetail(let t): return "train-\(t.id)"
+        case .quickAdd(let c): return "quickAdd-\(c.latitude),\(c.longitude)"
+        case .transitArrivals(let stop): return "transit-\(stop.id)"
+        case .layerDetail(let id): return "layer-\(id)"
+        case .newLayer: return "newLayer"
+        case .editLayer(let id): return "editLayer-\(id)"
+        case .trailDetail(let id): return "trail-\(id)"
+        case .settings: return "settings"
         }
+    }
+}
+
+/// A request to open the trail editor. `layerId` is the trail layer the user
+/// started from (a LayerCard "Draw" button); `nil` when started from the
+/// sheet's "+" menu, where MapScreen picks or creates the layer before
+/// presenting. `trailId` edits an existing trail; `resuming` reopens a kept
+/// draft.
+struct DrawTrailRequest: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let layerId: UUID?
+    let trailId: UUID?
+    let resuming: TrailDraft?
+
+    init(layerId: UUID?, trailId: UUID? = nil, resuming: TrailDraft? = nil) {
+        self.id = UUID()
+        self.layerId = layerId
+        self.trailId = trailId
+        self.resuming = resuming
     }
 }
 
@@ -39,6 +60,9 @@ class MapViewModel {
     var selectedPlace: Place?
     var activeSheet: ActiveSheet?
     var longPressCoordinate: CLLocationCoordinate2D?
+    /// Non-nil while the trail editor is open. MapScreen clears it when the
+    /// editor finishes.
+    var drawTrailRequest: DrawTrailRequest?
 
     func selectPlace(_ place: Place) {
         selectedPlace = place
@@ -49,21 +73,38 @@ class MapViewModel {
         activeSheet = .poiDetail(mapItem)
     }
 
-    func showLayerSidebar() {
-        activeSheet = .layerSidebar
-    }
-
-    func showRouting(context: RouteContext? = nil) {
-        activeSheet = .routing(context)
-    }
-
-    func startNewPlace(at coordinate: CLLocationCoordinate2D) {
+    func startNewPlace(at coordinate: CLLocationCoordinate2D?) {
         longPressCoordinate = coordinate
         activeSheet = .newPlace(coordinate)
     }
 
-    func showTransitArrivals(stationName: String, coordinate: CLLocationCoordinate2D, stopType: TransitStop.TransitStopType? = nil, stopCode: String? = nil, stopId: String? = nil) {
-        activeSheet = .transitArrivals(stationName, coordinate, stopType, stopCode, stopId)
+    /// Long-press capture: the quick-add sheet for a dropped pin.
+    func startQuickAdd(at coordinate: CLLocationCoordinate2D) {
+        longPressCoordinate = coordinate
+        activeSheet = .quickAdd(coordinate)
+    }
+
+    func showTransitArrivals(for stop: TransitStop) {
+        activeSheet = .transitArrivals(stop)
+    }
+
+    func showLayerDetail(_ layerId: UUID) {
+        activeSheet = .layerDetail(layerId)
+    }
+
+    /// A trail was tapped (map hit-test or list row).
+    func showTrailDetail(_ trailId: UUID) {
+        activeSheet = .trailDetail(trailId)
+    }
+
+    /// Open the trail editor, optionally inside `layerId` / on `trailId`.
+    func requestDrawTrail(in layerId: UUID?, trailId: UUID? = nil, resuming: TrailDraft? = nil) {
+        drawTrailRequest = DrawTrailRequest(layerId: layerId, trailId: trailId, resuming: resuming)
+    }
+
+    var isQuickAddOpen: Bool {
+        if case .quickAdd = activeSheet { return true }
+        return false
     }
 
     func dismissSheet() {

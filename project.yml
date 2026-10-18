@@ -5,17 +5,12 @@ options:
     iOS: "17.0"
   generateEmptyDirectories: true
 
-packages:
-  SwiftProtobuf:
-    url: https://github.com/apple/swift-protobuf.git
-    from: "1.28.0"
-
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
-    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "2"
+    DEVELOPMENT_TEAM: "3ED9V77D6W"
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: complete
 
@@ -28,11 +23,35 @@ targets:
       - path: BetterMaps
         excludes:
           - "**/.DS_Store"
-    dependencies:
-      - package: SwiftProtobuf
     settings:
       base:
         INFOPLIST_FILE: BetterMaps/Info.plist
         CODE_SIGN_ENTITLEMENTS: BetterMaps/BetterMaps.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.gabrielconlon.CustomMapApp
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  CustomMapAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: BetterMaps-Tests
+    dependencies:
+      - target: CustomMapApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.gabrielconlon.CustomMapAppTests
+
+schemes:
+  CustomMapApp:
+    build:
+      targets:
+        CustomMapApp: all
+        CustomMapAppTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - CustomMapAppTests

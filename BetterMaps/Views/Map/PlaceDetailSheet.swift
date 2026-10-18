@@ -5,22 +5,38 @@ import MapKit
 struct PlaceDetailSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
     @Bindable var place: Place
-    let onGetDirections: (Place) -> Void
 
     @State private var showEditForm = false
-    @State private var showAddToLayer = false
+    /// Set when the user un-ticks the place's last layer.
+    @State private var confirmDeleteOnLastLayer = false
+    /// Set once the place is being deleted so the body stops reading it.
+    @State private var isDeleting = false
     @State private var yelpBusiness: YelpBusiness?
     @State private var yelpReviews: [YelpReview] = []
-    @State private var isLoadingYelp = false
+    @State private var yelpStatus: InlineStatus?
     @State private var mapItem: MKMapItem?
 
-    var placeLayers: [Layer] {
-        (place.layers ?? []).sorted { $0.sortOrder < $1.sortOrder }
+    /// Every place layer the user could put this place in (never trails).
+    private var placeKindLayers: [Layer] {
+        allLayers.filter { $0.kind == .places }
+    }
+
+    private var memberLayerIds: Set<UUID> {
+        Set((place.layers ?? []).map(\.id))
     }
 
     var body: some View {
+        if isDeleting {
+            Color.clear
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 // Drag indicator
@@ -45,9 +61,9 @@ struct PlaceDetailSheet: View {
 
                         // Open/closed from Yelp
                         if let biz = yelpBusiness, let isOpen = biz.isCurrentlyOpen {
-                            Text(isOpen ? "Open Now" : "Closed")
+                            Text(isOpen ? "Open now" : "Closed")
                                 .font(.caption.bold())
-                                .foregroundStyle(isOpen ? .green : .red)
+                                .foregroundStyle(isOpen ? .green : .secondary)
                         }
 
                         if !place.tags.isEmpty {
@@ -58,21 +74,22 @@ struct PlaceDetailSheet: View {
                     }
 
                     Spacer()
+                }
 
-                    HStack(spacing: 10) {
-                        Button(action: { showAddToLayer = true }) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title)
-                                .foregroundStyle(.blue)
-                        }
-                        Button(action: {
-                            onGetDirections(place)
-                            dismiss()
-                        }) {
-                            Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
-                                .font(.title)
-                                .foregroundStyle(.green)
-                        }
+                PlaceActionRow(name: place.name, coordinate: place.coordinate,
+                               primaryTitle: "Edit", primarySystemImage: "pencil",
+                               onPrimary: { showEditForm = true })
+
+                // Layers: tap to add or remove; a place in two layers is an
+                // overlap on the map.
+                if !placeKindLayers.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Layers")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.secondary)
+                        LayerMembershipChips(layers: placeKindLayers,
+                                             selected: memberLayerIds,
+                                             onToggle: toggleMembership)
                     }
                 }
 
@@ -136,24 +153,6 @@ struct PlaceDetailSheet: View {
                             .foregroundStyle(.secondary)
                         Text(place.notes)
                             .font(.subheadline)
-                    }
-                }
-
-                // Layers this place belongs to
-                if !placeLayers.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("In Layers")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.secondary)
-                        ForEach(placeLayers) { layer in
-                            HStack(spacing: 8) {
-                                Image(systemName: layer.symbolName)
-                                    .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
-                                    .frame(width: 20)
-                                Text(layer.name)
-                                    .font(.subheadline)
-                            }
-                        }
                     }
                 }
 
@@ -229,48 +228,10 @@ struct PlaceDetailSheet: View {
                     }
                 }
 
-                if isLoadingYelp {
-                    HStack { Spacer(); ProgressView("Loading details...").font(.caption); Spacer() }
-                }
-
-                // Action buttons
-                HStack(spacing: 12) {
-                    Button(action: { showAddToLayer = true }) {
-                        Label("Add to Layer", systemImage: "plus.circle.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
+                if let yelpStatus {
+                    StatusView(status: yelpStatus) { _ in
+                        Task { await loadYelpData() }
                     }
-                    .buttonStyle(.borderedProminent)
-
-                    Button(action: {
-                        onGetDirections(place)
-                        dismiss()
-                    }) {
-                        Label("Directions", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
-                }
-
-                HStack(spacing: 12) {
-                    Button(action: { showEditForm = true }) {
-                        Label("Edit", systemImage: "pencil")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(action: {
-                        let placemark = MKPlacemark(coordinate: place.coordinate)
-                        let item = MKMapItem(placemark: placemark)
-                        item.name = place.name
-                        item.openInMaps()
-                    }) {
-                        Label("Apple Maps", systemImage: "arrow.up.forward.app")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
                 }
             }
             .padding(.horizontal)
@@ -283,9 +244,39 @@ struct PlaceDetailSheet: View {
         .sheet(isPresented: $showEditForm) {
             PlaceFormView(place: place)
         }
-        .sheet(isPresented: $showAddToLayer) {
-            SavedPlaceLayerSheet(place: place)
+        .confirmationDialog("Remove from all layers?", isPresented: $confirmDeleteOnLastLayer,
+                            titleVisibility: .visible) {
+            Button("Delete place", role: .destructive, action: deletePlace)
+            Button("Keep", role: .cancel) {}
+        } message: {
+            Text("The place will be deleted.")
         }
+    }
+
+    // MARK: - Layers
+
+    /// Adds or removes the place from `layer` right away. Un-ticking its
+    /// only layer would orphan it, so that asks to delete instead.
+    private func toggleMembership(_ layer: Layer) {
+        if place.isMember(of: layer) {
+            guard (place.layers ?? []).count > 1 else {
+                confirmDeleteOnLastLayer = true
+                return
+            }
+            place.removeMembership(layer)
+        } else {
+            place.addMembership(layer)
+        }
+        try? modelContext.save()
+    }
+
+    private func deletePlace() {
+        let name = place.name
+        isDeleting = true
+        modelContext.delete(place)
+        try? modelContext.save()
+        toastCenter?.show("Deleted \(name)", systemImage: "trash")
+        dismiss()
     }
 
     private func loadMapItem() async {
@@ -325,16 +316,17 @@ struct PlaceDetailSheet: View {
 
     private func loadYelpData() async {
         guard YelpService.isConfigured else { return }
-        isLoadingYelp = true
-        let service = YelpService()
-        if let biz = await service.searchBusiness(
-            name: place.name,
-            coordinate: place.coordinate
-        ) {
-            yelpBusiness = biz
-            yelpReviews = await service.fetchReviews(businessId: biz.id)
+        yelpStatus = .loading("Loading reviews…")
+        switch await YelpService().lookup(name: place.name, coordinate: place.coordinate) {
+        case .found(let business, let reviews):
+            yelpBusiness = business
+            yelpReviews = reviews
+            yelpStatus = nil
+        case .noMatch:
+            yelpStatus = nil
+        case .failed:
+            yelpStatus = .failed(message: "Couldn't load reviews right now", retryId: "yelp")
         }
-        isLoadingYelp = false
     }
 
     @ViewBuilder
@@ -345,81 +337,6 @@ struct PlaceDetailSheet: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
-        }
-    }
-}
-
-// MARK: - Manage layers for an existing saved place
-
-struct SavedPlaceLayerSheet: View {
-    @Environment(\.modelContext) private var modelContext
-    @Environment(\.dismiss) private var dismiss
-    @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
-    @Bindable var place: Place
-
-    @State private var showCreateLayer = false
-
-    var placeLayerIDs: Set<UUID> {
-        Set((place.layers ?? []).map { $0.id })
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Current Layers") {
-                    if placeLayerIDs.isEmpty {
-                        Text("Not in any layers yet.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("All Layers") {
-                    ForEach(allLayers) { layer in
-                        Button(action: { toggleLayer(layer) }) {
-                            HStack {
-                                Image(systemName: layer.symbolName)
-                                    .foregroundStyle(Color(hex: layer.colorHex) ?? .red)
-                                    .frame(width: 24)
-                                Text(layer.name)
-                                Spacer()
-                                if placeLayerIDs.contains(layer.id) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.blue)
-                                } else {
-                                    Image(systemName: "circle")
-                                        .foregroundStyle(.gray.opacity(0.4))
-                                }
-                            }
-                        }
-                        .tint(.primary)
-                    }
-
-                    Button(action: { showCreateLayer = true }) {
-                        Label("Create New Layer", systemImage: "plus.circle")
-                    }
-                }
-            }
-            .navigationTitle("Manage Layers")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .sheet(isPresented: $showCreateLayer) {
-                LayerFormView(layer: nil)
-            }
-        }
-    }
-
-    private func toggleLayer(_ layer: Layer) {
-        if placeLayerIDs.contains(layer.id) {
-            // Remove from layer
-            layer.places?.removeAll { $0.id == place.id }
-        } else {
-            // Add to layer
-            if layer.places == nil { layer.places = [] }
-            layer.places?.append(place)
         }
     }
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 import Observation
 
-enum FilterMode: String, CaseIterable {
+enum FilterMode: String, CaseIterable, Sendable {
     case union = "Any Layer"
     case intersection = "All Layers"
 
@@ -23,42 +23,42 @@ enum FilterMode: String, CaseIterable {
 @Observable
 @MainActor
 class LayerFilterViewModel {
-    var filterMode: FilterMode = .union
+    /// UserDefaults key under which `filterMode` is persisted.
+    static let filterModeDefaultsKey = "layerFilterMode"
 
+    @ObservationIgnored private let defaults: UserDefaults
+
+    /// Persisted across launches. Written on every set, read once on init.
+    var filterMode: FilterMode {
+        didSet { defaults.set(filterMode.rawValue, forKey: Self.filterModeDefaultsKey) }
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let raw = defaults.string(forKey: Self.filterModeDefaultsKey),
+           let mode = FilterMode(rawValue: raw) {
+            self.filterMode = mode
+        } else {
+            self.filterMode = .union
+        }
+    }
+
+    /// Places that pass the current filter mode, in the order of `allPlaces`.
+    /// Delegates to `LayerMath.filter`, so trail (waypoint-path) layers are
+    /// never counted toward intersection and trail-only pins are shown only
+    /// at endpoints.
     func filteredPlaces(allPlaces: [Place], allLayers: [Layer]) -> [Place] {
-        let activeLayers = allLayers.filter { $0.isVisible }
-        guard !activeLayers.isEmpty else { return [] }
-
-        let activeLayerIDs = Set(activeLayers.map { $0.id })
-
-        switch filterMode {
-        case .union:
-            return unionFilter(allPlaces: allPlaces, activeLayerIDs: activeLayerIDs)
-        case .intersection:
-            return intersectionFilter(
-                allPlaces: allPlaces,
-                activeLayerIDs: activeLayerIDs,
-                requiredCount: activeLayers.count
-            )
-        }
+        let matched = matchedPlaces(allPlaces: allPlaces, allLayers: allLayers)
+        let keep = Set(matched.map(\.id))
+        return allPlaces.filter { keep.contains($0.id) }
     }
 
-    private func unionFilter(allPlaces: [Place], activeLayerIDs: Set<UUID>) -> [Place] {
-        allPlaces.filter { place in
-            guard let placeLayers = place.layers else { return false }
-            return placeLayers.contains { activeLayerIDs.contains($0.id) }
-        }
-    }
-
-    private func intersectionFilter(
-        allPlaces: [Place],
-        activeLayerIDs: Set<UUID>,
-        requiredCount: Int
-    ) -> [Place] {
-        allPlaces.filter { place in
-            guard let placeLayers = place.layers else { return false }
-            let matchCount = placeLayers.filter { activeLayerIDs.contains($0.id) }.count
-            return matchCount == requiredCount
-        }
+    /// Same filter as `filteredPlaces` but returns the match metadata
+    /// (match count, primary layer) for callers that style pins or build the
+    /// intersection legend.
+    func matchedPlaces(allPlaces: [Place], allLayers: [Layer]) -> [MatchedPlace] {
+        let layers = allLayers.map(LayerLite.init)
+        let places = allPlaces.map(PlaceLite.init)
+        return LayerMath.filter(places, layers: layers, mode: filterMode)
     }
 }

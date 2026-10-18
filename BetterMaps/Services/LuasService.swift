@@ -43,25 +43,29 @@ struct LuasStopForecast {
 
 actor LuasService {
     private let baseURL = "https://luasforecasts.rpa.ie/xml/get.ashx"
+    private let load: TransitFeed.Loader
 
-    /// Fetch real-time forecast for a Luas stop
+    init(load: @escaping TransitFeed.Loader = TransitFeed.urlSessionLoader) {
+        self.load = load
+    }
+
+    /// Real-time forecast for a Luas stop. Every failure surfaces as
+    /// `TransitFeedError.unavailable`.
+    func forecast(stopCode: String) async throws(TransitFeedError) -> LuasStopForecast {
+        var components = URLComponents(string: baseURL)
+        components?.queryItems = [
+            URLQueryItem(name: "action", value: "forecast"),
+            URLQueryItem(name: "stop", value: stopCode),
+            URLQueryItem(name: "encrypt", value: "false"),
+        ]
+        guard let url = components?.url else { throw .unavailable }
+        let data = try await TransitFeed.fetch(url, feed: "luas.forecast", using: load)
+        return LuasForecastParser(data: data).parse()
+    }
+
+    /// Non-throwing convenience: `nil` when the feed is unavailable.
     func fetchForecast(stopCode: String) async -> LuasStopForecast? {
-        let endpoint = "\(baseURL)?action=forecast&stop=\(stopCode)&encrypt=false"
-        guard let url = URL(string: endpoint) else { return nil }
-        let start = Date()
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            let parser = LuasForecastParser(data: data)
-            let forecast = parser.parse()
-            await APILogger.shared.log(service: "Luas", endpoint: "forecast/\(stopCode)", status: .success, durationMs: ms)
-            return forecast
-        } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "Luas", endpoint: "forecast/\(stopCode)", status: .failure, durationMs: ms, detail: error.localizedDescription)
-            return nil
-        }
+        try? await forecast(stopCode: stopCode)
     }
 
     /// Known Luas stops (hardcoded since there's no stops API)

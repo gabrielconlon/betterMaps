@@ -1,4 +1,5 @@
 import Foundation
+import os
 import CoreLocation
 
 // MARK: - Yelp API Models
@@ -118,17 +119,73 @@ struct YelpReviewsResponse: Decodable {
 // MARK: - Yelp Service
 
 actor YelpService {
-    // Store your Yelp API key here. Get one free at https://www.yelp.com/developers
-    // For production, use Keychain or environment variable instead.
-    nonisolated(unsafe) static var apiKey: String = ""
+    /// Keychain account holding the optional Yelp Fusion key.
+    static let keychainAccount = "yelpAPIKey"
+    /// Where older builds kept the key in plain UserDefaults.
+    static let legacyDefaultsKey = "yelpAPIKey"
+
+    /// In-memory copy of the Keychain value; nil until first read.
+    private static let apiKeyStorage = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    /// The user's Yelp key, kept in the Keychain. The first read moves a key
+    /// left in UserDefaults by older builds into the Keychain and deletes it.
+    static var apiKey: String {
+        get {
+            apiKeyStorage.withLock { cached in
+                if let cached { return cached }
+                let loaded = loadKey()
+                cached = loaded
+                return loaded
+            }
+        }
+        set {
+            let key = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            apiKeyStorage.withLock { $0 = key }
+            if KeychainStore().set(key, for: keychainAccount) {
+                UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
+            }
+        }
+    }
+
+    /// Reads the key, migrating a legacy UserDefaults copy first.
+    static func loadKey(keychain: KeychainStore = KeychainStore(),
+                        defaults: UserDefaults = .standard) -> String {
+        migrateLegacyKey(keychain: keychain, defaults: defaults)
+        return keychain.string(for: keychainAccount) ?? ""
+    }
+
+    /// One-time move of the key from UserDefaults to the Keychain. The
+    /// plain-text copy is deleted only once the Keychain holds a key.
+    static func migrateLegacyKey(keychain: KeychainStore = KeychainStore(),
+                                 defaults: UserDefaults = .standard) {
+        guard let legacy = defaults.string(forKey: legacyDefaultsKey) else { return }
+        let trimmed = legacy.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || keychain.string(for: keychainAccount) != nil
+            || keychain.set(trimmed, for: keychainAccount) {
+            defaults.removeObject(forKey: legacyDefaultsKey)
+        }
+    }
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gabrielconlon.CustomMapApp",
+        category: "yelp"
+    )
 
     static var isConfigured: Bool {
         !apiKey.isEmpty
     }
 
-    func searchBusiness(name: String, coordinate: CLLocationCoordinate2D) async -> YelpBusiness? {
-        guard YelpService.isConfigured else { return nil }
+    /// Outcome of looking a place up, so callers can tell "Yelp has no match"
+    /// (show nothing) from "the request failed" (offer a retry).
+    enum Lookup: Sendable {
+        case found(YelpBusiness, reviews: [YelpReview])
+        case noMatch
+        case failed
+    }
 
+    /// Business details plus top reviews for the place nearest `coordinate`.
+    func lookup(name: String, coordinate: CLLocationCoordinate2D) async -> Lookup {
+        guard YelpService.isConfigured else { return .noMatch }
         var components = URLComponents(string: "https://api.yelp.com/v3/businesses/search")!
         components.queryItems = [
             URLQueryItem(name: "term", value: name),
@@ -137,28 +194,23 @@ actor YelpService {
             URLQueryItem(name: "limit", value: "1"),
             URLQueryItem(name: "radius", value: "200"),
         ]
-
-        guard let url = components.url else { return nil }
+        guard let url = components.url else { return .failed }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
-
-        let start = Date()
         do {
-            let (data, urlResponse) = try await URLSession.shared.data(for: request)
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.updateQuota(service: "Yelp", from: urlResponse)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .failed }
             let decoded = try JSONDecoder().decode(YelpSearchResponse.self, from: data)
-            await APILogger.shared.log(service: "Yelp", endpoint: "businesses/search?term=\(name)", status: .success, durationMs: ms)
-            guard let business = decoded.businesses.first else { return nil }
-            return await fetchBusinessDetails(id: business.id)
+            guard let match = decoded.businesses.first else { return .noMatch }
+            guard let business = await fetchBusinessDetails(id: match.id) else { return .failed }
+            return .found(business, reviews: await fetchReviews(businessId: business.id))
         } catch {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            await APILogger.shared.log(service: "Yelp", endpoint: "businesses/search", status: .failure, durationMs: ms, detail: error.localizedDescription)
-            return nil
+            Self.logger.error("search failed: \(String(describing: type(of: error)), privacy: .public)")
+            return .failed
         }
     }
 
-    func fetchBusinessDetails(id: String) async -> YelpBusiness? {
+    private func fetchBusinessDetails(id: String) async -> YelpBusiness? {
         guard YelpService.isConfigured else { return nil }
         guard let url = URL(string: "https://api.yelp.com/v3/businesses/\(id)") else { return nil }
 
@@ -166,15 +218,19 @@ actor YelpService {
         request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                Self.logger.error("business details HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return nil
+            }
             return try JSONDecoder().decode(YelpBusiness.self, from: data)
         } catch {
-            print("Yelp detail error: \(error)")
+            Self.logger.error("business details failed: \(String(describing: type(of: error)), privacy: .public)")
             return nil
         }
     }
 
-    func fetchReviews(businessId: String) async -> [YelpReview] {
+    private func fetchReviews(businessId: String) async -> [YelpReview] {
         guard YelpService.isConfigured else { return [] }
         guard let url = URL(string: "https://api.yelp.com/v3/businesses/\(businessId)/reviews?limit=3&sort_by=yelp_sort") else { return [] }
 
@@ -182,11 +238,14 @@ actor YelpService {
         request.setValue("Bearer \(YelpService.apiKey)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let response = try JSONDecoder().decode(YelpReviewsResponse.self, from: data)
-            return response.reviews
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                Self.logger.error("reviews HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return []
+            }
+            return try JSONDecoder().decode(YelpReviewsResponse.self, from: data).reviews
         } catch {
-            print("Yelp reviews error: \(error)")
+            Self.logger.error("reviews failed: \(String(describing: type(of: error)), privacy: .public)")
             return []
         }
     }

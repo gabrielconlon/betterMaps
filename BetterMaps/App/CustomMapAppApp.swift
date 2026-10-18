@@ -1,116 +1,98 @@
 import SwiftUI
 import SwiftData
+import os
 
-@main
-struct CustomMapAppApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Place.self,
-            Layer.self,
-            WeatherRule.self,
-            SavedRoute.self,
-            UserProfile.self,
-            FavoriteTransitRoute.self
-        ])
-        // Try CloudKit-backed first so saved places sync between the user's
-        // devices. If the cloud-side schema migration fails (which can hang
-        // ModelContainer.init indefinitely after a schema change like adding
-        // FavoriteTransitRoute / pathId / sortIndex / pathNamesJSON), fall
-        // back to a local-only store so the app still launches. The user
-        // reported a hard white-screen hang with no log progress past the
-        // initial GTFS route lookup — exactly the signature of a failed
-        // CloudKit init blocking the WindowGroup body.
-        let cloudConfig = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: false,
-            cloudKitDatabase: .automatic
-        )
+/// Builds the app's SwiftData container. Kept separate from the `App` so
+/// tests can exercise the exact schema the app ships with.
+enum AppModelContainer {
+    /// Every persisted entity. Dropping an entity here is a lightweight
+    /// migration (see `SchemaUpgradeTests`); renaming one is not.
+    static let schema = Schema([
+        Place.self,
+        Layer.self,
+        Trail.self,
+        FavoriteTransitRoute.self
+    ])
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gabrielconlon.CustomMapApp",
+        category: "storage"
+    )
+
+    /// CloudKit-backed store first so saved places sync between the user's
+    /// devices. If that throws (no iCloud account, container misconfigured,
+    /// cloud-side schema rejected), fall back to the same on-disk store
+    /// without sync. If even that fails, launch with an in-memory store so
+    /// the UI still comes up; nothing is persisted in that mode.
+    /// Throwaway in-memory container (test host).
+    static func makeInMemory() -> ModelContainer {
+        let memory = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         do {
-            return try ModelContainer(for: schema, configurations: [cloudConfig])
+            return try ModelContainer(for: schema, configurations: [memory])
         } catch {
-            print("[BetterMaps] CloudKit ModelContainer failed (\(error.localizedDescription)) — falling back to local-only")
-            let localConfig = ModelConfiguration(
+            preconditionFailure("BetterMaps could not create an in-memory SwiftData store: \(error)")
+        }
+    }
+
+    static func make() -> ModelContainer {
+        do {
+            let cloud = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: false,
+                cloudKitDatabase: .automatic
+            )
+            return try ModelContainer(for: schema, configurations: [cloud])
+        } catch {
+            logger.error("CloudKit store failed, falling back to local-only: \(String(describing: error), privacy: .public)")
+        }
+
+        do {
+            let local = ModelConfiguration(
                 schema: schema,
                 isStoredInMemoryOnly: false,
                 cloudKitDatabase: .none
             )
-            do {
-                return try ModelContainer(for: schema, configurations: [localConfig])
-            } catch {
-                fatalError("Could not create local ModelContainer either: \(error)")
-            }
+            return try ModelContainer(for: schema, configurations: [local])
+        } catch {
+            logger.fault("Local store failed too, running in memory; changes will NOT be saved: \(String(describing: error), privacy: .public)")
         }
-    }()
+
+        do {
+            let memory = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: true,
+                cloudKitDatabase: .none
+            )
+            return try ModelContainer(for: schema, configurations: [memory])
+        } catch {
+            // An in-memory store over a compiled-in schema cannot realistically
+            // fail; if it does, the binary itself is broken.
+            logger.fault("In-memory store failed: \(String(describing: error), privacy: .public)")
+            preconditionFailure("BetterMaps could not create any SwiftData store: \(error)")
+        }
+    }
+}
+
+@main
+struct CustomMapAppApp: App {
+    /// True when this process only hosts the unit tests. The map UI (and the
+    /// CloudKit store, location, transit loading it starts) then stays down so
+    /// background app work can't race or crash whichever test is running.
+    private static let isHostingTests =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
+    let sharedModelContainer: ModelContainer = isHostingTests
+        ? AppModelContainer.makeInMemory()
+        : AppModelContainer.make()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .onAppear {
-                    seedDefaultWeatherRules()
-                    seedDefaultUserProfile()
-                    // Load API keys from UserDefaults
-                    if let key = UserDefaults.standard.string(forKey: "yelpAPIKey"), !key.isEmpty {
-                        YelpService.apiKey = key
-                    }
-                    if let key = UserDefaults.standard.string(forKey: "orsAPIKey"), !key.isEmpty {
-                        BicycleRoutingService.apiKey = key
-                    }
-                    if let key = UserDefaults.standard.string(forKey: "ntaAPIKey"), !key.isEmpty {
-                        NTATransitService.apiKey = key
-                    }
-                    // Load cached route name lookup
-                    GTFSStopLoader.loadCachedRouteNames()
-                }
-                .task {
-                    // Pre-load GTFS stops cache if setup was already completed.
-                    // First-time setup is handled by GTFSSetupView before the map appears.
-                    if UserDefaults.standard.bool(forKey: "gtfsSetupComplete") {
-                        _ = await GTFSStopLoader().loadStops()
-                    }
-                }
+            if Self.isHostingTests {
+                Color.clear
+            } else {
+                ContentView()
+            }
         }
         .modelContainer(sharedModelContainer)
-    }
-
-    private func seedDefaultWeatherRules() {
-        let context = sharedModelContainer.mainContext
-        let descriptor = FetchDescriptor<WeatherRule>()
-        let count = (try? context.fetchCount(descriptor)) ?? 0
-        guard count == 0 else { return }
-
-        let defaults = [
-            WeatherRule(
-                name: "Rain prefers driving",
-                conditionType: "rain",
-                suppressedMode: "walking",
-                actionType: "deprioritize"
-            ),
-            WeatherRule(
-                name: "Cold weather no walking",
-                conditionType: "temperature",
-                temperatureThresholdF: 32.0,
-                suppressedMode: "walking",
-                actionType: "deprioritize"
-            ),
-            WeatherRule(
-                name: "High wind no walking",
-                conditionType: "wind",
-                windSpeedThresholdMPH: 25.0,
-                suppressedMode: "walking",
-                actionType: "deprioritize"
-            ),
-        ]
-
-        for rule in defaults {
-            context.insert(rule)
-        }
-    }
-
-    private func seedDefaultUserProfile() {
-        let context = sharedModelContainer.mainContext
-        let descriptor = FetchDescriptor<UserProfile>()
-        let count = (try? context.fetchCount(descriptor)) ?? 0
-        guard count == 0 else { return }
-        context.insert(UserProfile())
     }
 }

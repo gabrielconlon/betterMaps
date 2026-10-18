@@ -130,8 +130,7 @@ enum TransitColors {
     static let dartPin    = Color(red: 1.00, green: 0.72, blue: 0.48)  // pastel peach
     static let railPin    = Color(red: 0.76, green: 0.61, blue: 0.91)  // pastel lilac
 
-    // Hex equivalents — used by TransitStopType.colorHex for pin rendering and
-    // by sidebar legends. Keep in lock-step with the Color values above.
+    // Hex equivalents — used by `pinHex(_:)` and by sidebar legends. Keep in lock-step with the Color values above.
     static let busPinHex     = "#75A8FF"
     static let luasRedPinHex = "#FF8C8C"
     static let luasGrnPinHex = "#7FCEA1"
@@ -140,8 +139,8 @@ enum TransitColors {
 
     /// Background line color for the Luas/DART/Rail network overlay. Same hue
     /// as the pin so a stop and its line visibly share identity.
-    static func layer(_ mode: TransitLegMode) -> Color {
-        switch mode {
+    static func layer(_ kind: TransitLayerKind) -> Color {
+        switch kind {
         case .bus:  return busPin.opacity(0.7)
         case .luas: return luasGrnPin.opacity(0.7)   // Green line — Red is `luasRedLayer`
         case .dart: return dartPin.opacity(0.7)
@@ -149,35 +148,59 @@ enum TransitColors {
         }
     }
 
-    /// Saturated colors for the *active selected* route polyline so it pops
-    /// against the pastel network underneath. These stay vivid on purpose —
-    /// they're a foreground action layer, not background context.
-    static func route(_ mode: TransitLegMode) -> Color {
-        switch mode {
-        case .bus:  return Color(red: 0.0, green: 0.48, blue: 1.0)
-        case .luas: return Color(red: 0.1, green: 0.75, blue: 0.4)
-        case .dart: return Color(red: 1.0, green: 0.55, blue: 0.0)
-        case .rail: return Color(red: 0.55, green: 0.25, blue: 0.85)
+    /// Pin hex for a network (Luas = Green; Red-line stops use `pin(for:)`).
+    static func pinHex(_ kind: TransitLayerKind) -> String {
+        switch kind {
+        case .bus:  return busPinHex
+        case .luas: return luasGrnPinHex
+        case .dart: return dartPinHex
+        case .rail: return railPinHex
         }
     }
 
-    /// Route color from a string key (for views using raw mode strings)
-    static func route(for modeKey: String) -> Color {
-        if let mode = TransitLegMode(rawValue: modeKey) {
-            return route(mode)
+    static func pin(_ kind: TransitLayerKind) -> Color {
+        switch kind {
+        case .bus:  return busPin
+        case .luas: return luasGrnPin
+        case .dart: return dartPin
+        case .rail: return railPin
         }
-        if modeKey == "walk" { return walkColor }
-        return .gray
     }
+
+    /// The one colour source for a network + Luas line: Luas Red is coral,
+    /// Luas Green mint, DART peach, other rail lilac, bus cornflower.
+    /// Pins, network lines and route chips all resolve through here.
+    static func pin(_ kind: TransitLayerKind, line: String?) -> Color {
+        if kind == .luas && line?.lowercased() == "red" { return luasRedPin }
+        return pin(kind)
+    }
+
+    /// Pin color for a stop: Luas Red-line stops are coral, everything else
+    /// takes its network color.
+    static func pin(for stop: TransitStop) -> Color {
+        pin(stop.kind, line: stop.line)
+    }
+
+    /// Colour for a GTFS route (route chips): same hue as its stops' pins.
+    static func pin(for route: TransitRoute) -> Color {
+        pin(route.kind, line: route.kind == .luas ? route.short : nil)
+    }
+
+    /// `pin(for:)` from a stored route's GTFS type and short name.
+    static func pin(routeType: Int, shortName: String) -> Color {
+        pin(for: TransitRoute(id: "", short: shortName, long: "", type: routeType))
+    }
+
+    /// Stroke for a network line; the Luas Red line is coral.
+    static func line(for line: TransitLine) -> Color {
+        pin(line.kind, line: line.line).opacity(0.7)
+    }
+
+    /// Highlighted (favorite-chip) route stroke.
+    static let highlightedRoute = Color.blue.opacity(0.85)
 
     /// Luas Red line — pastel coral with the same .opacity treatment as the
     /// other network lines so all four (LuasRed/LuasGreen/DART/Rail) read
     /// as a coherent overlay set.
     static let luasRedLayer = luasRedPin.opacity(0.7)
-    static let luasRedRoute = Color(red: 0.95, green: 0.25, blue: 0.25)  // saturated red for selected route
-
-    // Walk & transfer styling
-    static let walkColor = Color.gray
-    static let walkDash = StrokeStyle(lineWidth: 3, dash: [6, 4])
-    static let transferDash = StrokeStyle(lineWidth: 2, dash: [4, 4])
 }

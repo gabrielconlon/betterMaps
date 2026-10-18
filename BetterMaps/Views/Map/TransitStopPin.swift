@@ -1,31 +1,24 @@
 import SwiftUI
 
+/// A transit stop pin. Tappable at every zoom: the far-zoom dot sits in a
+/// 24pt hit area, the larger sizes keep the 44pt HIG target.
 struct TransitStopPin: View {
     let stop: TransitStop
-    let zoomDelta: Double
-    /// Optional color override (e.g., combined DART+Rail color)
-    var colorOverride: Color?
+    let size: AnnotationSize
 
-    var size: AnnotationSize {
-        AnnotationSize(latitudeDelta: zoomDelta)
-    }
-
-    /// Whether this pin is tappable at the current zoom (dots are too small to tap intentionally)
-    var isTappable: Bool { size != .dot }
-
-    var color: Color {
-        colorOverride ?? Color(hex: stop.type.colorHex) ?? .blue
-    }
+    /// Network color; Luas Red-line stops are coral.
+    var color: Color { TransitColors.pin(for: stop) }
 
     var body: some View {
         switch size {
         case .dot:
             Circle()
                 .fill(color)
-                .frame(width: 6, height: 6)
-                .allowsHitTesting(false) // prevent tiny dots from stealing taps
+                .frame(width: 8, height: 8)
+                .frame(width: 24, height: 24)
+                .contentShape(Circle())
         case .compact:
-            Image(systemName: stop.type.systemImage)
+            Image(systemName: stop.kind.systemImage)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
                 .padding(5)
@@ -38,7 +31,7 @@ struct TransitStopPin: View {
                 .contentShape(Rectangle())
         case .full:
             VStack(spacing: 0) {
-                Image(systemName: stop.type.systemImage)
+                Image(systemName: stop.kind.systemImage)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                     .padding(7)

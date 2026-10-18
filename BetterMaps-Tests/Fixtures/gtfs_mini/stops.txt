@@ -1,0 +1,10 @@
+stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,zone_id,stop_url,location_type,parent_station,wheelchair_boarding
+8220DB000002,2,Parnell Square,"Parnell Square, stop 2",53.35320,-6.26340,,,,,0
+8220DB000003,3,O'Connell St Upper,,53.35180,-6.26120,,,,,0
+8220DB000004,4,Eden Quay,,53.34790,-6.25620,,,,,0
+8220GA00408,998021,Abbey St.,,53.348504,-6.25845,,,,,0
+8220GA00409,998021,Abbey St.,,53.34859089,-6.258494272,,,,,0
+8220GA00404,998020,Jervis,,53.34768301,-6.265275464,,,,,0
+8220IR0025,999124,Tara Street,,53.347264,-6.254359,,,,,0
+8240IR0017,999108,Howth,,53.388893,-6.074211,,,,,0
+8350IR0122,999141,Greystones,,53.144026,-6.061128,,,,,0

@@ -10,7 +10,7 @@ enum LayerKind: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .places: return "Places"
-        case .waypointPath: return "Waypoint Path"
+        case .waypointPath: return "Trails"
         }
     }
 
@@ -24,7 +24,7 @@ enum LayerKind: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .places: return "Pins for spots you want to remember"
-        case .waypointPath: return "Connects points into a route by nearest neighbors"
+        case .waypointPath: return "Walks you draw on the map"
         }
     }
 }
@@ -39,7 +39,7 @@ final class FavoriteTransitRoute {
     /// configured with cloudKitDatabase: .automatic, and CloudKit-mirrored
     /// SwiftData containers reject unique constraints with a
     /// loadIssueModelContainer fatal at startup. Dedup is enforced in
-    /// MapTabView.toggleFavoriteRoute by checking existing favorites.
+    /// SheetSearchResults.toggleFavoriteRoute by checking existing favorites.
     var routeId: String = ""
     /// Display string for the chip label, e.g. "S8" or "39A".
     var shortName: String = ""
@@ -85,10 +85,21 @@ final class Layer {
     /// Use `pathNames` (computed) to read/write — handles encode/decode and
     /// returns an empty dict on a malformed string instead of crashing.
     var pathNamesJSON: String = "{}"
+    /// Named trails in this waypoint-path layer, one per distinct `Place.pathId`.
+    /// Populated lazily by `TrailMigrator.ensureTrails`.
+    @Relationship(deleteRule: .cascade, inverse: \Trail.layer)
+    var trails: [Trail]? = []
 
     var kind: LayerKind {
         get { LayerKind(rawValue: kindRaw) ?? .places }
         set { kindRaw = newValue.rawValue }
+    }
+
+    /// True when the layer holds any places or trails. A layer's kind can
+    /// only change while this is false: switching a Places layer to Trails
+    /// would otherwise turn saved places into trail points.
+    var hasItems: Bool {
+        !(places ?? []).isEmpty || !(trails ?? []).isEmpty
     }
 
     /// User-facing names for each pathId in this waypoint layer. Read-side
