@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Export settings for scripts/release.sh. "app-store-connect" is the Xcode 15.3+
+	     spelling of what used to be "app-store". -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>3ED9V77D6W</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!-- Symbols, so TestFlight crash reports name functions instead of addresses. This is
+	     the difference between a useful crash report from your alpha tester and a wall of
+	     hex, so leave it on. -->
+	<key>uploadSymbols</key>
+	<true/>
+	<!-- Export to disk; release.sh does the upload as a separate step so a failed upload
+	     does not mean a re-archive. -->
+	<key>destination</key>
+	<string>export</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>
