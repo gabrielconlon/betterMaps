@@ -164,8 +164,15 @@ enum TransitFeed {
         return keywords.contains { lower.contains($0) }
     }
 
+    /// Live boards are useless after a few seconds, and the system default
+    /// (60 s) left the sheet spinning through a TFI / Irish Rail outage
+    /// instead of failing over to the timetable.
+    static let liveRequestTimeout: TimeInterval = 10
+
     static let urlSessionLoader: Loader = { url in
-        try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: url, timeoutInterval: TransitFeed.liveRequestTimeout)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        return try await URLSession.shared.data(for: request)
     }
 
     static let logger = Logger(

@@ -71,7 +71,7 @@ struct PinnedStopsGroup: View {
     }
 }
 
-/// Download / progress / last-updated line for the offline bus timetable.
+/// Download / progress / last-updated line for the offline timetable.
 struct BusTimetableStatusRow: View {
     let model: BusTimetableModel
 
@@ -83,7 +83,7 @@ struct BusTimetableStatusRow: View {
                 .frame(width: 34)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Bus timetable")
+                Text("Timetable")
                     .font(.subheadline)
                 Text(model.statusText)
                     .font(.caption)

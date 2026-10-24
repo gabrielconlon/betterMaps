@@ -25,12 +25,17 @@ struct TransitArrivalsView: View {
     /// least once, so an empty list really means "nothing due".
     @State private var liveLoadedOnce = false
 
-    // Bus timetable (downloadable SQLite)
+    // Scheduled times (downloadable SQLite). Every stop kind: for Luas /
+    // DART / rail it is what's left when the live feeds are down.
     @State private var timetable: BusTimetableService.DownloadState?
     @State private var busDepartures: [BusDeparture] = []
     @State private var busRoutes: [TransitRoute] = []
     @State private var busLoaded = false
     @State private var busLoadedAt: Date?
+    /// False once today is past the installed timetable's service window, so
+    /// an empty board reads "out of date" rather than "no departures".
+    @State private var timetableCoversToday = true
+    @State private var isUpdatingTimetable = false
     @State private var downloadWatcher: Task<Void, Never>?
 
     private let railService = IrishRailService()
@@ -205,9 +210,7 @@ struct TransitArrivalsView: View {
                         .padding(.vertical, 4)
                 }
 
-                if showsBus {
-                    busSection
-                }
+                timetableSection
             }
             .padding(.horizontal)
             .padding(.bottom)
@@ -216,7 +219,6 @@ struct TransitArrivalsView: View {
             await loadArrivals()
         }
         .task {
-            guard showsBus else { return }
             await prepareTimetable()
         }
         .onDisappear {
@@ -243,7 +245,7 @@ struct TransitArrivalsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text("Can't reach live times")
+            Text(timetableIsReady ? "Can't reach live times. Scheduled times below." : "Can't reach live times")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -272,20 +274,27 @@ struct TransitArrivalsView: View {
             .foregroundStyle(.primary)
     }
 
-    // MARK: - Bus timetable section
+    // MARK: - Timetable section
+
+    private var timetableIsReady: Bool {
+        if case .ready = timetable { return true }
+        return false
+    }
 
     @ViewBuilder
-    private var busSection: some View {
+    private var timetableSection: some View {
         switch timetable {
         case .none:
             EmptyView()
         case .notDownloaded:
             timetableCard {
                 Button(action: startDownload) {
-                    Label("Download bus timetable (13 MB)", systemImage: "arrow.down.circle")
+                    Label("Download timetable (13 MB)", systemImage: "arrow.down.circle")
                         .font(.subheadline.bold())
                 }
-                Text("Scheduled bus times, available offline once downloaded.")
+                Text(showsLive
+                     ? "Scheduled times for when live times can't be reached, available offline."
+                     : "Scheduled bus times, available offline once downloaded.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -332,7 +341,7 @@ struct TransitArrivalsView: View {
                 FlowLayout(spacing: 6) {
                     ForEach(busRoutes) { route in
                         Button(action: { onSelectRoute?(route.id) }) {
-                            Text(route.short)
+                            Text(Self.routeLabel(route.short))
                                 .font(.caption.bold())
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
@@ -348,7 +357,7 @@ struct TransitArrivalsView: View {
 
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Next Departures")
+                Text(showsLive ? "Timetable" : "Next Departures")
                     .font(.subheadline.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -367,16 +376,33 @@ struct TransitArrivalsView: View {
 
             if busLoaded && upcoming.isEmpty {
                 timetableCard {
-                    Label("No scheduled departures in the next 2 hours", systemImage: "bus.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if timetableCoversToday {
+                        Label("No scheduled departures in the next 2 hours",
+                              systemImage: showsBus ? "bus.fill" : "tram.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        HStack {
+                            Label("Timetable is out of date", systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            if isUpdatingTimetable {
+                                ProgressView()
+                            } else {
+                                Button("Update") { Task { await updateTimetable() } }
+                                    .font(.caption.bold())
+                                    .frame(minWidth: 44, minHeight: 44)
+                            }
+                        }
+                    }
                 }
             }
 
             ForEach(upcoming.prefix(10)) { dep in
                 Button(action: { onSelectRoute?(dep.routeId) }) {
                     HStack {
-                        Text(dep.routeShortName)
+                        Text(Self.routeLabel(dep.routeShortName))
                             .font(.subheadline.bold())
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
@@ -440,15 +466,32 @@ struct TransitArrivalsView: View {
         async let routes = service.routes(forStop: stop.id, altIds: stop.altIds)
         busDepartures = (try? await departures) ?? []
         busRoutes = (try? await routes) ?? []
+        timetableCoversToday = await service.covers(Date())
         busLoaded = true
         busLoadedAt = Date()
         if lastUpdated == nil || !showsLive { lastUpdated = Date() }
     }
 
+    /// Fetches a newer timetable (the installed one keeps serving until it is
+    /// swapped in), then reloads the board.
+    private func updateTimetable() async {
+        isUpdatingTimetable = true
+        _ = await BusTimetableService.shared.checkForUpdate()
+        timetable = await BusTimetableService.shared.currentState()
+        await loadBus()
+        isUpdatingTimetable = false
+    }
+
+    /// TFI gives most Irish Rail routes the short name "rail"; everything
+    /// else ("39A", "Red", "DART", "Commuter") reads fine as published.
+    nonisolated static func routeLabel(_ short: String) -> String {
+        short.lowercased() == "rail" ? "Rail" : short
+    }
+
     /// Re-queries the timetable once fewer than 5 departures remain, at
     /// most once a minute (a quiet stop may simply have few buses).
     private func reloadBusIfRunningLow() async {
-        guard showsBus, busLoaded, case .ready = timetable else { return }
+        guard busLoaded, case .ready = timetable else { return }
         let now = Date()
         guard BusDeparture.upcoming(busDepartures, now: now).count < 5,
               now.timeIntervalSince(busLoadedAt ?? .distantPast) >= 60 else { return }
@@ -496,7 +539,7 @@ struct TransitArrivalsView: View {
         guard !isRefreshing else { return }
         isRefreshing = true
         await loadArrivals()
-        if showsBus, case .ready = timetable { await loadBus() }
+        if case .ready = timetable { await loadBus() }
         isRefreshing = false
     }
 
