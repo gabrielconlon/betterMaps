@@ -149,4 +149,56 @@ final class BusTimetableDownloadTests: XCTestCase {
         XCTAssertEqual(model.updateResultText, "Up to date")
         XCTAssertEqual(BusTimetableModel.text(for: .updated), "Updated")
     }
+
+    // MARK: - Install location
+
+    /// Builds before the move kept the timetable in Caches; the first launch
+    /// after the update must move it, not ask for the download again.
+    func testLegacyInstallIsMovedAndServesQueries() async throws {
+        let source = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "timetable_mini", withExtension: "sqlite"))
+        let legacy = dir.appendingPathComponent("Caches/transit_timetable.sqlite")
+        try FileManager.default.createDirectory(at: legacy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: legacy)
+        try Data(#"{"built":"2026-10-18"}"#.utf8).write(to: BusTimetableService.manifestURL(for: legacy))
+        let destination = dir.appendingPathComponent("Support/Transit/transit_timetable.sqlite")
+
+        let service = BusTimetableService(databaseURL: destination, legacyDatabaseURL: legacy,
+                                          session: StubManifestProtocol.session())
+        let state = await service.currentState()
+
+        XCTAssertEqual(state, .ready(builtDate: "2026-10-18"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: BusTimetableService.manifestURL(for: destination).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+    }
+
+    func testLegacyInstallNeverOverwritesCurrentOne() throws {
+        let legacy = dir.appendingPathComponent("old.sqlite")
+        let current = dir.appendingPathComponent("new.sqlite")
+        try Data("old".utf8).write(to: legacy)
+        try Data("new".utf8).write(to: current)
+
+        XCTAssertFalse(BusTimetableService.moveLegacyInstall(from: legacy, to: current))
+        XCTAssertEqual(try Data(contentsOf: current), Data("new".utf8))
+        XCTAssertFalse(BusTimetableService.moveLegacyInstall(from: dir.appendingPathComponent("missing.sqlite"),
+                                                             to: dir.appendingPathComponent("other.sqlite")))
+    }
+
+    // MARK: - Service window
+
+    func testCoverageAgainstValidTo() {
+        XCTAssertTrue(BusTimetableService.covers(day: "20261216", validTo: "20261216"))
+        XCTAssertFalse(BusTimetableService.covers(day: "20261217", validTo: "20261216"))
+        XCTAssertTrue(BusTimetableService.covers(day: "20270101", validTo: nil), "no window recorded: don't claim it's stale")
+    }
+
+    func testFixtureCoversItsWindowOnly() async throws {
+        let service = try readyService()
+        let inside = try XCTUnwrap(BusTimetableService.isoDay("2026-10-20")).addingTimeInterval(12 * 3600)
+        let after = try XCTUnwrap(BusTimetableService.isoDay("2026-12-20")).addingTimeInterval(12 * 3600)
+        let coversInside = await service.covers(inside)
+        let coversAfter = await service.covers(after)
+        XCTAssertTrue(coversInside)
+        XCTAssertFalse(coversAfter)
+    }
 }

@@ -56,7 +56,7 @@ enum BusTimetableError: Error, Sendable {
 /// attaches to the in-flight download. Failures surface only as the human
 /// message in `.failed`.
 actor BusTimetableService {
-    static let shared = BusTimetableService()
+    static let shared = BusTimetableService(legacyDatabaseURL: BusTimetableService.legacyDatabaseURL)
 
     enum DownloadState: Sendable, Equatable {
         case notDownloaded
@@ -90,7 +90,17 @@ actor BusTimetableService {
     static var remoteDatabaseURL: URL { releaseBase.appendingPathComponent("transit_timetable.sqlite.gz") }
     static var remoteManifestURL: URL { releaseBase.appendingPathComponent("manifest.json") }
 
+    /// Application Support, not Caches: iOS purges Caches under storage
+    /// pressure, which silently took the timetable away and asked for the
+    /// 13 MB download again. Excluded from backup since it can be fetched.
     static var defaultDatabaseURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Transit", isDirectory: true)
+            .appendingPathComponent("transit_timetable.sqlite")
+    }
+
+    /// Where builds before the move to Application Support installed it.
+    static var legacyDatabaseURL: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("transit_timetable.sqlite")
     }
@@ -98,6 +108,7 @@ actor BusTimetableService {
     private static let log = Logger(subsystem: "com.gabrielconlon.CustomMapApp", category: "timetable")
 
     private let databaseURL: URL
+    private let legacyDatabaseURL: URL?
     private let session: URLSession
     private var db: GTFSDatabase?
     private(set) var state: DownloadState = .notDownloaded
@@ -112,14 +123,48 @@ actor BusTimetableService {
 
     /// - Parameter databaseURL: where the SQLite lives. Tests point this at
     ///   a copy of the fixture.
-    init(databaseURL: URL = BusTimetableService.defaultDatabaseURL, session: URLSession = .shared) {
+    /// - Parameter legacyDatabaseURL: an older install location; a timetable
+    ///   found there is moved to `databaseURL` on first use.
+    init(databaseURL: URL = BusTimetableService.defaultDatabaseURL,
+         legacyDatabaseURL: URL? = nil,
+         session: URLSession = .shared) {
         self.databaseURL = databaseURL
+        self.legacyDatabaseURL = legacyDatabaseURL
         self.session = session
     }
 
     /// Sidecar copy of the manifest the installed file came from.
-    private var localManifestURL: URL {
+    private var localManifestURL: URL { Self.manifestURL(for: databaseURL) }
+
+    static func manifestURL(for databaseURL: URL) -> URL {
         databaseURL.deletingPathExtension().appendingPathExtension("manifest.json")
+    }
+
+    /// Moves a timetable (and its manifest sidecar) from `legacy` to
+    /// `destination` when only the legacy copy exists, so an update never
+    /// costs an installed user the download. Returns true when it moved.
+    @discardableResult
+    static func moveLegacyInstall(from legacy: URL, to destination: URL) -> Bool {
+        let fm = FileManager.default
+        guard legacy != destination,
+              !fm.fileExists(atPath: destination.path),
+              fm.fileExists(atPath: legacy.path) else { return false }
+        do {
+            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.moveItem(at: legacy, to: destination)
+        } catch {
+            return false
+        }
+        try? fm.moveItem(at: manifestURL(for: legacy), to: manifestURL(for: destination))
+        excludeFromBackup(destination)
+        return true
+    }
+
+    static func excludeFromBackup(_ url: URL) {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
     }
 
     // MARK: - State
@@ -132,6 +177,9 @@ actor BusTimetableService {
     private func resolveIfNeeded() {
         guard !resolved else { return }
         resolved = true
+        if let legacyDatabaseURL {
+            Self.moveLegacyInstall(from: legacyDatabaseURL, to: databaseURL)
+        }
         state = openInstalled() ? .ready(builtDate: db?.metaValue("built")) : .notDownloaded
     }
 
@@ -297,6 +345,7 @@ actor BusTimetableService {
         } else {
             try fm.moveItem(at: tmpURL, to: databaseURL)
         }
+        Self.excludeFromBackup(databaseURL)
         if let data = try? JSONEncoder().encode(manifest) {
             try? data.write(to: localManifestURL, options: .atomic)
         }
@@ -370,6 +419,20 @@ actor BusTimetableService {
         try? FileManager.default.removeItem(at: localManifestURL)
         resolved = true
         setState(.notDownloaded)
+    }
+
+    /// False when the installed timetable's service window ends before the
+    /// day containing `date`, i.e. an empty board means "out of date", not
+    /// "no departures". True when nothing says otherwise.
+    func covers(_ date: Date) -> Bool {
+        resolveIfNeeded()
+        return Self.covers(day: Self.serviceDay(containing: date).day, validTo: db?.metaValue("validTo"))
+    }
+
+    /// `day` and `validTo` are `yyyyMMdd`, so they compare as strings.
+    static func covers(day: String, validTo: String?) -> Bool {
+        guard let validTo, validTo.count == 8 else { return true }
+        return day <= validTo
     }
 
     /// Size on disk and build date of the installed timetable, if any.

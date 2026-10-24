@@ -77,7 +77,7 @@ final class BusTimetableModel {
     var statusText: String {
         switch state {
         case nil: return "Checking…"
-        case .notDownloaded: return "Download to see bus departure times"
+        case .notDownloaded: return "Download to see scheduled departure times"
         case .downloading(let fraction): return "Downloading \(Int((fraction * 100).rounded()))%"
         case .ready: return builtDate.map { "Updated \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "On this device"
         case .failed: return BusTimetableService.unavailableMessage

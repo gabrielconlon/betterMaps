@@ -38,12 +38,12 @@ struct SettingsView: View {
                 bundleBuilt = TransitBundle.builtDate(in: .main)
                 await timetable.refresh()
             }
-            .confirmationDialog("Remove the bus timetable?", isPresented: $confirmRemove,
+            .confirmationDialog("Remove the timetable?", isPresented: $confirmRemove,
                                 titleVisibility: .visible) {
                 Button("Remove", role: .destructive) { timetable.remove() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Bus departure times won't show until you download it again.")
+                Text("Scheduled departure times won't show until you download it again.")
             }
         }
     }
@@ -93,7 +93,7 @@ struct SettingsView: View {
             LabeledContent("Stops and lines") {
                 Text(bundleBuilt.map { "Updated \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "Included")
             }
-            LabeledContent("Bus timetable") {
+            LabeledContent("Timetable") {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(timetable.statusText).monospacedDigit()
                     if case .ready = timetable.state, let size = timetable.sizeText {
@@ -105,7 +105,7 @@ struct SettingsView: View {
         } header: {
             Text("Transit data")
         } footer: {
-            Text("Stops and lines come with the app. The bus timetable is an optional download for departure times without a connection.")
+            Text("Stops and lines come with the app. The timetable is an optional download for scheduled bus, Luas, DART and rail times without a connection, or when live times are down.")
         }
     }
 
@@ -113,13 +113,13 @@ struct SettingsView: View {
     private var timetableActions: some View {
         switch timetable.state {
         case .notDownloaded, .failed:
-            Button("Download bus timetable") { timetable.download() }
+            Button("Download timetable") { timetable.download() }
         case .downloading(let fraction):
             ProgressView(value: fraction)
         case .ready:
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Button(timetable.isCheckingForUpdate ? "Checking for a newer timetable…" : "Update bus timetable") {
+                    Button(timetable.isCheckingForUpdate ? "Checking for a newer timetable…" : "Update timetable") {
                         Task { await timetable.checkForUpdateNow() }
                     }
                     .disabled(timetable.isCheckingForUpdate)
@@ -144,7 +144,7 @@ struct SettingsView: View {
                 guard !Task.isCancelled else { return }
                 withAnimation { shownUpdateResult = nil }
             }
-            Button("Remove bus timetable", role: .destructive) { confirmRemove = true }
+            Button("Remove timetable", role: .destructive) { confirmRemove = true }
         case nil:
             EmptyView()
         }
