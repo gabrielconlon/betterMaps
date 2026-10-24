@@ -9,6 +9,8 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "2.0.0"
+    # Placeholder: scripts/release.sh passes the git commit count, so uploads
+    # always climb. Edit MARKETING_VERSION by hand; never this. See docs/RELEASE.md.
     CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: "3ED9V77D6W"
     CODE_SIGN_STYLE: Automatic
@@ -66,6 +68,8 @@ schemes:
         CustomMapAppUITests: [test]
     run:
       config: Debug
+    archive:
+      config: Release
     test:
       config: Debug
       targets:
