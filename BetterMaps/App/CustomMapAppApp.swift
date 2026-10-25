@@ -34,14 +34,16 @@ enum AppModelContainer {
         }
     }
 
-    static func make() -> ModelContainer {
+    /// Also says which of the three it opened, so Settings can tell a
+    /// device that syncs from one that silently fell back.
+    static func make() -> (container: ModelContainer, mode: SyncStoreMode) {
         do {
             let cloud = ModelConfiguration(
                 schema: schema,
                 isStoredInMemoryOnly: false,
                 cloudKitDatabase: .automatic
             )
-            return try ModelContainer(for: schema, configurations: [cloud])
+            return (try ModelContainer(for: schema, configurations: [cloud]), .iCloud)
         } catch {
             logger.error("CloudKit store failed, falling back to local-only: \(String(describing: error), privacy: .public)")
         }
@@ -52,7 +54,7 @@ enum AppModelContainer {
                 isStoredInMemoryOnly: false,
                 cloudKitDatabase: .none
             )
-            return try ModelContainer(for: schema, configurations: [local])
+            return (try ModelContainer(for: schema, configurations: [local]), .localOnly)
         } catch {
             logger.fault("Local store failed too, running in memory; changes will NOT be saved: \(String(describing: error), privacy: .public)")
         }
@@ -63,7 +65,7 @@ enum AppModelContainer {
                 isStoredInMemoryOnly: true,
                 cloudKitDatabase: .none
             )
-            return try ModelContainer(for: schema, configurations: [memory])
+            return (try ModelContainer(for: schema, configurations: [memory]), .inMemory)
         } catch {
             // An in-memory store over a compiled-in schema cannot realistically
             // fail; if it does, the binary itself is broken.
@@ -81,9 +83,17 @@ struct CustomMapAppApp: App {
     private static let isHostingTests =
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
-    let sharedModelContainer: ModelContainer = isHostingTests
-        ? AppModelContainer.makeInMemory()
-        : AppModelContainer.make()
+    let sharedModelContainer: ModelContainer
+
+    init() {
+        if Self.isHostingTests {
+            sharedModelContainer = AppModelContainer.makeInMemory()
+        } else {
+            let made = AppModelContainer.make()
+            sharedModelContainer = made.container
+            CloudSyncMonitor.shared.start(storeMode: made.mode)
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
