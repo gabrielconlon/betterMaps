@@ -28,6 +28,15 @@ final class TransitArrivalsLogicTests: XCTestCase {
         XCTAssertTrue(BusDeparture.upcoming(deps, now: now, grace: 5).isEmpty)
     }
 
+    // MARK: - Route labels
+
+    func testRailRoutesReadAsRail() {
+        XCTAssertEqual(TransitArrivalsView.routeLabel("rail"), "Rail")
+        XCTAssertEqual(TransitArrivalsView.routeLabel("DART"), "DART")
+        XCTAssertEqual(TransitArrivalsView.routeLabel("39A"), "39A")
+        XCTAssertEqual(TransitArrivalsView.routeLabel("Red"), "Red")
+    }
+
     // MARK: - Nearest Irish Rail station
 
     private func station(_ code: String, _ lat: Double, _ lon: Double) -> IrishRailStation {
