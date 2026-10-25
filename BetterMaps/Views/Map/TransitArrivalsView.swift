@@ -4,9 +4,12 @@ import CoreLocation
 struct TransitArrivalsView: View {
     /// The stop the sheet is for; departures cover `stop.id` ∪ `stop.altIds`.
     let stop: TransitStop
-    /// Tapping a route chip or a departure row passes its GTFS route id
-    /// (the host draws the route on the map).
-    var onSelectRoute: ((String) -> Void)? = nil
+    /// Tapping a route chip or a departure row passes its GTFS route id and
+    /// short name (the host draws the route on the map, or clears it when it
+    /// is already drawn).
+    var onSelectRoute: ((_ routeId: String, _ label: String) -> Void)? = nil
+    /// The route drawn on the map, so its chip reads as on.
+    var highlightedRouteId: String? = nil
 
     @State private var railArrivals: [IrishRailArrival] = []
     @State private var luasForecast: LuasStopForecast?
@@ -87,16 +90,6 @@ struct TransitArrivalsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                // Drag indicator
-                HStack {
-                    Spacer()
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.secondary.opacity(0.4))
-                        .frame(width: 40, height: 5)
-                    Spacer()
-                }
-                .padding(.top, 8)
-
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(stop.name)
                         .font(.title3.bold())
@@ -238,6 +231,8 @@ struct TransitArrivalsView: View {
                 timetableSection
             }
             .padding(.horizontal)
+            // Clears the system drag indicator, the sheet's only grabber.
+            .padding(.top, 20)
             .padding(.bottom)
         }
         .task {
@@ -365,15 +360,19 @@ struct TransitArrivalsView: View {
 
                 FlowLayout(spacing: 6) {
                     ForEach(busRoutes) { route in
-                        Button(action: { onSelectRoute?(route.id) }) {
+                        let isOn = highlightedRouteId == route.id
+                        Button(action: { onSelectRoute?(route.id, Self.routeLabel(route.short)) }) {
                             Text(Self.routeLabel(route.short))
                                 .font(.caption.bold())
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(.blue.opacity(0.15))
-                                .foregroundStyle(.blue)
+                                .background(isOn ? Color.blue : Color.blue.opacity(0.15))
+                                .foregroundStyle(isOn ? Color.white : Color.blue)
                                 .clipShape(Capsule())
                         }
+                        .accessibilityLabel("Route \(Self.routeLabel(route.short))")
+                        .accessibilityValue(isOn ? "Shown on map" : "Hidden")
+                        .accessibilityHint(isOn ? "Removes the route from the map" : "Draws the route on the map")
                     }
                 }
             }
@@ -428,7 +427,7 @@ struct TransitArrivalsView: View {
             }
 
             ForEach(upcoming.prefix(10)) { dep in
-                Button(action: { onSelectRoute?(dep.routeId) }) {
+                Button(action: { onSelectRoute?(dep.routeId, Self.routeLabel(dep.routeShortName)) }) {
                     HStack {
                         Text(Self.routeLabel(dep.routeShortName))
                             .font(.subheadline.bold())
@@ -450,7 +449,7 @@ struct TransitArrivalsView: View {
                             sourceBadge(isRealTime: false)
                         }
 
-                        Image(systemName: "map")
+                        Image(systemName: highlightedRouteId == dep.routeId ? "map.fill" : "map")
                             .font(.caption)
                             .foregroundStyle(.blue)
                     }

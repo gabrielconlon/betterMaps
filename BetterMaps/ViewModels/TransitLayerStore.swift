@@ -101,6 +101,9 @@ final class TransitLayerStore {
     /// Polylines (one per direction) of the route picked from a favorite chip.
     private(set) var highlightedRoute: [[CLLocationCoordinate2D]]?
     private(set) var highlightedRouteId: String?
+    /// Short name ("MU1") for the map's clear-route chip; nil when the
+    /// caller had none to give.
+    private(set) var highlightedRouteLabel: String?
 
     @ObservationIgnored private(set) var grid = TransitSpatialGrid(stops: [])
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -232,13 +235,14 @@ final class TransitLayerStore {
     /// Draws `routeId` (both directions) from the timetable; a second call
     /// with the same id clears it. Starts the timetable download when it is
     /// not on the device yet.
-    func toggleHighlightedRoute(_ routeId: String) {
+    func toggleHighlightedRoute(_ routeId: String, label: String? = nil) {
         highlightTask?.cancel()
         if highlightedRouteId == routeId {
             clearHighlightedRoute()
             return
         }
         highlightedRouteId = routeId
+        highlightedRouteLabel = label
         highlightedRoute = nil
         version &+= 1
         highlightTask = Task { [weak self] in
@@ -269,6 +273,7 @@ final class TransitLayerStore {
     func clearHighlightedRoute() {
         highlightTask?.cancel()
         highlightedRouteId = nil
+        highlightedRouteLabel = nil
         highlightedRoute = nil
         version &+= 1
     }

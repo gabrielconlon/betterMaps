@@ -63,6 +63,10 @@ struct MapScreen: View {
     @State private var dataChangeToken = 0
     /// The locate button asked for permission; centre on the first fix.
     @State private var pendingLocate = false
+    /// The stop sheet's detent, so drawing a route can drop it to the peek
+    /// height and show the route instead of covering it.
+    @State private var arrivalsDetent: PresentationDetent = Self.arrivalsPeek
+    private static var arrivalsPeek: PresentationDetent { .fraction(0.3) }
 
     private static var initialDetent: SheetDetent {
         #if DEBUG
@@ -205,9 +209,11 @@ struct MapScreen: View {
                       isLayersOpen: isLayersPanelOpen,
                       onToggleLayers: { setLayersPanel(open: !isLayersPanelOpen) },
                       draftChip: draftChip,
+                      routeChip: routeChip,
                       canLocateUser: canLocateUser,
                       onRequestLocation: locateUser)
                 .animation(.easeInOut(duration: 0.2), value: draftStore.hasDraft)
+                .animation(.easeInOut(duration: 0.2), value: transitStore.highlightedRouteId)
 
             if isLayersPanelOpen {
                 layersPanel
@@ -219,10 +225,17 @@ struct MapScreen: View {
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
+            // A router sheet (stop, place, form…) stands in for the search
+            // sheet rather than stacking on it: two sheets showed two
+            // grabbers and overlapping panels.
             BottomSheet(detent: $sheetDetent,
                         onSettledHeightChange: { sheetHeight = $0 },
                         header: { sheetHeader },
                         content: { sheetContent })
+                .opacity(isRouterSheetOpen ? 0 : 1)
+                .allowsHitTesting(!isRouterSheetOpen)
+                .accessibilityHidden(isRouterSheetOpen)
+                .animation(.easeInOut(duration: 0.2), value: isRouterSheetOpen)
 
             // Toast host: clear and untouchable itself, its toast sits just
             // above the sheet.
@@ -245,6 +258,12 @@ struct MapScreen: View {
         .onChange(of: viewModel.activeSheet?.id) { _, _ in
             // The dropped pin lives exactly as long as the quick-add sheet.
             if !viewModel.isQuickAddOpen { droppedPin = nil }
+            guard let sheet = viewModel.activeSheet else { return }
+            // The hidden search sheet comes back collapsed, so the map the
+            // router sheet was about is still in view when it closes.
+            if isSearchFocused { isSearchFocused = false }
+            if sheetDetent != .collapsed { sheetDetent = .collapsed }
+            if case .transitArrivals = sheet { arrivalsDetent = Self.arrivalsPeek }
         }
         .onChange(of: snapshotTrigger, initial: true) { _, _ in rebuildSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
@@ -343,7 +362,7 @@ struct MapScreen: View {
                 onSelectRoute: { route in
                     dismissSearch()
                     sheetDetent = .collapsed
-                    transitStore.toggleHighlightedRoute(route.id)
+                    transitStore.toggleHighlightedRoute(route.id, label: TransitArrivalsView.routeLabel(route.short))
                 },
                 onSelectPOI: { item in
                     showResult(at: item.placemark.coordinate)
@@ -374,6 +393,14 @@ struct MapScreen: View {
                 if tagFilter.match == .all, tagFilter.selectedTagIds.count >= 2 { markHintDone(.overlap) }
             }
         )
+    }
+
+    private var isRouterSheetOpen: Bool { viewModel.activeSheet != nil }
+
+    private var routeChip: HighlightedRouteChip? {
+        guard transitStore.highlightedRouteId != nil else { return nil }
+        return HighlightedRouteChip(label: transitStore.highlightedRouteLabel,
+                                    onClear: { transitStore.clearHighlightedRoute() })
     }
 
     private func setLayersPanel(open: Bool) {
@@ -470,6 +497,12 @@ struct MapScreen: View {
             if let hitTrail {
                 trailHitCount += 1
                 viewModel.showTrailDetail(hitTrail)
+                return
+            }
+            // With a route drawn, a tap on empty map clears it (as in Maps)
+            // rather than looking up a place.
+            if transitStore.highlightedRouteId != nil {
+                transitStore.clearHighlightedRoute()
                 return
             }
             viewModel.lookUpPlace(at: coordinate)
@@ -702,8 +735,14 @@ struct MapScreen: View {
 
         case .transitArrivals(let stop):
             TransitArrivalsView(stop: stop,
-                                onSelectRoute: { routeId in transitStore.toggleHighlightedRoute(routeId) })
-                .presentationDetents([.fraction(0.3), .medium, .large])
+                                onSelectRoute: { routeId, label in
+                                    let drawing = transitStore.highlightedRouteId != routeId
+                                    transitStore.toggleHighlightedRoute(routeId, label: label)
+                                    // Drop to the peek height so the route is on screen.
+                                    if drawing { arrivalsDetent = Self.arrivalsPeek }
+                                },
+                                highlightedRouteId: transitStore.highlightedRouteId)
+                .presentationDetents([Self.arrivalsPeek, .medium, .large], selection: $arrivalsDetent)
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
 

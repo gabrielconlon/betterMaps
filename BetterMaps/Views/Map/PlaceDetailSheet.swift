@@ -39,16 +39,6 @@ struct PlaceDetailSheet: View {
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                // Drag indicator
-                HStack {
-                    Spacer()
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.secondary.opacity(0.4))
-                        .frame(width: 40, height: 5)
-                    Spacer()
-                }
-                .padding(.top, 8)
-
                 // --- Compact header ---
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -235,6 +225,8 @@ struct PlaceDetailSheet: View {
                 }
             }
             .padding(.horizontal)
+            // Clears the system drag indicator, the sheet's only grabber.
+            .padding(.top, 20)
             .padding(.bottom)
         }
         .task {

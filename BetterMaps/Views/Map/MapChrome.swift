@@ -13,6 +13,8 @@ struct MapChrome: View {
     let onToggleLayers: () -> Void
     /// Shown while a kept trail draft exists.
     var draftChip: DraftResumeChip? = nil
+    /// Shown while a transit route is drawn; its ✕ clears the map.
+    var routeChip: HighlightedRouteChip? = nil
     /// Location access granted: the system location button can centre the
     /// map. Otherwise a plain button asks for access first.
     var canLocateUser: Bool = true
@@ -24,6 +26,10 @@ struct MapChrome: View {
                 LayersButton(isOpen: isLayersOpen, action: onToggleLayers)
                 if let draftChip, !isLayersOpen {
                     draftChip
+                        .transition(.opacity)
+                }
+                if let routeChip, !isLayersOpen {
+                    routeChip
                         .transition(.opacity)
                 }
             }
