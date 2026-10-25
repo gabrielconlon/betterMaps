@@ -1,8 +1,10 @@
 # Cutting a TestFlight release
 
 ```sh
-./scripts/release.sh              # archive, export, upload
-./scripts/release.sh --no-upload  # archive and export only
+./scripts/release.sh                    # iOS: archive, export, upload
+./scripts/release.sh --no-upload        # iOS: archive and export only
+./scripts/release.sh --mac              # Mac: archive, export .pkg, upload
+./scripts/release.sh --mac --no-upload  # Mac: archive and export only
 ```
 
 The script is the same pipeline that ships SeaTime (`sailing-logbook/scripts/release.sh`),
@@ -45,6 +47,49 @@ Do these once, in order. Everything else is already in the repo.
 5. **Ship it.** `./scripts/release.sh`. Then in App Store Connect → the app → TestFlight, fill
    in **What to Test** on the build and add yourself (and anyone else) to Internal Testing.
    Internal testers skip Beta App Review, so the build arrives minutes after it goes VALID.
+
+## The Mac app
+
+The Mac app is the iOS target built for **Mac Catalyst** (`SUPPORTS_MACCATALYST` in
+`project.yml`), not a second codebase. It keeps the iOS bundle ID, so App Store Connect lists
+it as the macOS platform of the same "BetterMaps Ireland" record (universal purchase), and it
+uses the same CloudKit container, so places, layers, trails and favourite routes sync between
+the iPhone and the Mac through the user's iCloud account. The interface is "Scale Interface
+to Match iPad": the Mac gets the iPad layout.
+
+Why Catalyst and not a native macOS SwiftUI target: the app leans on UIKit-era presentation
+(sheet detents with the map live behind them, full-screen covers, `UIApplication`), and
+Catalyst compiles all of it unchanged. A native target would mean a Mac-specific presentation
+layer before anything shipped. Catalyst gets a synced Mac app onto TestFlight now; a native
+port stays possible later because the bundle ID and container would not change.
+
+**One-time setup for the Mac**, after the iOS steps above:
+
+1. **Add the macOS platform to the app record.** App Store Connect → BetterMaps Ireland →
+   the platform list in the sidebar (or the ＋ next to the iOS App heading) → **Add macOS
+   App**. Without it the Mac upload fails with `No suitable application records were found`.
+2. **Dry run.** `./scripts/release.sh --mac --no-upload`. Automatic signing registers the Mac
+   side of the bundle ID and makes the Mac provisioning profile and the Mac Installer
+   Distribution certificate through the API key.
+3. **Upload.** `./scripts/release.sh --mac`. Then App Store Connect → TestFlight → **macOS**
+   builds, add yourself to Internal Testing, and install from the TestFlight app on the Mac.
+
+The CloudKit schema needs nothing new: the Mac uses the same record types, and TestFlight
+Mac builds also talk to Production.
+
+**What differs on the Mac.** `BetterMaps-macOS.entitlements` replaces the iOS file for
+`sdk=macosx*`: the Mac App Store requires the App Sandbox, so it adds sandbox, outgoing
+network and location, and spells the push key `com.apple.developer.aps-environment`.
+`LSApplicationCategoryType` (Navigation) in `Info.plist` is required for a Mac upload.
+Anything the app starts doing that the sandbox blocks (writing outside its container,
+opening user-chosen files) needs an entitlement here too.
+
+**Checking sync.** Settings → iCloud sync shows whether this device is actually syncing: Off
+when the store fell back to local-only, when there is no iCloud account, or when iCloud is
+restricted; Problem with CloudKit's own message when an import or export fails; otherwise the
+time of the last successful sync. To prove propagation end to end: add a place on the Mac,
+wait for "Last synced" to move, then open the app on the iPhone (bring it to the foreground;
+CloudKit pushes usually land within a minute).
 
 ## What the script decides, so you do not
 
@@ -93,7 +138,9 @@ codesign -dvvv Payload/CustomMapApp.app 2>&1 | grep Authority                   
 | `No profiles for 'com.gabrielconlon.CustomMapApp' were found` (alone) | bundle ID not registered |
 | `No suitable application records were found` | step 3 not done |
 | Upload fails vaguely | Account Holder has not accepted an updated agreement; check the App Store Connect banner |
-| TestFlight app works but places never sync | step 4: CloudKit schema not in Production |
+| TestFlight app works but places never sync | step 4: CloudKit schema not in Production; Settings → iCloud sync shows which |
+| Mac upload: `No suitable application records were found` | macOS platform not added to the app record |
+| Mac app opens but never syncs, Settings says Off | the Mac fell back to local-only; check it is signed in to iCloud and the Mac entitlements were signed in (`codesign -d --entitlements -`) |
 | Build uploads, never appears | still processing; give it 15 minutes |
 
 ## Two things that bite

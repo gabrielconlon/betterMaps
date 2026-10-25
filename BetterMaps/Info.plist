@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.navigation</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -37,6 +39,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to attach to your saved places.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Shows where you are on the map and finds places near you.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Shows where you are on the map and finds places near you.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

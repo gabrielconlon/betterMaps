@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// App settings: map style, offline transit data, about, and an Advanced
+/// App settings: map style, iCloud sync status, offline transit data, about, and an Advanced
 /// section (collapsed) for the optional Yelp key, which lives in the Keychain.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(MapStyleOption.storageKey) private var mapStyle: MapStyleOption = .standard
 
     @State private var timetable = BusTimetableModel()
+    private let sync = CloudSyncMonitor.shared
     @State private var editingKey = ""
     /// The key as last saved, to enable Save only on a change.
     @State private var savedKey = ""
@@ -21,6 +22,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 mapSection
+                syncSection
                 transitSection
                 aboutSection
                 advancedSection
@@ -36,6 +38,7 @@ struct SettingsView: View {
                 savedKey = YelpService.apiKey
                 editingKey = savedKey
                 bundleBuilt = TransitBundle.builtDate(in: .main)
+                await sync.refreshAccountStatus()
                 await timetable.refresh()
             }
             .confirmationDialog("Remove the timetable?", isPresented: $confirmRemove,
@@ -57,6 +60,25 @@ struct SettingsView: View {
                     Label(option.rawValue, systemImage: option.icon).tag(option)
                 }
             }
+        }
+    }
+
+    private var syncSection: some View {
+        let status = sync.status
+        return Section {
+            LabeledContent("Status") {
+                Label(status.title, systemImage: status.isProblem ? "exclamationmark.icloud" : "checkmark.icloud")
+                    .foregroundStyle(status.isProblem ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+            }
+            if let detail = status.detail {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("iCloud sync")
+        } footer: {
+            Text("Places, layers, trails and favourite routes sync to your iPhone, iPad and Mac when they're signed in to the same Apple Account.")
         }
     }
 
