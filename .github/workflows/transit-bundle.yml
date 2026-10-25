@@ -8,12 +8,21 @@
 # - Opens/updates a PR from branch `bot/transit-bundle` when the bundled JSON
 #   files (stops / lines / routes) changed.
 #
+# - On a push that changes the builder or this workflow, on a branch other than
+#   main, it only builds and commits the refreshed JSON back to that branch (no
+#   release, no PR), so a builder change can be checked against the real feed
+#   before it merges. On main the same push runs the full publish.
+#
 # Repo setting required for the PR step: Settings -> Actions -> General ->
 # "Allow GitHub Actions to create and approve pull requests". See scripts/README.md.
 
 name: Transit bundle
 
 on:
+  push:
+    paths:
+      - scripts/build_transit_bundle.py
+      - .github/workflows/transit-bundle.yml
   schedule:
     - cron: "0 3 * * 1" # Mondays 03:00 UTC
   workflow_dispatch:
@@ -87,7 +96,23 @@ jobs:
           echo "sha256=$(jq -r .sha256 scripts/out/manifest.json)" >> "$GITHUB_OUTPUT"
           echo "gz_bytes=$BYTES" >> "$GITHUB_OUTPUT"
 
+      - name: Commit refreshed JSON to the branch (non-main push)
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add BetterMaps/Resources/Transit/transit_stops.json \
+                  BetterMaps/Resources/Transit/transit_lines.json \
+                  BetterMaps/Resources/Transit/transit_routes.json
+          if git diff --cached --quiet; then
+            echo "bundled JSON unchanged"
+          else
+            git commit -m "chore(transit): refresh bundled transit JSON (feed ${{ steps.meta.outputs.feed_version }})"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
       - name: Publish rolling release (transit-data)
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: transit-data
@@ -111,6 +136,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Open PR with refreshed JSON (if changed)
+        if: github.ref == 'refs/heads/main'
         uses: peter-evans/create-pull-request@v6
         with:
           branch: bot/transit-bundle

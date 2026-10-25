@@ -235,7 +235,10 @@ the Swift tests to assert:
 
 ## GitHub Action (`.github/workflows/transit-bundle.yml`)
 
-Runs Mondays 03:00 UTC and on `workflow_dispatch`:
+Runs Mondays 03:00 UTC, on `workflow_dispatch`, and on any push that changes
+the builder or the workflow. Steps 4 and 5 run only on `main`; a push to
+another branch instead commits the refreshed JSON back to that branch, so a
+builder change is checked against the real feed before it merges:
 
 1. checkout, Python 3.12, download `GTFS_All.zip` (fallback `GTFS_Realtime.zip`);
 2. run the script into `BetterMaps/Resources/Transit/` + `scripts/out/`;
