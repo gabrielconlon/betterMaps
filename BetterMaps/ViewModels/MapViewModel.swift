@@ -37,6 +37,20 @@ enum ActiveSheet: Identifiable {
         case .settings: return "settings"
         }
     }
+
+    /// A card about something on the map (stop, place, trail), shown at a
+    /// peek height with the map still live behind it. Forms and management
+    /// screens are not: they hold edits a stray click must not throw away.
+    /// On the Mac these get a close button, Escape, and click-the-map to close
+    /// (see `MapCardCloseButton`), because there is no swipe down.
+    var isMapCard: Bool {
+        switch self {
+        case .placeDetail, .poiDetail, .poiLookup, .transitArrivals, .trailDetail:
+            return true
+        case .newPlace, .quickAdd, .layerDetail, .newLayer, .editLayer, .settings:
+            return false
+        }
+    }
 }
 
 /// A request to open the trail editor. `layerId` is the trail layer the user
