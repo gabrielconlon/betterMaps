@@ -26,6 +26,7 @@ struct LayersSheetHeader: View {
                     .submitLabel(.search)
                     .autocorrectionDisabled()
                     .focused(isSearchFocused)
+                    .accessibilityIdentifier("sheet.search")
                     .onChange(of: searchState.searchText) { _, _ in onSearchTextChanged() }
                     .onSubmit { isSearchFocused.wrappedValue = false }
                 if !searchState.searchText.isEmpty {
