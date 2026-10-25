@@ -3,10 +3,10 @@
 
 Outputs (all deterministic, sorted by id so git diffs stay stable):
 
-  <out-dir>/transit_stops.json    Dublin-bbox stops with kind/line/code
+  <out-dir>/transit_stops.json    bbox stops (all of Ireland by default) with kind/line/code
   <out-dir>/transit_lines.json    Luas/DART/rail polylines: each line's longest shape plus
                                   one entry per branch other shapes add (ids dart, dart-2, ...)
-  <out-dir>/transit_routes.json   routes that serve at least one Dublin-bbox stop
+  <out-dir>/transit_routes.json   routes that serve at least one bbox stop
   <timetable-out>                 integer-coded SQLite timetable (+ .gz next to it)
 
 Python stdlib only. Streams the big CSVs (stop_times.txt is ~9M rows) and
@@ -39,7 +39,10 @@ import time
 import zipfile
 
 SCHEMA_VERSION = 1
-DEFAULT_BBOX = "53.15,53.65,-6.65,-5.95"  # minLat,maxLat,minLon,maxLon (Dublin)
+# minLat,maxLat,minLon,maxLon: the island of Ireland. Until 2026-10-25 this was
+# Dublin only (53.15,53.65,-6.65,-5.95), which is still what the gtfs_mini
+# fixture is built with (it keeps Greystones outside on purpose).
+DEFAULT_BBOX = "51.3,55.5,-10.8,-5.3"
 DP_TOLERANCE_DEG = 0.00007  # ~8 m, in degrees of latitude
 LINE_TRIM_MARGIN_DEG = 0.05  # polylines are trimmed to bbox expanded by this (~5 km)
 LUAS_DEDUPE_METRES = 250.0

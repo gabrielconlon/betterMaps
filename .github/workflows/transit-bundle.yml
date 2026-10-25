@@ -34,7 +34,7 @@ concurrency:
 env:
   GTFS_URL: https://www.transportforireland.ie/transitData/Data/GTFS_All.zip
   GTFS_FALLBACK_URL: https://www.transportforireland.ie/transitData/Data/GTFS_Realtime.zip
-  GZ_HARD_LIMIT_BYTES: "20971520" # 20 MB: fail the run rather than ship a bundle the app would choke on
+  GZ_HARD_LIMIT_BYTES: "62914560" # 60 MB: fail the run rather than ship a bundle the app would choke on (national since 2026-10-25)
 
 jobs:
   build:
@@ -79,8 +79,8 @@ jobs:
           if [ "$BYTES" -gt "$GZ_HARD_LIMIT_BYTES" ]; then
             echo "::error::transit_timetable.sqlite.gz is $BYTES bytes (> $GZ_HARD_LIMIT_BYTES)"; exit 1
           fi
-          if [ "$BYTES" -gt 15728640 ]; then
-            echo "::warning::transit_timetable.sqlite.gz is $BYTES bytes (> 15 MB target)"
+          if [ "$BYTES" -gt 41943040 ]; then
+            echo "::warning::transit_timetable.sqlite.gz is $BYTES bytes (> 40 MB target)"
           fi
           echo "feed_version=$(jq -r .feedVersion scripts/out/manifest.json)" >> "$GITHUB_OUTPUT"
           echo "built=$(jq -r .built scripts/out/manifest.json)" >> "$GITHUB_OUTPUT"

@@ -289,7 +289,7 @@ struct TransitArrivalsView: View {
         case .notDownloaded:
             timetableCard {
                 Button(action: startDownload) {
-                    Label("Download timetable (13 MB)", systemImage: "arrow.down.circle")
+                    Label("Download timetable", systemImage: "arrow.down.circle")
                         .font(.subheadline.bold())
                 }
                 Text(showsLive
