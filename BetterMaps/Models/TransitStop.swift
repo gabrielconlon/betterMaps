@@ -21,10 +21,19 @@ struct TransitStop: Codable, Sendable, Hashable, Identifiable {
     let altIds: [String]
     /// Every network serving the stop; `[kind]` for single-network stops.
     let kinds: [TransitLayerKind]
+    /// Bus stops only: the direction buses leave in, degrees clockwise from
+    /// north, read off the departing trips' shapes. nil when they leave in
+    /// different directions (a terminus loop) or the feed has no shape. Buses
+    /// drive on the left, so this also says which side of the road it is.
+    let heading: Int?
+    /// Bus stops only: the most common destination (GTFS headsign) of the
+    /// buses leaving here.
+    let toward: String?
 
     init(id: String, name: String, latitude: Double, longitude: Double,
          kind: TransitLayerKind, code: String? = nil, line: String? = nil,
-         altIds: [String] = [], kinds: [TransitLayerKind]? = nil) {
+         altIds: [String] = [], kinds: [TransitLayerKind]? = nil,
+         heading: Int? = nil, toward: String? = nil) {
         self.id = id
         self.name = name
         self.latitude = latitude
@@ -34,6 +43,8 @@ struct TransitStop: Codable, Sendable, Hashable, Identifiable {
         self.line = line
         self.altIds = altIds
         self.kinds = kinds ?? [kind]
+        self.heading = heading
+        self.toward = toward
     }
 
     var coordinate: CLLocationCoordinate2D {
@@ -50,10 +61,18 @@ struct TransitStop: Codable, Sendable, Hashable, Identifiable {
         kinds.contains { enabled.contains($0) }
     }
 
-    // MARK: - Codable (bundle keys: id,name,lat,lon,kind,code,line,altIds,kinds)
+    /// "north-east" etc. for `heading`, nil without one.
+    var headingName: String? {
+        guard let heading else { return nil }
+        let names = ["north", "north-east", "east", "south-east",
+                     "south", "south-west", "west", "north-west"]
+        return names[Int((Double(heading) / 45).rounded()) % 8]
+    }
+
+    // MARK: - Codable (bundle keys: id,name,lat,lon,kind,code,line,altIds,kinds,brg,to)
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, lat, lon, kind, code, line, altIds, kinds
+        case id, name, lat, lon, kind, code, line, altIds, kinds, brg, to
     }
 
     init(from decoder: Decoder) throws {
@@ -67,7 +86,9 @@ struct TransitStop: Codable, Sendable, Hashable, Identifiable {
                   code: try c.decodeIfPresent(String.self, forKey: .code),
                   line: try c.decodeIfPresent(String.self, forKey: .line),
                   altIds: try c.decodeIfPresent([String].self, forKey: .altIds) ?? [],
-                  kinds: try c.decodeIfPresent([TransitLayerKind].self, forKey: .kinds))
+                  kinds: try c.decodeIfPresent([TransitLayerKind].self, forKey: .kinds),
+                  heading: try c.decodeIfPresent(Int.self, forKey: .brg),
+                  toward: try c.decodeIfPresent(String.self, forKey: .to))
     }
 
     func encode(to encoder: Encoder) throws {
@@ -81,5 +102,7 @@ struct TransitStop: Codable, Sendable, Hashable, Identifiable {
         try c.encodeIfPresent(line, forKey: .line)
         if !altIds.isEmpty { try c.encode(altIds, forKey: .altIds) }
         if kinds.count > 1 { try c.encode(kinds, forKey: .kinds) }
+        try c.encodeIfPresent(heading, forKey: .brg)
+        try c.encodeIfPresent(toward, forKey: .to)
     }
 }

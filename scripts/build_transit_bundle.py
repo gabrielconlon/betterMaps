@@ -58,6 +58,18 @@ LINE_SAMPLE_METRES = 20.0
 # Coverage gate: every DART / rail / Luas station must be this close to a line
 # of its kind (Luas: of its own Red/Green line) or the build fails.
 COVERAGE_MAX_METRES = 150.0
+# Bus stop heading (`brg` in transit_stops.json): the direction buses leave the
+# stop in, read off each departing trip's shape where it passes the stop. The
+# shape is sampled BEARING_WINDOW_METRES either side of the stop so a vertex
+# right on the stop does not decide it alone; a shape further than
+# BEARING_SNAP_METRES from the stop casts no vote. A stop gets a heading only
+# when shaped votes cover most of its departures and agree (the length of their
+# mean unit vector is at least BEARING_MIN_AGREEMENT): a terminus loop or a stop
+# where routes leave in different directions gets none rather than a wrong one.
+BEARING_WINDOW_METRES = 20.0
+BEARING_SNAP_METRES = 40.0
+BEARING_MIN_AGREEMENT = 0.8
+BEARING_MIN_COVERAGE = 0.5
 GATED_KINDS = ("dart", "luas", "rail")
 M_PER_DEG = 6371000.0 * math.pi / 180.0
 
@@ -269,6 +281,72 @@ class SegmentIndex:
     def nearest_exact(self, p: tuple[float, float]) -> float:
         """Brute-force distance to the closest segment (for reporting)."""
         return min((self._seg_dist(p[0], p[1], s) for s in self.segments), default=math.inf)
+
+
+class ShapeProjector:
+    """One shape as a measured polyline: snap a point to it and read the
+    shape's bearing there (degrees clockwise from north)."""
+
+    CELL_M = 100.0
+
+    def __init__(self, pts: list[tuple[float, float]], ref_lat: float):
+        self.cosl = math.cos(math.radians(ref_lat))
+        self.xy = [self._xy(la, lo) for la, lo in pts]
+        self.cum = [0.0]
+        for (ax, ay), (bx, by) in zip(self.xy, self.xy[1:]):
+            self.cum.append(self.cum[-1] + math.hypot(bx - ax, by - ay))
+        c = self.CELL_M
+        self.grid: dict[tuple[int, int], list[int]] = {}
+        for i, ((ax, ay), (bx, by)) in enumerate(zip(self.xy, self.xy[1:])):
+            for gx in range(math.floor(min(ax, bx) / c), math.floor(max(ax, bx) / c) + 1):
+                for gy in range(math.floor(min(ay, by) / c), math.floor(max(ay, by) / c) + 1):
+                    self.grid.setdefault((gx, gy), []).append(i)
+
+    def _xy(self, lat: float, lon: float) -> tuple[float, float]:
+        return lon * self.cosl * M_PER_DEG, lat * M_PER_DEG
+
+    def _point_at(self, s: float) -> tuple[float, float]:
+        cum = self.cum
+        lo, hi = 0, len(cum) - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if cum[mid] <= s:
+                lo = mid
+            else:
+                hi = mid
+        seg = cum[hi] - cum[lo]
+        t = 0.0 if seg == 0.0 else (s - cum[lo]) / seg
+        (ax, ay), (bx, by) = self.xy[lo], self.xy[hi]
+        return ax + t * (bx - ax), ay + t * (by - ay)
+
+    def bearing_at(self, lat: float, lon: float) -> float | None:
+        if len(self.xy) < 2:
+            return None
+        px, py = self._xy(lat, lon)
+        c, r = self.CELL_M, BEARING_SNAP_METRES
+        best, best_s = math.inf, 0.0
+        seen: set[int] = set()
+        for gx in range(math.floor((px - r) / c), math.floor((px + r) / c) + 1):
+            for gy in range(math.floor((py - r) / c), math.floor((py + r) / c) + 1):
+                for i in self.grid.get((gx, gy), ()):
+                    if i in seen:
+                        continue
+                    seen.add(i)
+                    (ax, ay), (bx, by) = self.xy[i], self.xy[i + 1]
+                    dx, dy = bx - ax, by - ay
+                    l2 = dx * dx + dy * dy
+                    t = 0.0 if l2 == 0.0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
+                    d = math.hypot(px - ax - t * dx, py - ay - t * dy)
+                    if d < best:
+                        best, best_s = d, self.cum[i] + t * math.sqrt(l2)
+        if best > r:
+            return None
+        total = self.cum[-1]
+        ax, ay = self._point_at(max(0.0, best_s - BEARING_WINDOW_METRES))
+        bx, by = self._point_at(min(total, best_s + BEARING_WINDOW_METRES))
+        if math.hypot(bx - ax, by - ay) < 1.0:
+            return None
+        return math.degrees(math.atan2(bx - ax, by - ay)) % 360.0
 
 
 def novel_runs(pts: list[tuple[float, float]], index: SegmentIndex) -> list[list[tuple[float, float]]]:
@@ -538,8 +616,15 @@ def main(argv: list[str] | None = None) -> int:
     trip_tmp: dict[str, int] = {tid: i + 1 for i, tid in enumerate(trip_ids_sorted)}
     # per provisional trip int (index = int): route_tmp, dir, shape
     trip_route = [0] * (len(trip_ids_sorted) + 1)
+    # (shape_id, headsign) per trip, interned: departures are counted per
+    # (stop, key) for the bus stop heading and destination.
+    trip_key = [0] * (len(trip_ids_sorted) + 1)
+    key_ids: dict[tuple[str, str], int] = {}
     for tid, ti in trip_tmp.items():
         trip_route[ti] = trip_rows[tid][0]
+        _, _, _, hs, shape_id = trip_rows[tid]
+        trip_key[ti] = key_ids.setdefault((shape_id, hs), len(key_ids))
+    keys_by_id = sorted(key_ids, key=key_ids.get)
     mark("trips", t)
     log(f"trips: {len(trip_rows)} on active services ({skipped_trips} skipped)")
 
@@ -574,6 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     trips_seen: set[int] = set()
     time_cache: dict[str, int] = {}
     batch: list[tuple[int, int, int]] = []
+    stop_key_deps: dict[tuple[int, int], int] = {}  # (stop, trip key) -> departures
     n_rows = n_kept = n_dropoff_only = n_bad = 0
     trip_get, stop_get = trip_tmp.get, stop_tmp.get
     for row in rows:
@@ -599,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
             n_dropoff_only += 1  # terminal stop: nothing departs from here on this trip
             continue
         n_kept += 1
+        sk = (si, trip_key[ti])
+        stop_key_deps[sk] = stop_key_deps.get(sk, 0) + 1
         if build_timetable:
             try:
                 seq = int(row[i_seq]) if i_seq is not None else n_rows
@@ -720,8 +808,11 @@ def main(argv: list[str] | None = None) -> int:
             continue
         line_shapes.setdefault(lkey, set()).update(uses)
     needed_shapes = set(rep_shape.values()).union(*line_shapes.values())
-    shape_pts: dict[str, list[tuple[float, float, float]]] = {s: [] for s in needed_shapes}
-    if needed_shapes and src.has("shapes.txt"):
+    # Bus stop headings need the shape of every trip departing a bus-only stop.
+    bus_stops = {si for si in served_tmp if stop_kinds.get(si) == {"bus"}}
+    bearing_shapes = {keys_by_id[k][0] for (si, k) in stop_key_deps if si in bus_stops} - {""}
+    shape_pts: dict[str, list[tuple[float, float, float]]] = {s: [] for s in needed_shapes | bearing_shapes}
+    if shape_pts and src.has("shapes.txt"):
         idx, rows, f = src.reader("shapes.txt", ("shape_id", "shape_pt_lat", "shape_pt_lon"))
         i_sid, i_lat, i_lon, i_seq = idx["shape_id"], idx["shape_pt_lat"], idx["shape_pt_lon"], idx.get("shape_pt_sequence")
         n_shape_rows = 0
@@ -736,17 +827,18 @@ def main(argv: list[str] | None = None) -> int:
             except (IndexError, ValueError):
                 continue
         f.close()
-        log(f"shapes: {n_shape_rows:,} rows read for {len(needed_shapes)} shapes "
-            f"(per-route representatives + every Luas/DART/rail shape)")
+        log(f"shapes: {n_shape_rows:,} rows read for {len(shape_pts)} shapes "
+            f"(per-route representatives, every Luas/DART/rail shape, every bus shape for stop headings)")
     elif needed_shapes:
         log("shapes.txt missing: no polylines will be emitted")
 
     simplified: dict[str, list[tuple[float, float]]] = {}
     raw_pts = simp_pts = 0
-    for sid, lst in shape_pts.items():
-        if not lst:
-            continue
+    for lst in shape_pts.values():
         lst.sort(key=lambda p: p[0])
+    for sid, lst in shape_pts.items():
+        if not lst or sid not in needed_shapes:
+            continue
         pts = [(la, lo) for _, la, lo in lst]
         pts = trim_to_bbox(pts, bbox, LINE_TRIM_MARGIN_DEG)
         if len(pts) < 2:
@@ -757,6 +849,55 @@ def main(argv: list[str] | None = None) -> int:
         simplified[sid] = s
     mark("shapes", t)
     log(f"shapes: {raw_pts:,} points simplified to {simp_pts:,}")
+
+    # ---- bus stop heading + destination ---------------------------------- #
+    # GTFS has no "side of the road", but it has which way each bus leaves a
+    # stop: the departing trip's shape where it passes the stop. Buses here
+    # drive on the left, so the heading is also the side the stop is on.
+    t = time.monotonic()
+    ref_lat = (min_lat + max_lat) / 2
+    by_shape: dict[str, list[tuple[int, int]]] = {}
+    stop_deps: dict[int, int] = {}
+    stop_heads: dict[int, dict[str, int]] = {}
+    for (si, k), n in stop_key_deps.items():
+        if si not in bus_stops:
+            continue
+        shape_id, hs = keys_by_id[k]
+        stop_deps[si] = stop_deps.get(si, 0) + n
+        if hs:
+            heads = stop_heads.setdefault(si, {})
+            heads[hs] = heads.get(hs, 0) + n
+        if shape_id:
+            by_shape.setdefault(shape_id, []).append((si, n))
+    vote_sum: dict[int, list[float]] = {}  # stop -> [sum sin, sum cos, departures with a bearing]
+    for shape_id in sorted(by_shape):
+        lst = shape_pts.get(shape_id)
+        if not lst or len(lst) < 2:
+            continue
+        proj = ShapeProjector([(la, lo) for _, la, lo in lst], ref_lat)
+        for si, n in by_shape[shape_id]:
+            _, la, lo, _, _, _ = stop_info[candidate_ids[si - 1]]
+            b = proj.bearing_at(la, lo)
+            if b is None:
+                continue
+            v = vote_sum.setdefault(si, [0.0, 0.0, 0])
+            v[0] += n * math.sin(math.radians(b))
+            v[1] += n * math.cos(math.radians(b))
+            v[2] += n
+    stop_bearing: dict[int, int] = {}
+    n_mixed = 0
+    for si, (ss, sc, n) in vote_sum.items():
+        if n < BEARING_MIN_COVERAGE * stop_deps[si]:
+            continue
+        if math.hypot(ss, sc) < BEARING_MIN_AGREEMENT * n:
+            n_mixed += 1
+            continue
+        stop_bearing[si] = round(math.degrees(math.atan2(ss, sc))) % 360
+    stop_toward: dict[int, str] = {
+        si: sorted(heads.items(), key=lambda kv: (-kv[1], kv[0]))[0][0] for si, heads in stop_heads.items()}
+    mark("headings", t)
+    log(f"bus stop headings: {len(stop_bearing)} of {len(bus_stops)} bus stops "
+        f"({n_mixed} left out because their buses leave in different directions)")
 
     # ---- transit_stops.json ----------------------------------------------- #
     t = time.monotonic()
@@ -805,11 +946,15 @@ def main(argv: list[str] | None = None) -> int:
     seen_ids: set[str] = set()
 
     def stop_entry(gtfs_id: str, name: str, lat: float, lon: float, kinds: set[str], luas_votes: dict[str, int],
-                   code: str, alts: list[str]):
+                   code: str, alts: list[str], si: int | None = None):
         kind = sorted(kinds, key=lambda k: KIND_PRIORITY[k])[0] if kinds else "bus"
         e: dict = {"id": gtfs_id, "name": name, "lat": round(lat, 5), "lon": round(lon, 5), "kind": kind}
         if kind == "bus" and code and code != "0":
             e["code"] = code
+        if si in stop_bearing:
+            e["brg"] = stop_bearing[si]
+        if si in stop_toward:
+            e["to"] = stop_toward[si]
         if kind == "luas" and luas_votes:
             e["line"] = sorted(luas_votes.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
         if len(kinds) > 1:
@@ -837,7 +982,7 @@ def main(argv: list[str] | None = None) -> int:
         gtfs_id = candidate_ids[si - 1]
         name, lat, lon, code, _, _ = stop_info[gtfs_id]
         stops_out.append(stop_entry(gtfs_id, name, lat, lon, stop_kinds.get(si, set()),
-                                    stop_luas_lines.get(si, {}), code, alt_ids.get(si, [])))
+                                    stop_luas_lines.get(si, {}), code, alt_ids.get(si, []), si))
     stops_out.sort(key=lambda e: e["id"])
     for e in stops_out:  # self-check
         if e["id"] in seen_ids:
@@ -1055,6 +1200,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  window           {valid_from}..{valid_to} ({args.days} days), built {built}")
     print(f"  stops            {len(stops_out)} emitted ({', '.join(f'{k}={v}' for k, v in sorted(kind_counts.items()))}); "
           f"{len(served_ids)} served ids in bbox; {len(merged_away)} Luas platforms merged")
+    print(f"  bus headings     {len(stop_bearing)} of {len(bus_stops)} bus stops; {len(stop_toward)} with a destination")
     print(f"  routes           {len(routes_out)}")
     print(f"  lines            {len(lines_out)} entries ({n_line_points:,} points); coverage max "
           + ", ".join(f"{k}={v:.0f} m" for k, v in sorted(coverage_max.items())))

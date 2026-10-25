@@ -9,6 +9,9 @@ struct TransitLayerContent: MapContent {
     let highlightedRoute: [[CLLocationCoordinate2D]]?
     /// Pin sizes for the span the visible stops were culled for.
     let zoomBucket: TransitZoomBucket
+    /// Settled camera heading, so bus stop direction arrows stay true when
+    /// the map is rotated.
+    var mapHeading: Double = 0
     let onTapStop: (TransitStop) -> Void
 
     var body: some MapContent {
@@ -35,7 +38,7 @@ struct TransitLayerContent: MapContent {
                 .annotationTitles(.hidden)
             } else {
                 Annotation(size == .full ? stop.name : "", coordinate: stop.coordinate) {
-                    TransitStopPin(stop: stop, size: size)
+                    TransitStopPin(stop: stop, size: size, mapHeading: mapHeading)
                         .onTapGesture { onTapStop(stop) }
                 }
             }
