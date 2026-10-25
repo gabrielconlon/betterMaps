@@ -104,6 +104,45 @@ final class TransitBundleDecodingTests: XCTestCase {
         XCTAssertEqual(decoded.kinds, [.luas])
     }
 
+    /// `brg` / `to` from the builder (see the gtfs_mini row in scripts/README.md).
+    func testBusStopHeadingDecodes() throws {
+        let json = #"{"id":"8220DB000002","name":"Parnell Square","lat":53.3532,"lon":-6.2634,"kind":"bus","code":"2","brg":153,"to":"UCD"}"#
+        let stop = try JSONDecoder().decode(TransitStop.self, from: Data(json.utf8))
+        XCTAssertEqual(stop.heading, 153)
+        XCTAssertEqual(stop.toward, "UCD")
+        XCTAssertEqual(stop.headingName, "south-east")
+        XCTAssertEqual(try JSONDecoder().decode(TransitStop.self, from: JSONEncoder().encode(stop)), stop)
+
+        let terminus = try JSONDecoder().decode(TransitStop.self, from: Data(
+            #"{"id":"8220DB000004","name":"Eden Quay","lat":53.3479,"lon":-6.2562,"kind":"bus","code":"4"}"#.utf8))
+        XCTAssertNil(terminus.heading)
+        XCTAssertNil(terminus.headingName)
+    }
+
+    /// The 2026-10-25 national build gives 12,850 of 13,897 bus stops a
+    /// heading; the rest are terminus loops or stops where routes split.
+    func testMostBusStopsHaveAHeading() throws {
+        let bus = try loadBundle().stops.filter { $0.kind == .bus }
+        let withHeading = bus.filter { $0.heading != nil }
+        XCTAssertGreaterThan(Double(withHeading.count) / Double(bus.count), 0.8)
+        XCTAssertTrue(withHeading.allSatisfy { (0..<360).contains($0.heading!) })
+        XCTAssertTrue(try loadBundle().stops.filter { $0.kind != .bus }.allSatisfy { $0.heading == nil })
+    }
+
+    func testHeadingNamesRoundToTheNearestEighth() {
+        func name(_ h: Int) -> String? {
+            TransitStop(id: "x", name: "x", latitude: 53, longitude: -6, kind: .bus, heading: h).headingName
+        }
+        XCTAssertEqual(name(0), "north")
+        XCTAssertEqual(name(359), "north")
+        XCTAssertEqual(name(22), "north")
+        XCTAssertEqual(name(23), "north-east")
+        XCTAssertEqual(name(90), "east")
+        XCTAssertEqual(name(200), "south")
+        XCTAssertEqual(name(292), "west")
+        XCTAssertEqual(name(293), "north-west")
+    }
+
     @MainActor
     func testStoreLoadsOnce() async throws {
         let store = TransitLayerStore(bundle: Bundle(for: TransitLayerStore.self))

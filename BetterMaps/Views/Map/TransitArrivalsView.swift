@@ -74,6 +74,16 @@ struct TransitArrivalsView: View {
         }
     }
 
+    /// "Buses head south-east, towards UCD"; nil when the bundle knows neither.
+    private var directionLabel: String? {
+        switch (stop.headingName, stop.toward) {
+        case let (heading?, toward?): return "Buses head \(heading), towards \(toward)"
+        case let (heading?, nil): return "Buses head \(heading)"
+        case let (nil, toward?): return "Towards \(toward)"
+        case (nil, nil): return nil
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -101,6 +111,19 @@ struct TransitArrivalsView: View {
                     }
                     Spacer()
                     FavoriteStopButton(stopId: stop.id)
+                }
+
+                // Which way buses leave this stop, so the stop on the right
+                // side of the road is easy to pick out.
+                if let direction = directionLabel {
+                    Label {
+                        Text(direction)
+                    } icon: {
+                        Image(systemName: stop.heading == nil ? "signpost.right" : "location.north.fill")
+                            .rotationEffect(.degrees(Double(stop.heading ?? 0)))
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 }
 
                 // Freshness header — when the sheet's arrivals were last

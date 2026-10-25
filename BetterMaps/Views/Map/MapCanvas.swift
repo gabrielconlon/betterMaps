@@ -38,6 +38,9 @@ struct MapCanvas: View {
     /// `MapContentSync`). The body reads only this, never the stores, so the
     /// two stores' publishes after a camera move cost one map pass, not two.
     @State private var shown = MapCanvasContent()
+    /// Settled camera heading for the bus stop direction arrows. Updated on
+    /// settle like everything else here, so a rotation redraws them once.
+    @State private var mapHeading: Double = 0
     #if DEBUG
     /// Settled centre for the UI-test probe (`-UITestMapProbe` only).
     @State private var probeCenter = "none"
@@ -59,6 +62,7 @@ struct MapCanvas: View {
                                         lines: shown.lines,
                                         highlightedRoute: shown.highlightedRoute,
                                         zoomBucket: shown.zoomBucket,
+                                        mapHeading: mapHeading,
                                         onTapStop: onTapStop)
                     if let droppedPin {
                         Annotation("Dropped Pin", coordinate: droppedPin, anchor: .bottom) {
@@ -106,6 +110,8 @@ struct MapCanvas: View {
                 .onMapCameraChange(frequency: .onEnd) { context in
                     if store.mapSize != geo.size { store.mapSize = geo.size }
                     store.region = context.region
+                    // Only a real turn redraws the pins, not float noise.
+                    if abs(context.camera.heading - mapHeading) >= 1 { mapHeading = context.camera.heading }
                     onCameraSettled(context.region)
                     #if DEBUG
                     if MapCenterProbe.isEnabled { probeCenter = MapCenterProbe.format(context.region.center) }

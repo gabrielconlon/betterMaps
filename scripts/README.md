@@ -4,7 +4,8 @@
 downloads for offline transit across Ireland (Dublin only until 2026-10-25):
 
 National build (2026-10-25 feed): 14,116 stops (13,897 bus, 120 rail, 32 DART,
-67 Luas) in a 1.4 MB `transit_stops.json`; 27 line entries / 3,771 points in
+67 Luas) in a 1.4 MB `transit_stops.json` (1.8 MB once bus stop headings were
+added: 12,850 of the 13,897 bus stops have `brg`, 13,648 have `to`); 27 line entries / 3,771 points in
 77 KB of `transit_lines.json`, covering every Irish Rail intercity and commuter
 line; the timetable is 17.3 MB gz. The table below is the older Dublin-only build.
 
@@ -114,7 +115,18 @@ imported.
    `-2`, `-3`, ... (`dart-2` is the Howth branch). Ids are unique; the app
    draws every entry, so entries never overlap except at a junction vertex.
    A rail route whose track is fully covered by other routes has no entry.
-9. **Coverage gate**: every `dart` / `rail` / `luas` stop (by primary `kind`)
+9. **Bus stop heading** (`brg`, `to`): for every stop served only by buses,
+   each departing trip's shape (`shapes.txt`, unsimplified, every bus shape
+   with a departure from a bbox stop) is snapped to the stop (within 40 m) and
+   its bearing read across 20 m either side. Votes are weighted by departures
+   and averaged as unit vectors. `brg` (integer degrees clockwise from north)
+   is emitted only when shaped votes cover at least half the stop's departures
+   and agree (mean vector length >= 0.8), so a terminus loop or a stop where
+   routes leave in different directions has none. Buses drive on the left, so
+   this is also which side of the road the stop is on; the app draws it as an
+   arrow on the pin. `to` is the most common headsign among departures
+   (ties alphabetical). A terminus (drop-off only) gets neither.
+10. **Coverage gate**: every `dart` / `rail` / `luas` stop (by primary `kind`)
    must be within 150 m of a line entry of the same kind (a Luas stop: of its
    own `line`, Red or Green). Otherwise the offenders are printed to stderr and
    the script exits non-zero **before writing any of the three JSONs** (the
@@ -123,7 +135,7 @@ imported.
    max distances: DART 76 m (Connolly), rail 23 m, Luas Red 10 m, Luas
    Green 14 m.
    The mini fixture passes the gate too, so there is no opt-out flag.
-10. All outputs are sorted by id and written with compact separators, so a
+11. All outputs are sorted by id and written with compact separators, so a
    rebuild from the same feed and `--today` is byte-identical.
 
 ## JSON schemas
@@ -133,13 +145,14 @@ imported.
 ```json
 {"version":1,"built":"2026-10-18","feedVersion":"<feed_info.feed_version>",
  "stops":[
-  {"id":"8220DB000002","name":"Parnell Square West","lat":53.35224,"lon":-6.26372,"kind":"bus","code":"2"},
+  {"id":"8220DB000002","name":"Parnell Square West","lat":53.35224,"lon":-6.26372,"kind":"bus","code":"2","brg":153,"to":"UCD"},
   {"id":"8220GA00408","name":"Abbey St.","lat":53.3485,"lon":-6.25845,"kind":"luas","line":"red","altIds":["8220GA00409"]},
   {"id":"8220IR0007","name":"Connolly","lat":53.35125,"lon":-6.2497,"kind":"dart","kinds":["dart","rail"]},
   {"id":"8260IR0058","name":"Maynooth","lat":53.37804,"lon":-6.59057,"kind":"rail"}]}
 ```
 
-`code` only on bus stops (the plate number); `line` only on Luas stops;
+`code` only on bus stops (the plate number); `brg` / `to` only on bus-only
+stops that have them (step 9); `line` only on Luas stops;
 `kinds` only when more than one; `altIds` only when ids were merged.
 
 `transit_lines.json`
@@ -234,7 +247,7 @@ the Swift tests to assert:
 | `8220DB000004` (Eden Quay, terminus) | in `stops` and `stop_routes`, 0 rows in `stop_times` |
 | departures at `8220IR0025` (Tara Street) | `[28500]` DART headsign `Greystones` |
 | `route_shapes` | 4 rows; `MINI-39A` dir 0 has 4 points (DP dropped one), DART polyline keeps Greystones (bbox margin) |
-| `transit_stops.json` | 7 stops: bus `8220DB000002/3/4` with codes `2/3/4`, Luas `8220GA00404` Jervis and `8220GA00408` Abbey St. (`line: red`, `altIds: ["8220GA00409"]`), DART `8220IR0025`, `8240IR0017` |
+| `transit_stops.json` | 7 stops: bus `8220DB000002/3/4` with codes `2/3/4` (`brg` 153 / 135 and `to: UCD` on 2 and 3; none on the terminus 4), Luas `8220GA00404` Jervis and `8220GA00408` Abbey St. (`line: red`, `altIds: ["8220GA00409"]`), DART `8220IR0025`, `8240IR0017` |
 | `transit_lines.json` | 2 lines: `dart` (6 points), `luas-red` (3 points, the longer of the two Red shapes; the reversed `SHRED1` is within 15 m of it and adds nothing) |
 | `transit_routes.json` | 3 routes, sorted `MINI-39A`, `MINI-DART`, `MINI-RED` |
 
