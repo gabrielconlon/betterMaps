@@ -442,6 +442,24 @@ actor BusTimetableService {
         return day <= validTo
     }
 
+    /// True when the installed timetable should be replaced before its answer
+    /// for `stopIds` is believed: its service window has ended, it was built
+    /// before the app's own stops file (`bundleBuilt`), or it has none of the
+    /// stop's ids (a stop added by a wider app bundle). False when nothing is
+    /// installed: that is the download card's job.
+    func isBehind(stopIds: [String], on date: Date, bundleBuilt: Date?) -> Bool {
+        resolveIfNeeded()
+        guard let db else { return false }
+        if !Self.covers(day: Self.serviceDay(containing: date).day, validTo: db.metaValue("validTo")) { return true }
+        if let bundleBuilt, let built = db.metaValue("built").flatMap(Self.isoDay), built < bundleBuilt { return true }
+        guard !stopIds.isEmpty else { return false }
+        let placeholders = Array(repeating: "?", count: stopIds.count).joined(separator: ",")
+        let found = db.query("SELECT 1 FROM stops WHERE gtfs_id IN (\(placeholders)) LIMIT 1",
+                             bind: { stmt in for (i, id) in stopIds.enumerated() { db.bind(stmt, Int32(i + 1), id) } },
+                             row: { _ in true })
+        return found.isEmpty
+    }
+
     /// Size on disk and build date of the installed timetable, if any.
     func localInfo() -> (bytes: Int64, built: String?)? {
         resolveIfNeeded()

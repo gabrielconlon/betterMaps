@@ -32,10 +32,12 @@ struct TransitArrivalsView: View {
     @State private var busRoutes: [TransitRoute] = []
     @State private var busLoaded = false
     @State private var busLoadedAt: Date?
-    /// False once today is past the installed timetable's service window, so
-    /// an empty board reads "out of date" rather than "no departures".
-    @State private var timetableCoversToday = true
+    /// The installed timetable is past its window, older than the app's
+    /// stops, or lacks this stop (`BusTimetableService.isBehind`): the board
+    /// offers Update rather than reading as "no departures".
+    @State private var timetableIsBehind = false
     @State private var isUpdatingTimetable = false
+    @State private var timetableUpdateFailed = false
     @State private var downloadWatcher: Task<Void, Never>?
 
     private let railService = IrishRailService()
@@ -374,28 +376,31 @@ struct TransitArrivalsView: View {
             let now = Date()
             let upcoming = BusDeparture.upcoming(busDepartures, now: now)
 
-            if busLoaded && upcoming.isEmpty {
+            if busLoaded && timetableIsBehind {
                 timetableCard {
-                    if timetableCoversToday {
-                        Label("No scheduled departures in the next 2 hours",
-                              systemImage: showsBus ? "bus.fill" : "tram.fill")
+                    HStack {
+                        Label(isUpdatingTimetable ? "Updating timetable…"
+                              : timetableUpdateFailed ? "Couldn't update the timetable"
+                              : "A newer timetable is available",
+                              systemImage: timetableUpdateFailed ? "exclamationmark.triangle" : "arrow.down.circle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    } else {
-                        HStack {
-                            Label("Timetable is out of date", systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            if isUpdatingTimetable {
-                                ProgressView()
-                            } else {
-                                Button("Update") { Task { await updateTimetable() } }
-                                    .font(.caption.bold())
-                                    .frame(minWidth: 44, minHeight: 44)
-                            }
+                        Spacer()
+                        if isUpdatingTimetable {
+                            ProgressView()
+                        } else {
+                            Button(timetableUpdateFailed ? "Retry" : "Update") { Task { await updateTimetable() } }
+                                .font(.caption.bold())
+                                .frame(minWidth: 44, minHeight: 44)
                         }
                     }
+                }
+            } else if busLoaded && upcoming.isEmpty {
+                timetableCard {
+                    Label("No scheduled departures in the next 2 hours",
+                          systemImage: showsBus ? "bus.fill" : "tram.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -466,7 +471,8 @@ struct TransitArrivalsView: View {
         async let routes = service.routes(forStop: stop.id, altIds: stop.altIds)
         busDepartures = (try? await departures) ?? []
         busRoutes = (try? await routes) ?? []
-        timetableCoversToday = await service.covers(Date())
+        timetableIsBehind = await service.isBehind(stopIds: stop.allIds, on: Date(),
+                                                   bundleBuilt: TransitBundle.builtDate(in: .main))
         busLoaded = true
         busLoadedAt = Date()
         if lastUpdated == nil || !showsLive { lastUpdated = Date() }
@@ -476,9 +482,16 @@ struct TransitArrivalsView: View {
     /// swapped in), then reloads the board.
     private func updateTimetable() async {
         isUpdatingTimetable = true
-        _ = await BusTimetableService.shared.checkForUpdate()
+        timetableUpdateFailed = false
+        let result = await BusTimetableService.shared.checkForUpdate()
         timetable = await BusTimetableService.shared.currentState()
         await loadBus()
+        switch result {
+        // Nothing newer is published: stop offering an update that can't help.
+        case .upToDate: timetableIsBehind = false
+        case .failed: timetableUpdateFailed = true
+        case .updated: break
+        }
         isUpdatingTimetable = false
     }
 
@@ -539,7 +552,15 @@ struct TransitArrivalsView: View {
         guard !isRefreshing else { return }
         isRefreshing = true
         await loadArrivals()
-        if case .ready = timetable { await loadBus() }
+        if case .ready = timetable {
+            // The refresh button is where people look for "get newer data",
+            // so it fetches the timetable too when this one is behind.
+            if timetableIsBehind && !isUpdatingTimetable {
+                await updateTimetable()
+            } else {
+                await loadBus()
+            }
+        }
         isRefreshing = false
     }
 
