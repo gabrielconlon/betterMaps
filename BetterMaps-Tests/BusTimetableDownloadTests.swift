@@ -214,4 +214,23 @@ final class BusTimetableDownloadTests: XCTestCase {
         XCTAssertTrue(BusTimetableService.isStale(built: "2026-10-01", days: 14, bundleBuilt: nil, now: now))
         XCTAssertTrue(BusTimetableService.isStale(built: nil, days: 14, bundleBuilt: nil, now: now))
     }
+
+    // MARK: - Behind the app
+
+    func testBehindWhenStopMissingOrOlderThanBundle() async throws {
+        let service = try readyService()
+        let day = try XCTUnwrap(BusTimetableService.isoDay("2026-10-20")).addingTimeInterval(12 * 3600)
+        let current = await service.isBehind(stopIds: ["8220DB000002"], on: day, bundleBuilt: BusTimetableService.isoDay("2026-10-18"))
+        let missingStop = await service.isBehind(stopIds: ["700000014230"], on: day, bundleBuilt: nil)
+        let olderThanApp = await service.isBehind(stopIds: ["8220DB000002"], on: day, bundleBuilt: BusTimetableService.isoDay("2026-10-25"))
+        XCTAssertFalse(current)
+        XCTAssertTrue(missingStop, "a stop the timetable has never heard of must offer Update, not 'no departures'")
+        XCTAssertTrue(olderThanApp)
+    }
+
+    func testNothingInstalledIsNotBehind() async {
+        let service = emptyService()
+        let behind = await service.isBehind(stopIds: ["8220DB000002"], on: Date(), bundleBuilt: Date())
+        XCTAssertFalse(behind)
+    }
 }
