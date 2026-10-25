@@ -276,7 +276,7 @@ struct MapScreen: View {
         .task(id: transitSettings.enabledKinds.isEmpty) {
             guard !transitSettings.enabledKinds.isEmpty else { return }
             await transitStore.loadIfNeeded()
-            await BusTimetableService.shared.refreshIfStale(days: 14)
+            await BusTimetableService.shared.refreshIfStale(days: 14, bundleBuilt: TransitBundle.builtDate(in: .main))
         }
         #if DEBUG
         .task { openDebugScreens() }

@@ -201,4 +201,17 @@ final class BusTimetableDownloadTests: XCTestCase {
         XCTAssertTrue(coversInside)
         XCTAssertFalse(coversAfter)
     }
+
+    // MARK: - Staleness
+
+    func testTimetableOlderThanTheAppsStopsIsStale() throws {
+        let now = try XCTUnwrap(BusTimetableService.isoDay("2026-10-26"))
+        let bundle = BusTimetableService.isoDay("2026-10-25")
+        XCTAssertTrue(BusTimetableService.isStale(built: "2026-10-19", days: 14, bundleBuilt: bundle, now: now),
+                      "an app update with more stops pulls the matching timetable without waiting 14 days")
+        XCTAssertFalse(BusTimetableService.isStale(built: "2026-10-25", days: 14, bundleBuilt: bundle, now: now))
+        XCTAssertFalse(BusTimetableService.isStale(built: "2026-10-19", days: 14, bundleBuilt: nil, now: now))
+        XCTAssertTrue(BusTimetableService.isStale(built: "2026-10-01", days: 14, bundleBuilt: nil, now: now))
+        XCTAssertTrue(BusTimetableService.isStale(built: nil, days: 14, bundleBuilt: nil, now: now))
+    }
 }
