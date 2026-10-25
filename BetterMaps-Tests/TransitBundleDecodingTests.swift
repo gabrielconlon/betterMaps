@@ -119,6 +119,16 @@ final class TransitBundleDecodingTests: XCTestCase {
         XCTAssertNil(terminus.headingName)
     }
 
+    /// The 2026-10-25 national build gives 12,850 of 13,897 bus stops a
+    /// heading; the rest are terminus loops or stops where routes split.
+    func testMostBusStopsHaveAHeading() throws {
+        let bus = try loadBundle().stops.filter { $0.kind == .bus }
+        let withHeading = bus.filter { $0.heading != nil }
+        XCTAssertGreaterThan(Double(withHeading.count) / Double(bus.count), 0.8)
+        XCTAssertTrue(withHeading.allSatisfy { (0..<360).contains($0.heading!) })
+        XCTAssertTrue(try loadBundle().stops.filter { $0.kind != .bus }.allSatisfy { $0.heading == nil })
+    }
+
     func testHeadingNamesRoundToTheNearestEighth() {
         func name(_ h: Int) -> String? {
             TransitStop(id: "x", name: "x", latitude: 53, longitude: -6, kind: .bus, heading: h).headingName

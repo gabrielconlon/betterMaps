@@ -4,7 +4,8 @@
 downloads for offline transit across Ireland (Dublin only until 2026-10-25):
 
 National build (2026-10-25 feed): 14,116 stops (13,897 bus, 120 rail, 32 DART,
-67 Luas) in a 1.4 MB `transit_stops.json`; 27 line entries / 3,771 points in
+67 Luas) in a 1.4 MB `transit_stops.json` (1.8 MB once bus stop headings were
+added: 12,850 of the 13,897 bus stops have `brg`, 13,648 have `to`); 27 line entries / 3,771 points in
 77 KB of `transit_lines.json`, covering every Irish Rail intercity and commuter
 line; the timetable is 17.3 MB gz. The table below is the older Dublin-only build.
 
