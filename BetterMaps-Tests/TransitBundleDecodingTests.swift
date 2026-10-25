@@ -4,8 +4,11 @@ import CoreLocation
 
 /// The bundled `Resources/Transit/*.json` decode and look sane.
 final class TransitBundleDecodingTests: XCTestCase {
-    /// `--bbox` default in scripts/build_transit_bundle.py.
-    let bbox = GeoBox(minLat: 53.15, maxLat: 53.65, minLon: -6.65, maxLon: -5.95)
+    /// `--bbox` default in scripts/build_transit_bundle.py (the island of
+    /// Ireland since 2026-10-25).
+    let bbox = GeoBox(minLat: 51.3, maxLat: 55.5, minLon: -10.8, maxLon: -5.3)
+    /// The Dublin-only box the bundle used before it went national.
+    let dublin = GeoBox(minLat: 53.15, maxLat: 53.65, minLon: -6.65, maxLon: -5.95)
 
     private func loadBundle() throws -> TransitBundle {
         let urls = try XCTUnwrap(TransitBundle.URLs(bundle: Bundle(for: TransitLayerStore.self)),
@@ -18,6 +21,15 @@ final class TransitBundleDecodingTests: XCTestCase {
         XCTAssertGreaterThan(stops.count, 1000)
         let outside = stops.filter { !bbox.contains(lat: $0.latitude, lon: $0.longitude) }
         XCTAssertTrue(outside.isEmpty, "outside bbox: \(outside.prefix(5).map(\.id))")
+    }
+
+    /// Guards against a rebuild quietly falling back to the Dublin box:
+    /// intercity rail and regional buses must reach well beyond it.
+    func testCoverageIsNationalNotDublinOnly() throws {
+        let stops = try loadBundle().stops
+        let beyondDublin = stops.filter { !dublin.contains(lat: $0.latitude, lon: $0.longitude) }
+        XCTAssertGreaterThan(beyondDublin.filter { $0.kind == .rail }.count, 50, "intercity rail stations")
+        XCTAssertGreaterThan(beyondDublin.filter { $0.kind == .bus }.count, 1000, "regional bus stops")
     }
 
     func testEveryKindIsPresent() throws {
