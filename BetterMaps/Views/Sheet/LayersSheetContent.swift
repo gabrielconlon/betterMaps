@@ -73,7 +73,7 @@ struct LayersSheetContent: View {
                     TransitSheetSection(transitSettings: transitSettings, timetable: timetable,
                                         onOpenStop: { stop in viewModel.showTransitArrivals(for: stop) })
                     PinnedRoutesSection(highlightedRouteId: transitStore.highlightedRouteId) { route in
-                        transitStore.toggleHighlightedRoute(route.routeId)
+                        transitStore.toggleHighlightedRoute(route.routeId, label: route.shortName)
                     }
                 }
             }
