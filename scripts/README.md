@@ -1,14 +1,19 @@
 # Offline transit bundle pipeline
 
 `build_transit_bundle.py` turns the TFI GTFS feed into the files the app ships /
-downloads for offline Dublin transit:
+downloads for offline transit across Ireland (Dublin only until 2026-10-25):
 
-| Output | Lives | Size (2026-10-18 feed) |
+National build (2026-10-25 feed): 14,116 stops (13,897 bus, 120 rail, 32 DART,
+67 Luas) in a 1.4 MB `transit_stops.json`; 27 line entries / 3,771 points in
+77 KB of `transit_lines.json`, covering every Irish Rail intercity and commuter
+line; the timetable is 17.3 MB gz. The table below is the older Dublin-only build.
+
+| Output | Lives | Size (2026-10-18 feed, Dublin-only bbox) |
 | --- | --- | --- |
 | `transit_stops.json` | `BetterMaps/Resources/Transit/` (committed, bundled) | 544 KB (target <= 800 KB) |
 | `transit_lines.json` | same | 15 KB, 16 entries / 715 points (target <= 150 KB) |
 | `transit_routes.json` | same | 26 KB (target <= 100 KB) |
-| `transit_timetable.sqlite(.gz)` | `scripts/out/` locally (gitignored); published to the `transit-data` GitHub release | 30.2 MB raw / 12.6 MB gz (targets 60 / 15 MB) |
+| `transit_timetable.sqlite(.gz)` | `scripts/out/` locally (gitignored); published to the `transit-data` GitHub release | Dublin-only build: 30.2 MB raw / 12.6 MB gz. National (default since 2026-10-25): 17.3 MB gz; hard limit 60 MB gz |
 
 The app reads the timetable from
 `https://github.com/gabrielconlon/betterMaps/releases/download/transit-data/transit_timetable.sqlite.gz`
@@ -37,7 +42,7 @@ Flags:
 | `--input` | required | GTFS zip, or a directory of GTFS `.txt` files (used for the test fixture) |
 | `--out-dir` | required | where the three JSON files go |
 | `--timetable-out` | required unless `--no-timetable` | SQLite path; `<path>.gz` is written next to it unless `--no-gzip` |
-| `--bbox` | `53.15,53.65,-6.65,-5.95` | `minLat,maxLat,minLon,maxLon` |
+| `--bbox` | `51.3,55.5,-10.8,-5.3` (island of Ireland) | `minLat,maxLat,minLon,maxLon`; `53.15,53.65,-6.65,-5.95` is the old Dublin-only box |
 | `--days` | `60` | service window starting at `--today` (inclusive) |
 | `--today` | now (UTC) | `YYYY-MM-DD`; pin it for reproducible builds and tests |
 | `--no-timetable` | | only build the JSON files |
@@ -201,6 +206,7 @@ and its rows are out of sequence order). Regenerate the committed SQLite with:
 ```sh
 python3 -I scripts/build_transit_bundle.py \
   --input BetterMaps-Tests/Fixtures/gtfs_mini --out-dir /tmp/mini_out \
+  --bbox 53.15,53.65,-6.65,-5.95 \
   --timetable-out BetterMaps-Tests/Fixtures/gtfs_mini/timetable_mini.sqlite \
   --no-gzip --today 2026-10-18
 ```
@@ -234,11 +240,14 @@ the Swift tests to assert:
 
 ## GitHub Action (`.github/workflows/transit-bundle.yml`)
 
-Runs Mondays 03:00 UTC and on `workflow_dispatch`:
+Runs Mondays 03:00 UTC, on `workflow_dispatch`, and on any push that changes
+the builder or the workflow. Steps 4 and 5 run only on `main`; a push to
+another branch instead commits the refreshed JSON back to that branch, so a
+builder change is checked against the real feed before it merges:
 
 1. checkout, Python 3.12, download `GTFS_All.zip` (fallback `GTFS_Realtime.zip`);
 2. run the script into `BetterMaps/Resources/Transit/` + `scripts/out/`;
-3. fail if the `.gz` is over 20 MB (warn over 15 MB);
+3. fail if the `.gz` is over 60 MB (warn over 40 MB);
 4. upload `transit_timetable.sqlite.gz` + `manifest.json` to the rolling
    pre-release tagged **`transit-data`** (`softprops/action-gh-release@v2`,
    assets overwritten in place, same download URL every week);

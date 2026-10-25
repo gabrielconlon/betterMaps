@@ -353,14 +353,21 @@ actor BusTimetableService {
     }
 
     /// Re-downloads in the background when the installed timetable was built
-    /// more than `days` ago and the release has a newer build. The current
-    /// file keeps serving queries until the new one is swapped in.
-    func refreshIfStale(days: Int = 14) {
+    /// more than `days` ago, or before `bundleBuilt` (the app's own stops
+    /// file: an app update that widens the stop set must not keep querying a
+    /// timetable that lacks those stops), and the release has a newer build.
+    /// The current file keeps serving queries until the new one is swapped in.
+    func refreshIfStale(days: Int = 14, bundleBuilt: Date? = nil) {
         resolveIfNeeded()
         guard case .ready(let built) = state, downloadTask == nil, refreshTask == nil else { return }
-        if let built, let builtDate = Self.isoDay(built),
-           Date().timeIntervalSince(builtDate) < Double(days) * 86400 { return }
+        guard Self.isStale(built: built, days: days, bundleBuilt: bundleBuilt, now: Date()) else { return }
         startRefresh()
+    }
+
+    static func isStale(built: String?, days: Int, bundleBuilt: Date?, now: Date) -> Bool {
+        guard let built, let builtDate = isoDay(built) else { return true }
+        if let bundleBuilt, builtDate < bundleBuilt { return true }
+        return now.timeIntervalSince(builtDate) >= Double(days) * 86400
     }
 
     /// Checks the release for a newer build now and waits for the answer
