@@ -212,9 +212,46 @@ final class TransitLayerStore {
 
     /// The stop to open for a map POI at `coordinate`: the nearest rail /
     /// Luas / DART stop within 400 m, else the nearest bus stop within 200 m.
-    func nearestStop(to coordinate: CLLocationCoordinate2D) -> TransitStop? {
-        grid.nearest(to: coordinate, within: 400, where: { $0.kind != .bus }).first
-            ?? grid.nearest(to: coordinate, within: 200).first
+    /// With the POI's `title`, a stop of the same name wins over a nearer one
+    /// of another name (see `bestMatch`).
+    func nearestStop(to coordinate: CLLocationCoordinate2D, title: String? = nil) -> TransitStop? {
+        Self.bestMatch(grid.nearest(to: coordinate, within: 400, where: { $0.kind != .bus }), title: title)
+            ?? Self.bestMatch(grid.nearest(to: coordinate, within: 200), title: title)
+    }
+
+    /// Picks the stop an Apple Maps transit POI stands for from `candidates`
+    /// (nearest first). Apple's icon and ours rarely share a coordinate: at
+    /// Connolly the Luas stop is nearer Apple's "Connolly Station" than the
+    /// DART/rail stop is, so distance alone opens the wrong timetable.
+    /// Stops whose name appears in the title (or the title in the name) come
+    /// first; among those, a title naming a station or train prefers a stop
+    /// with rail/DART service and one naming the Luas prefers a Luas stop.
+    /// With no name match, the nearest candidate.
+    nonisolated static func bestMatch(_ candidates: [TransitStop], title: String?) -> TransitStop? {
+        guard let title = title.map(normalized), !title.isEmpty else { return candidates.first }
+        let named = candidates.filter {
+            let name = normalized($0.name)
+            return !name.isEmpty && (title.contains(name) || name.contains(title))
+        }
+        guard let first = named.first else { return candidates.first }
+        let words = Set(title.split(separator: " "))
+        if words.contains("luas") {
+            return named.first { $0.kinds.contains(.luas) } ?? first
+        }
+        if !words.isDisjoint(with: ["station", "train", "rail", "dart"]) {
+            return named.first { $0.kinds.contains(.rail) || $0.kinds.contains(.dart) } ?? first
+        }
+        return first
+    }
+
+    /// Lowercased, diacritics folded ("Busáras" matches "Busaras"),
+    /// punctuation dropped, "stn" read as "station".
+    nonisolated private static func normalized(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .map { $0 == "stn" ? "station" : $0 }
+            .joined(separator: " ")
     }
 
     /// The nearest stop drawn as a dot (dots ignore touches) within `meters`

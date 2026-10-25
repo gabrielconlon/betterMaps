@@ -41,6 +41,9 @@ struct MapScreen: View {
     /// Settled sheet height above the bottom safe area; toasts sit on top of it.
     @State private var sheetHeight: CGFloat = SheetLayout.collapsedContentHeight
     @State private var poiSearchTask: Task<Void, Never>?
+    /// Resolving a tapped Apple transit icon to our stop. While set, the
+    /// map's plain tap handler (which sees the same tap) stands down.
+    @State private var transitFeatureTask: Task<Void, Never>?
     /// The slide-in layers panel (top-left button).
     @State private var isLayersPanelOpen = false
     /// Long-press pin, shown while the quick-add sheet is open.
@@ -186,6 +189,7 @@ struct MapScreen: View {
                 },
                 onTapCluster: zoom(to:),
                 onTapStop: { stop in viewModel.showTransitArrivals(for: stop) },
+                onTapTransitFeature: handleTransitFeatureTap,
                 onTap: handleTap,
                 onLongPress: handleLongPress,
                 onCameraSettled: { region in
@@ -489,7 +493,7 @@ struct MapScreen: View {
             // Short disambiguation window: a tap on a pin or stop also reaches
             // the map's tap gesture, and their own handler sets the sheet.
             try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled, viewModel.activeSheet == nil else { return }
+            guard !Task.isCancelled, viewModel.activeSheet == nil, transitFeatureTask == nil else { return }
             if let hitStop {
                 viewModel.showTransitArrivals(for: hitStop)
                 return
@@ -506,6 +510,29 @@ struct MapScreen: View {
                 return
             }
             viewModel.lookUpPlace(at: coordinate)
+        }
+    }
+
+    /// Tap on Apple's own station / stop icon: open our timetable for the
+    /// stop it stands for (matched by name and distance), else the place
+    /// sheet, as a tap there did before.
+    private func handleTransitFeatureTap(_ feature: MapFeature) {
+        if viewModel.activeSheet != nil { return }
+        cancelLookup()
+        transitFeatureTask?.cancel()
+        let coordinate = feature.coordinate
+        let title = feature.title
+        transitFeatureTask = Task {
+            defer { if !Task.isCancelled { transitFeatureTask = nil } }
+            // Loads the bundle even with the transit layer off: the icon is
+            // on the base map either way.
+            await transitStore.loadIfNeeded()
+            guard !Task.isCancelled, viewModel.activeSheet == nil else { return }
+            if let stop = transitStore.nearestStop(to: coordinate, title: title) {
+                viewModel.showTransitArrivals(for: stop)
+            } else {
+                viewModel.lookUpPlace(at: coordinate)
+            }
         }
     }
 

@@ -21,6 +21,10 @@ struct MapCanvas: View {
     let onTapPlace: (UUID) -> Void
     let onTapCluster: (ClusterLite) -> Void
     let onTapStop: (TransitStop) -> Void
+    /// Tap on one of Apple's own public-transport icons (a station or stop
+    /// the base map draws). Ours can sit under it or under a neighbouring
+    /// pin, as at Connolly, so the icon itself has to open the timetable.
+    let onTapTransitFeature: (MapFeature) -> Void
     /// Single tap on empty map: screen point, its coordinate (nil if the
     /// proxy could not convert it) and the map proxy for screen-space hit
     /// testing (trails).
@@ -41,6 +45,10 @@ struct MapCanvas: View {
     /// Settled camera heading for the bus stop direction arrows. Updated on
     /// settle like everything else here, so a rotation redraws them once.
     @State private var mapHeading: Double = 0
+    /// Apple map feature the user just tapped. Only public-transport POIs are
+    /// selectable, and the selection is handed off and cleared at once, so
+    /// Apple's selected-icon state never lingers.
+    @State private var selectedFeature: MapFeature?
     #if DEBUG
     /// Settled centre for the UI-test probe (`-UITestMapProbe` only).
     @State private var probeCenter = "none"
@@ -49,7 +57,7 @@ struct MapCanvas: View {
     var body: some View {
         GeometryReader { geo in
             MapReader { proxy in
-                Map(position: $cameraPosition, scope: mapScope) {
+                Map(position: $cameraPosition, selection: $selectedFeature, scope: mapScope) {
                     UserAnnotation()
                     PlacesLayerContent(places: shown.output.places,
                                        clusters: shown.output.clusters,
@@ -72,6 +80,12 @@ struct MapCanvas: View {
                     }
                 }
                 .mapStyle(mapStyle)
+                .mapFeatureSelectionDisabled { $0.pointOfInterestCategory != .publicTransport }
+                .onChange(of: selectedFeature) { _, feature in
+                    guard let feature else { return }
+                    selectedFeature = nil
+                    onTapTransitFeature(feature)
+                }
                 // Intentionally NOT using .ignoresSafeArea(). Even when applied
                 // to the Map alone, SwiftUI propagates the Map's larger frame
                 // to its sibling overlays in a parent ZStack — which dragged
