@@ -197,7 +197,7 @@ struct POIAddToLayerView: View {
             guard isTransitPOI else { return }
             let store = TransitLayerStore.shared
             await store.loadIfNeeded()
-            nearbyStop = store.nearestStop(to: mapItem.placemark.coordinate)
+            nearbyStop = store.nearestStop(to: mapItem.placemark.coordinate, title: mapItem.name)
         }
         .sheet(item: $arrivalsStop) { stop in
             TransitArrivalsView(stop: stop)
