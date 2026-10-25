@@ -3,12 +3,17 @@
 `build_transit_bundle.py` turns the TFI GTFS feed into the files the app ships /
 downloads for offline transit across Ireland (Dublin only until 2026-10-25):
 
+National build (2026-10-25 feed): 14,116 stops (13,897 bus, 120 rail, 32 DART,
+67 Luas) in a 1.4 MB `transit_stops.json`; 27 line entries / 3,771 points in
+77 KB of `transit_lines.json`, covering every Irish Rail intercity and commuter
+line; the timetable is 17.3 MB gz. The table below is the older Dublin-only build.
+
 | Output | Lives | Size (2026-10-18 feed, Dublin-only bbox) |
 | --- | --- | --- |
 | `transit_stops.json` | `BetterMaps/Resources/Transit/` (committed, bundled) | 544 KB (target <= 800 KB) |
 | `transit_lines.json` | same | 15 KB, 16 entries / 715 points (target <= 150 KB) |
 | `transit_routes.json` | same | 26 KB (target <= 100 KB) |
-| `transit_timetable.sqlite(.gz)` | `scripts/out/` locally (gitignored); published to the `transit-data` GitHub release | Dublin-only build: 30.2 MB raw / 12.6 MB gz. National (default since 2026-10-25): see the latest Action run summary; hard limit 60 MB gz |
+| `transit_timetable.sqlite(.gz)` | `scripts/out/` locally (gitignored); published to the `transit-data` GitHub release | Dublin-only build: 30.2 MB raw / 12.6 MB gz. National (default since 2026-10-25): 17.3 MB gz; hard limit 60 MB gz |
 
 The app reads the timetable from
 `https://github.com/gabrielconlon/betterMaps/releases/download/transit-data/transit_timetable.sqlite.gz`
