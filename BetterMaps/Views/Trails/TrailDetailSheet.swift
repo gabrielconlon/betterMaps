@@ -168,9 +168,8 @@ struct TrailDetailSheet: View {
 
     private func openStartInMaps() {
         guard let start = startCoordinate else { return }
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: start))
-        item.name = trail.name.isEmpty ? "Trail start" : "\(trail.name) start"
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
+        PlaceActionRow.openInAppleMaps(name: trail.name.isEmpty ? "Trail start" : "\(trail.name) start",
+                                       coordinate: start)
     }
 
     private static func camera(for coords: [CLLocationCoordinate2D]) -> MapCameraPosition {

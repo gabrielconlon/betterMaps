@@ -8,6 +8,10 @@ struct PlaceDetailSheet: View {
     @Environment(ToastCenter.self) private var toastCenter: ToastCenter?
     @Query(sort: \Layer.sortOrder) private var allLayers: [Layer]
     @Bindable var place: Place
+    /// Opens the directions sheet for this place (in place of this one).
+    var onDirections: (DirectionsEndpoint) -> Void = { _ in }
+    /// Opens a nearby stop's arrivals (in place of this sheet).
+    var onOpenStop: (TransitStop) -> Void = { _ in }
 
     @State private var showEditForm = false
     /// Set when the user un-ticks the place's last layer.
@@ -68,7 +72,10 @@ struct PlaceDetailSheet: View {
 
                 PlaceActionRow(name: place.name, coordinate: place.coordinate,
                                primaryTitle: "Edit", primarySystemImage: "pencil",
-                               onPrimary: { showEditForm = true })
+                               onPrimary: { showEditForm = true },
+                               onDirections: {
+                                   onDirections(DirectionsEndpoint(name: place.name, coordinate: place.coordinate))
+                               })
 
                 // Tags: tap to add or remove; pick two tags with Match All
                 // in the layers panel to find places that have both.
@@ -82,6 +89,8 @@ struct PlaceDetailSheet: View {
                                              onToggle: toggleMembership)
                     }
                 }
+
+                NearbyTransitSection(coordinate: place.coordinate, onOpenStop: onOpenStop)
 
                 // --- Extended details ---
                 Divider()

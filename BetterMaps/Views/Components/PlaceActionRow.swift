@@ -1,9 +1,9 @@
 import SwiftUI
 import MapKit
 
-/// The single action row on a place or POI card: Apple Maps directions, one
-/// primary action (Add to layer / Edit), Share, and an optional extra
-/// (e.g. transit arrivals). Each tile is at least 52pt tall.
+/// The single action row on a place or POI card: public transport
+/// directions, one primary action (Add to layer / Edit), Share, and an
+/// optional extra (e.g. transit arrivals). Each tile is at least 52pt tall.
 struct PlaceActionRow: View {
     struct Extra {
         let title: String
@@ -16,15 +16,17 @@ struct PlaceActionRow: View {
     let primaryTitle: String
     let primarySystemImage: String
     let onPrimary: () -> Void
+    /// Opens the directions sheet for this place.
+    let onDirections: () -> Void
     var extra: Extra? = nil
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: openInAppleMaps) {
+            Button(action: onDirections) {
                 tile("Directions", systemImage: "arrow.triangle.turn.up.right.diamond.fill", prominent: true)
             }
-            .accessibilityLabel("Open in Apple Maps")
-            .accessibilityHint("Shows walking directions")
+            .accessibilityLabel("Directions")
+            .accessibilityHint("Plans a public transport journey")
 
             Button(action: onPrimary) {
                 tile(primaryTitle, systemImage: primarySystemImage, prominent: false)
@@ -69,8 +71,9 @@ struct PlaceActionRow: View {
         return components.url ?? URL(string: "https://maps.apple.com/")!
     }
 
-    /// Hand off to Apple Maps with walking directions.
-    private func openInAppleMaps() {
+    /// Hand off to Apple Maps with walking directions (the fallback when
+    /// our own planner finds nothing).
+    static func openInAppleMaps(name: String, coordinate: CLLocationCoordinate2D) {
         let item = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
         item.name = name
         item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])

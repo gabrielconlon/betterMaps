@@ -1,10 +1,14 @@
 import SwiftUI
+import SwiftData
 
-/// App settings: map style, iCloud sync status, offline transit data, about, and an Advanced
-/// section (collapsed) for the optional Yelp key, which lives in the Keychain.
+/// App settings: map style, iCloud sync status, offline transit data,
+/// directions preferences, about, and an Advanced section (collapsed) for
+/// the optional Yelp key, which lives in the Keychain.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @AppStorage(MapStyleOption.storageKey) private var mapStyle: MapStyleOption = .standard
+    @Query(sort: \DirectionsPreferences.updatedAt, order: .reverse) private var directionsRows: [DirectionsPreferences]
 
     @State private var timetable = BusTimetableModel()
     private let sync = CloudSyncMonitor.shared
@@ -24,9 +28,11 @@ struct SettingsView: View {
                 mapSection
                 syncSection
                 transitSection
+                directionsSection
                 aboutSection
                 advancedSection
             }
+            .onAppear(perform: ensureDirectionsRow)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -170,6 +176,32 @@ struct SettingsView: View {
         case nil:
             EmptyView()
         }
+    }
+
+    /// The same controls as the directions sheet, bound to the one
+    /// preferences row; the sheet picks the change up on save.
+    @ViewBuilder
+    private var directionsSection: some View {
+        if let row = directionsRows.first {
+            Section {
+                DirectionsControls(prefs: row.snapshot) { snapshot in
+                    row.apply(snapshot)
+                    try? modelContext.save()
+                }
+            } header: {
+                Text("Directions")
+            } footer: {
+                DirectionsAttributionFooter()
+            }
+        }
+    }
+
+    /// Inserts the default preferences row on first open so the section
+    /// has something to bind to.
+    private func ensureDirectionsRow() {
+        guard directionsRows.isEmpty else { return }
+        _ = try? DirectionsPreferences.fetchOrCreate(in: modelContext)
+        try? modelContext.save()
     }
 
     private var aboutSection: some View {

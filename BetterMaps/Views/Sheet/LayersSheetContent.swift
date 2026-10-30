@@ -8,6 +8,8 @@ struct SheetSearchActions {
     let onSelectStop: (TransitStop) -> Void
     let onSelectRoute: (TransitRoute) -> Void
     let onSelectPOI: (MKMapItem) -> Void
+    /// The row's trailing arrow: plan a journey to this result.
+    let onDirections: (DirectionsEndpoint) -> Void
 }
 
 /// Trail count and total length of one trail group, precomputed with the
@@ -65,7 +67,8 @@ struct LayersSheetContent: View {
                                        onSelectPlace: searchActions.onSelectPlace,
                                        onSelectStop: searchActions.onSelectStop,
                                        onSelectRoute: searchActions.onSelectRoute,
-                                       onSelectPOI: searchActions.onSelectPOI)
+                                       onSelectPOI: searchActions.onSelectPOI,
+                                       onDirections: searchActions.onDirections)
                 } else {
                     FirstRunHintsView(hints: hints)
                     tagsSection
