@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Always-visible top of the sheet: the search field and the "+" menu (and
-/// the gear or Cancel button). Nothing else, so the collapsed sheet is one
-/// row; what the map shows is chosen in the layers panel.
+/// Always-visible top of the sheet: the search field, the "+" menu and the
+/// Settings gear (Cancel replaces both while searching). Nothing else, so
+/// the collapsed sheet is one row; what the map shows is chosen in the
+/// layers panel. The gear shows at every detent: hidden while collapsed, it
+/// was easy to never see at all, and Settings now holds tag and trail-group
+/// management as well as the directions options.
 struct LayersSheetHeader: View {
     @Bindable var searchState: SearchState
     var isSearchFocused: FocusState<Bool>.Binding
-    let detent: SheetDetent
     let onSearchTextChanged: () -> Void
     let onCancelSearch: () -> Void
     let onAddPlace: () -> Void
@@ -51,9 +53,7 @@ struct LayersSheetHeader: View {
                     .frame(minHeight: 44)
             } else {
                 addMenu
-                if detent != .collapsed {
-                    circleButton(systemImage: "gearshape", label: "Settings", action: onOpenSettings)
-                }
+                circleButton(systemImage: "gearshape", label: "Settings", action: onOpenSettings)
             }
         }
         .padding(.horizontal, 16)

@@ -19,7 +19,6 @@ struct MapScreen: View {
     @State private var store = MapContentStore(region: Self.launchRegion)
     @State private var trailSnapshotter = TrailSnapshotter()
     @State private var toastCenter = ToastCenter()
-    @State private var timetable = BusTimetableModel()
     @Namespace private var mapScope
 
     /// Default to a fixed Dublin region rather than `.userLocation(fallback:)`.
@@ -357,7 +356,6 @@ struct MapScreen: View {
         LayersSheetHeader(
             searchState: searchState,
             isSearchFocused: $isSearchFocused,
-            detent: sheetDetent,
             onSearchTextChanged: {
                 searchState.debouncedSearch(places: places, transit: transitStore,
                                             userLocation: locationManager.userLocation)
@@ -384,7 +382,6 @@ struct MapScreen: View {
             searchState: searchState,
             transitSettings: transitSettings,
             transitStore: transitStore,
-            timetable: timetable,
             searchActions: SheetSearchActions(
                 onSelectPlace: { place in
                     showResult(at: place.coordinate)
