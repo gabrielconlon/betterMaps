@@ -16,13 +16,13 @@ final class LegacyExtra {
 }
 
 /// Proves that opening an on-disk store written with extra entities using
-/// the app's current 4-entity schema is a lightweight migration that keeps
+/// the app's current 5-entity schema is a lightweight migration that keeps
 /// Place / Layer / Trail data and relationships intact.
 @MainActor
 final class SchemaUpgradeTests: XCTestCase {
-    func testShippingSchemaHasExactlyFourEntities() {
+    func testShippingSchemaHasExactlyFiveEntities() {
         let names = Set(AppModelContainer.schema.entities.map(\.name))
-        XCTAssertEqual(names, ["Place", "Layer", "Trail", "FavoriteTransitRoute"])
+        XCTAssertEqual(names, ["Place", "Layer", "Trail", "FavoriteTransitRoute", "DirectionsPreferences"])
     }
 
     func testDroppingEntitiesKeepsPlacesLayersAndTrails() throws {
@@ -82,6 +82,7 @@ final class SchemaUpgradeTests: XCTestCase {
             Layer.self,
             Trail.self,
             FavoriteTransitRoute.self,
+            DirectionsPreferences.self,
             LegacyExtra.self
         ])
         let config = ModelConfiguration(schema: oldSchema, url: url, cloudKitDatabase: .none)

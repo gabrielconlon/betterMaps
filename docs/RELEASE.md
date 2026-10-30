@@ -36,7 +36,8 @@ Do these once, in order. Everything else is already in the repo.
    Without this record the upload fails with `No suitable application records were found`.
 4. **CloudKit schema to Production.** This one fails silently. TestFlight builds talk to the
    **Production** CloudKit environment, and Xcode device builds talk to Development. If the
-   SwiftData record types (`Place`, `Layer`, `Trail`, `FavoriteTransitRoute`) were never
+   SwiftData record types (`Place`, `Layer`, `Trail`, `FavoriteTransitRoute`,
+   `DirectionsPreferences`) were never
    deployed, the TestFlight app opens fine and nothing syncs. To deploy:
    - Run a Debug build on a device signed into iCloud and create one of each: a place, a
      layer, a trail, and a favourite transit route, so every record type and field exists in
@@ -44,6 +45,8 @@ Do these once, in order. Everything else is already in the repo.
    - CloudKit Console → `iCloud.com.gabrielconlon.CustomMapApp` → Schema → **Deploy Schema
      Changes** (Development → Production).
    - Repeat whenever a `@Model` gains a field, before the TestFlight build that uses it ships.
+     `DirectionsPreferences` (added 2026-10-30) is a new record type and requires a
+     Production schema deploy before the next TestFlight build.
 5. **Ship it.** `./scripts/release.sh`. Then in App Store Connect → the app → TestFlight, fill
    in **What to Test** on the build and add yourself (and anyone else) to Internal Testing.
    Internal testers skip Beta App Review, so the build arrives minutes after it goes VALID.

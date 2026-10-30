@@ -11,7 +11,8 @@ enum AppModelContainer {
         Place.self,
         Layer.self,
         Trail.self,
-        FavoriteTransitRoute.self
+        FavoriteTransitRoute.self,
+        DirectionsPreferences.self
     ])
 
     private static let logger = Logger(
