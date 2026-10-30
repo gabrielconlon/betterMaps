@@ -144,6 +144,40 @@ struct DirectionsSheet: View {
         .accessibilityIdentifier("directions.options")
 
         results
+        rainLine
+    }
+
+    /// One quiet line under the results, never a banner: what the forecast
+    /// says and, when the walks were shortened for it, a way back.
+    @ViewBuilder
+    private var rainLine: some View {
+        if let hint = model.rainHint {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "cloud.rain")
+                    .accessibilityHidden(true)
+                Text(rainText(hint))
+                if model.rainAdjusted {
+                    Button("Undo") { model.undoRainAdjustment() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                        .accessibilityIdentifier("directions.rainUndo")
+                        .accessibilityHint("Plans again with your own walking limit")
+                }
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(minHeight: 32)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("directions.rainHint")
+        }
+    }
+
+    /// "Rain likely around 17:00 near Blanchardstown. Showing shorter walks."
+    private func rainText(_ hint: RainHint) -> String {
+        var text = "Rain likely around \(DirectionsFormat.clock(hint.hour)) near \(hint.nearName)."
+        if model.rainAdjusted { text += " Showing shorter walks." }
+        return text
     }
 
     /// "Walk 10 min · Bus, Luas, DART, Rail · 2 changes"

@@ -29,12 +29,7 @@ struct ItineraryCard: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     if let reason = itinerary.reason, !reason.isEmpty {
-                        Text(reason)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.accentColor.opacity(0.12), in: Capsule())
-                            .foregroundStyle(.tint)
+                        ReasonChip(reason: reason)
                     }
                     if itinerary.legs.contains(where: \.isRealtime) {
                         LiveBadge()
@@ -65,7 +60,26 @@ struct ItineraryCard: View {
         sentence += ", leaves \(DirectionsFormat.clock(itinerary.start)), arrives \(DirectionsFormat.clock(itinerary.end))"
         sentence += ", \(DirectionsFormat.summary(walkSeconds: itinerary.walkSeconds, bikeSeconds: itinerary.bikeSeconds, transfers: itinerary.transfers))"
         if !modes.isEmpty { sentence += ", via \(modes.joined(separator: ", "))" }
+        if let reason = itinerary.reason, !reason.isEmpty { sentence += ", \(reason.lowercased())" }
         return sentence + "."
+    }
+}
+
+/// Why ranking placed an option where it did: "Rail" in the accent colour,
+/// anything else ("Fewer changes") in the quieter secondary tint.
+struct ReasonChip: View {
+    let reason: String
+
+    private var isRail: Bool { reason == RankingRules.railReason }
+
+    var body: some View {
+        Text(reason)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(isRail ? Color.accentColor.opacity(0.12) : Color(.tertiarySystemFill), in: Capsule())
+            .foregroundStyle(isRail ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .accessibilityIdentifier("directions.reason.\(reason)")
     }
 }
 
