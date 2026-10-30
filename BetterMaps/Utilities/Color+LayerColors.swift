@@ -211,6 +211,22 @@ enum TransitColors {
     /// Highlighted (favorite-chip) route stroke.
     static let highlightedRoute = Color.blue.opacity(0.85)
 
+    /// Walking legs of a directions option: neutral in both themes.
+    static let walkLeg = Color(.systemGray)
+    /// Cycling legs: a green that stays legible on light and dark maps.
+    static let bikeLeg = Color(red: 0.24, green: 0.68, blue: 0.42)
+
+    /// Stroke and chip colour for one leg of an itinerary. Transit legs
+    /// share their network's pin hue (Luas Red stays coral).
+    static func leg(for leg: Leg) -> Color {
+        switch leg.mode {
+        case .walk: return walkLeg
+        case .bike: return bikeLeg
+        case .luas: return pin(.luas, line: leg.routeShortName?.lowercased())
+        case .bus, .dart, .rail: return pin(leg.mode.layerKind ?? .bus)
+        }
+    }
+
     /// Luas Red line — pastel coral with the same .opacity treatment as the
     /// other network lines so all four (LuasRed/LuasGreen/DART/Rail) read
     /// as a coherent overlay set.
