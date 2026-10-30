@@ -49,6 +49,41 @@ final class FakeJourneyProvider: JourneyProvider, @unchecked Sendable {
     }
 }
 
+/// A bike router the tests steer: records every request and answers with a
+/// set itinerary (or error) after an optional delay. Fails by default so the
+/// transit results in older tests stay exactly what the planner gave.
+final class FakeCyclingProvider: CyclingRouteProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requests: [CyclingRouteRequest] = []
+    private var _result: Result<Itinerary, Error> = .failure(JourneyProviderError.unavailable(status: 503))
+    private var _delay: Duration = .zero
+
+    var requests: [CyclingRouteRequest] {
+        lock.lock(); defer { lock.unlock() }
+        return _requests
+    }
+
+    var result: Result<Itinerary, Error> {
+        get { lock.lock(); defer { lock.unlock() }; return _result }
+        set { lock.lock(); _result = newValue; lock.unlock() }
+    }
+
+    var delay: Duration {
+        get { lock.lock(); defer { lock.unlock() }; return _delay }
+        set { lock.lock(); _delay = newValue; lock.unlock() }
+    }
+
+    func route(_ request: CyclingRouteRequest) async throws -> Itinerary {
+        let (answer, wait): (Result<Itinerary, Error>, Duration) = {
+            lock.lock(); defer { lock.unlock() }
+            _requests.append(request)
+            return (_result, _delay)
+        }()
+        if wait > .zero { try await Task.sleep(for: wait) }
+        return try answer.get()
+    }
+}
+
 /// A weather service answering every point from one fixture, or failing
 /// like a device offline when given none; counts the requests it saw.
 final class FakeWeather: @unchecked Sendable {
@@ -99,9 +134,20 @@ final class DirectionsViewModelTests: XCTestCase {
                          transfers: max(modes.filter(\.isTransit).count - 1, 0), walkSeconds: 0, bikeSeconds: 0)
     }
 
+    /// A cycle the whole way, as the bike router or the engine would give it.
+    private func makeBike(_ id: String, minutes: Int = 25, reason: String? = nil) -> Itinerary {
+        let end = t0.addingTimeInterval(TimeInterval(minutes * 60))
+        let leg = Leg(id: "\(id)-leg", mode: .bike, fromName: "Start", toName: "Destination",
+                      start: t0, end: end, durationSeconds: minutes * 60,
+                      coordinates: [heuston.coordinate, dunLaoghaire.coordinate])
+        return Itinerary(id: id, legs: [leg], start: t0, end: end, durationSeconds: minutes * 60,
+                         transfers: 0, walkSeconds: 0, bikeSeconds: minutes * 60, reason: reason)
+    }
+
     private func makeModel(_ provider: FakeJourneyProvider, store: TransitLayerStore = TransitLayerStore(),
-                           weather: FakeWeather = FakeWeather()) -> DirectionsViewModel {
-        let model = DirectionsViewModel(provider: provider, store: store, weather: weather.service)
+                           weather: FakeWeather = FakeWeather(),
+                           cycling: FakeCyclingProvider = FakeCyclingProvider()) -> DirectionsViewModel {
+        let model = DirectionsViewModel(provider: provider, store: store, weather: weather.service, cycling: cycling)
         model.origin = heuston
         model.destination = dunLaoghaire
         return model
@@ -150,7 +196,7 @@ final class DirectionsViewModelTests: XCTestCase {
 
     func testNoRequestWithoutBothEndpoints() {
         let model = DirectionsViewModel(provider: FakeJourneyProvider(), store: TransitLayerStore(),
-                                        weather: FakeWeather().service)
+                                        weather: FakeWeather().service, cycling: FakeCyclingProvider())
         model.destination = dunLaoghaire
         XCTAssertNil(model.buildRequest())
         model.scheduleQuery(immediate: true)
@@ -159,7 +205,7 @@ final class DirectionsViewModelTests: XCTestCase {
 
     func testStartWithoutLocationStaysIdle() {
         let provider = FakeJourneyProvider()
-        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service)
+        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
         model.start(destination: dunLaoghaire, userLocation: nil)
         XCTAssertNil(model.origin)
         XCTAssertEqual(model.phase, .idle)
@@ -169,7 +215,7 @@ final class DirectionsViewModelTests: XCTestCase {
     func testStartWithLocationPlansFromMyLocation() async {
         let provider = FakeJourneyProvider()
         provider.result = .success([makeItinerary("a")])
-        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service)
+        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
         model.start(destination: dunLaoghaire, userLocation: heuston.coordinate)
         XCTAssertEqual(model.origin?.isUserLocation, true)
         await settle()
@@ -425,7 +471,7 @@ final class DirectionsViewModelTests: XCTestCase {
             if request.walkToleranceOverrideMinutes == 20 { return [probeOnly, shared] }
             return [shared, baseOnly]
         }
-        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service)
+        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
         model.origin = heuston
         model.destination = dunLaoghaire
         model.scheduleQuery(immediate: true)
@@ -443,7 +489,7 @@ final class DirectionsViewModelTests: XCTestCase {
             if request.walkToleranceOverrideMinutes == 20 { throw JourneyProviderError.unavailable(status: 503) }
             return [good]
         }
-        let model = DirectionsViewModel(provider: probeFails, store: TransitLayerStore(), weather: FakeWeather().service)
+        let model = DirectionsViewModel(provider: probeFails, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
         model.origin = heuston
         model.destination = dunLaoghaire
         model.scheduleQuery(immediate: true)
@@ -457,7 +503,7 @@ final class DirectionsViewModelTests: XCTestCase {
             }
             return [good]
         }
-        let fallback = DirectionsViewModel(provider: baseFails, store: TransitLayerStore(), weather: FakeWeather().service)
+        let fallback = DirectionsViewModel(provider: baseFails, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
         fallback.origin = heuston
         fallback.destination = dunLaoghaire
         fallback.scheduleQuery(immediate: true)
@@ -726,7 +772,7 @@ final class DirectionsViewModelTests: XCTestCase {
         let provider = FakeJourneyProvider()
         provider.result = .success([makeItinerary("a")])
         let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(),
-                                        weather: FakeWeather().service)
+                                        weather: FakeWeather().service, cycling: FakeCyclingProvider())
         model.start(destination: dunLaoghaire, userLocation: nil)
         XCTAssertNil(model.origin)
         XCTAssertEqual(model.phase, .idle)
@@ -753,10 +799,138 @@ final class DirectionsViewModelTests: XCTestCase {
 
         // No destination yet: a fix alone starts nothing.
         let bare = DirectionsViewModel(provider: provider, store: TransitLayerStore(),
-                                       weather: FakeWeather().service)
+                                       weather: FakeWeather().service, cycling: FakeCyclingProvider())
         bare.isPresented = true
         bare.userLocationDidUpdate(heuston.coordinate)
         XCTAssertNil(bare.origin)
+    }
+
+    // MARK: Cycling
+
+    func testBikeRouterReplacesTheEnginesDirectCycle() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a", minutes: 40), makeBike("engine-bike", minutes: 30)])
+        let cycling = FakeCyclingProvider()
+        cycling.result = .success(makeBike("brouter", minutes: 32, reason: "Quiet roads"))
+        let model = makeModel(provider, cycling: cycling)
+        model.scheduleQuery(immediate: true)
+        await settle()
+
+        XCTAssertEqual(model.phase, .results)
+        XCTAssertEqual(model.itineraries.map(\.id), ["brouter", "a"], "ranked by duration, engine cycle gone")
+        XCTAssertEqual(model.itineraries.first?.reason, "Quiet roads", "ranking keeps the router's reason")
+        XCTAssertEqual(cycling.requests.count, 1, "one bike route per plan, not per probe")
+        let sent = cycling.requests[0]
+        XCTAssertEqual(sent.style, .quiet)
+        XCTAssertEqual(sent.origin.latitude, heuston.coordinate.latitude)
+        XCTAssertEqual(sent.destination.longitude, dunLaoghaire.coordinate.longitude)
+        XCTAssertEqual(sent.departure, provider.baseRequests[0].time)
+    }
+
+    func testEngineCycleKeptWhenBikeRouterFails() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a", minutes: 40), makeBike("engine-bike", minutes: 30)])
+        let cycling = FakeCyclingProvider()
+        cycling.result = .failure(JourneyProviderError.unavailable(status: 502))
+        let model = makeModel(provider, cycling: cycling)
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertEqual(model.phase, .results)
+        XCTAssertEqual(model.itineraries.map(\.id), ["engine-bike", "a"])
+        XCTAssertEqual(cycling.requests.count, 1)
+    }
+
+    func testBikeRouterAppendedWhenEngineHadNoCycle() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a", minutes: 20)])
+        let cycling = FakeCyclingProvider()
+        cycling.result = .success(makeBike("brouter", minutes: 32, reason: "Quiet roads"))
+        let model = makeModel(provider, cycling: cycling)
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertEqual(model.itineraries.map(\.id), ["a", "brouter"])
+
+        let timedOut = await DirectionsViewModel.cyclingOption(
+            DirectionsViewModel.CyclingJob(provider: {
+                let slow = FakeCyclingProvider()
+                slow.result = .success(makeBike("slow"))
+                slow.delay = .seconds(2)
+                return slow
+            }(), request: cycling.requests[0]),
+            timeout: .milliseconds(50))
+        XCTAssertNil(timedOut, "a slow router is not waited for")
+    }
+
+    func testSetCyclingStyleRefreshesOnlyTheBikeOption() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a", minutes: 40), makeBike("engine-bike", minutes: 30)])
+        let cycling = FakeCyclingProvider()
+        let quiet = makeBike("brouter-quiet", minutes: 32, reason: "Quiet roads")
+        cycling.result = .success(quiet)
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store, cycling: cycling)
+        model.scheduleQuery(immediate: true)
+        await settle()
+        model.select(quiet)
+        let planRequests = provider.requests.count
+
+        cycling.result = .success(makeBike("brouter-fast", minutes: 26))
+        model.setCyclingStyle(.fast)
+        XCTAssertEqual(model.prefs.cyclingStyle, .fast)
+        XCTAssertEqual(model.phase, .results, "no loading state for a quiet swap")
+        await settle()
+        XCTAssertEqual(provider.requests.count, planRequests, "no transit re-plan")
+        XCTAssertEqual(cycling.requests.count, 2)
+        XCTAssertEqual(cycling.requests.last?.style, .fast)
+        XCTAssertEqual(model.itineraries.map(\.id), ["brouter-fast", "a"], "swapped in place")
+        XCTAssertNil(model.itineraries.first?.reason, "fastest has nothing to say")
+        XCTAssertEqual(model.selectedId, "brouter-fast", "the pick follows the bike option")
+        XCTAssertEqual(store.drawnItinerary?.map(\.id), ["brouter-fast-leg"])
+
+        // The shared controls hand back a whole snapshot; a style-only
+        // change still takes the cycling path.
+        model.apply(model.prefs.replacing(cyclingStyle: .balanced))
+        await settle()
+        XCTAssertEqual(provider.requests.count, planRequests)
+        XCTAssertEqual(cycling.requests.count, 3)
+        XCTAssertEqual(cycling.requests.last?.style, .balanced)
+
+        // The same style again is a no-op.
+        model.setCyclingStyle(.balanced)
+        await settle()
+        XCTAssertEqual(cycling.requests.count, 3)
+    }
+
+    func testNoBikeRouteWhenCyclingTheWholeWayIsOff() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a")])
+        let cycling = FakeCyclingProvider()
+        cycling.result = .success(makeBike("brouter"))
+        let model = makeModel(provider, cycling: cycling)
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(allowBikeDirect: false))
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertEqual(model.itineraries.map(\.id), ["a"])
+        XCTAssertTrue(cycling.requests.isEmpty)
+
+        model.setCyclingStyle(.fast)
+        await settle()
+        XCTAssertTrue(cycling.requests.isEmpty, "a style change without the option asks nothing")
+        XCTAssertEqual(model.prefs.cyclingStyle, .fast, "but is remembered")
+    }
+
+    func testFixtureCyclingProviderGivesASyntheticRoute() async throws {
+        let route = try await FixtureCyclingProvider().route(
+            CyclingRouteRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, style: .quiet, departure: t0))
+        XCTAssertEqual(route.legs.count, 1)
+        XCTAssertEqual(route.legs[0].mode, .bike)
+        XCTAssertEqual(route.legs[0].coordinates.count, 8)
+        XCTAssertEqual(route.durationSeconds, 1500)
+        XCTAssertEqual(route.reason, "Quiet roads")
+        XCTAssertEqual(route.start, t0)
+        let fast = try await FixtureCyclingProvider().route(
+            CyclingRouteRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, style: .fast, departure: t0))
+        XCTAssertNil(fast.reason)
     }
 
     func testFixtureProviderHonoursOverrides() async throws {

@@ -16,6 +16,17 @@ enum JourneyProviderFactory {
         return liveProvider()
     }
 
+    /// The bike router: BRouter's public server normally, a synthetic route
+    /// under the UI-test flag.
+    static func makeCycling() -> any CyclingRouteProvider {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains(uiTestFlag) {
+            return FixtureCyclingProvider()
+        }
+        #endif
+        return BRouterCyclingProvider()
+    }
+
     static func makeWeather() -> WeatherHintService {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains(uiTestFlag) {

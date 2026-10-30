@@ -147,3 +147,31 @@ struct FixtureJourneyProvider: JourneyProvider {
                          durationSeconds: total, transfers: 0, walkSeconds: 6 * 60, bikeSeconds: 0)
     }
 }
+
+/// Debug/test only. A synthetic 25-minute cycle from the request's origin
+/// to its destination along eight points, with the reason BRouter would give
+/// for the style (quiet roads are named; the others say nothing). Picked by
+/// `JourneyProviderFactory.makeCycling` under `-UITestFakeDirections`.
+struct FixtureCyclingProvider: CyclingRouteProvider {
+    static let durationSeconds = 1500
+
+    func route(_ request: CyclingRouteRequest) async throws -> Itinerary {
+        let start = request.departure
+        let end = start.addingTimeInterval(TimeInterval(Self.durationSeconds))
+        let points = (0..<8).map { step -> CLLocationCoordinate2D in
+            let t = Double(step) / 7
+            // A gentle bow off the straight line so the drawn route is visibly a route.
+            let bow = sin(t * .pi) * 0.004
+            return CLLocationCoordinate2D(
+                latitude: request.origin.latitude + (request.destination.latitude - request.origin.latitude) * t + bow,
+                longitude: request.origin.longitude + (request.destination.longitude - request.origin.longitude) * t)
+        }
+        let id = "fixture-bike-\(request.style.rawValue)"
+        let leg = Leg(id: id, mode: .bike, fromName: "Start", toName: "Destination",
+                      start: start, end: end, durationSeconds: Self.durationSeconds, coordinates: points)
+        return Itinerary(id: id, legs: [leg], start: start, end: end,
+                         durationSeconds: Self.durationSeconds, transfers: 0, walkSeconds: 0,
+                         bikeSeconds: Self.durationSeconds,
+                         reason: request.style == .quiet ? request.style.displayName : nil)
+    }
+}

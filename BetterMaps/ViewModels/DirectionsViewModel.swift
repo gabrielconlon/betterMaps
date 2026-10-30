@@ -13,9 +13,11 @@ import SwiftData
 ///
 /// A plan is more than one request: beside the user's own query run a
 /// rail-only probe (when they prefer rail) and a longer-walk probe (when
-/// their walk limit is short), merged and ranked together. With rain
-/// awareness on, the forecast is checked after the results land and, when a
-/// shower is likely, the plan is run again with a five-minute walk limit.
+/// their walk limit is short), merged and ranked together. With "cycle the
+/// whole way" on, the bike router is asked at the same time and its route
+/// stands in for the engine's own direct cycle. With rain awareness on, the
+/// forecast is checked after the results land and, when a shower is likely,
+/// the plan is run again with a five-minute walk limit.
 @MainActor
 @Observable
 final class DirectionsViewModel {
@@ -31,6 +33,8 @@ final class DirectionsViewModel {
     }
 
     nonisolated static let debounce: Duration = .milliseconds(400)
+    /// How long the bike router may take before the plan goes on without it.
+    nonisolated static let cyclingTimeout: Duration = .seconds(8)
     private static let genericFailure = "Directions are unavailable right now."
 
     var origin: DirectionsEndpoint?
@@ -68,17 +72,22 @@ final class DirectionsViewModel {
 
     @ObservationIgnored private let provider: any JourneyProvider
     @ObservationIgnored private let weather: WeatherHintService
+    @ObservationIgnored private let cycling: any CyclingRouteProvider
     @ObservationIgnored private let store: TransitLayerStore
     @ObservationIgnored private var context: ModelContext?
     @ObservationIgnored private var prefsModel: DirectionsPreferences?
     @ObservationIgnored private var queryTask: Task<Void, Never>?
+    /// A cycling-only refresh (the style changed); never outlives a re-plan.
+    @ObservationIgnored private var cyclingTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
 
     init(provider: any JourneyProvider, store: TransitLayerStore = .shared,
-         weather: WeatherHintService = WeatherHintService()) {
+         weather: WeatherHintService = WeatherHintService(),
+         cycling: any CyclingRouteProvider = JourneyProviderFactory.makeCycling()) {
         self.provider = provider
         self.store = store
         self.weather = weather
+        self.cycling = cycling
     }
 
     // MARK: - Preferences
@@ -218,6 +227,13 @@ final class DirectionsViewModel {
         write(prefs.replacing(maxTransfers: count))
     }
 
+    /// Stores the style and asks the bike router again; the transit plan is
+    /// left alone, since only the cycle option depends on it.
+    func setCyclingStyle(_ style: CyclingStyle) {
+        guard persist(prefs.replacing(cyclingStyle: style)) else { return }
+        refreshCyclingRoute()
+    }
+
     func setDepartNow(_ now: Bool) {
         departNow = now
         if now { time = Date() }
@@ -235,9 +251,14 @@ final class DirectionsViewModel {
         scheduleQuery()
     }
 
-    /// Applies the whole snapshot (the shared `DirectionsControls` view).
+    /// Applies the whole snapshot (the shared `DirectionsControls` view). A
+    /// change to the cycling style alone takes the cycling-only path.
     func apply(_ snapshot: DirectionsPreferencesSnapshot) {
-        write(snapshot)
+        if snapshot.replacing(cyclingStyle: prefs.cyclingStyle) == prefs {
+            setCyclingStyle(snapshot.cyclingStyle)
+        } else {
+            write(snapshot)
+        }
     }
 
     func relaxWalkingLimit() {
@@ -277,6 +298,13 @@ final class DirectionsViewModel {
                               preferences: prefs)
     }
 
+    /// The bike router's question for the same journey: the user's style,
+    /// leaving at the planned time.
+    nonisolated static func cyclingRequest(for base: JourneyRequest) -> CyclingRouteRequest {
+        CyclingRouteRequest(origin: base.origin, destination: base.destination,
+                            style: base.preferences.cyclingStyle, departure: base.time)
+    }
+
     /// The requests one plan is made of: the user's own query first, then
     /// the probes. The rail probe rides only the rail modes the user has on
     /// (Luas included, since it is how most people reach a DART station).
@@ -302,28 +330,62 @@ final class DirectionsViewModel {
         return result
     }
 
+    /// A bike route to ask for alongside the transit plan.
+    struct CyclingJob: Sendable {
+        let provider: any CyclingRouteProvider
+        let request: CyclingRouteRequest
+    }
+
     /// What one round of planning produced, before ranking.
     struct PlanOutcome: Sendable {
-        /// Base itineraries first, then each probe's, de-duplicated by id.
+        /// Base itineraries first, then each probe's, de-duplicated by id,
+        /// with the bike router's option standing in for the engine's own
+        /// direct cycle when it answered.
         var itineraries: [Itinerary]
         var baseIds: Set<String>
         var baseMinTransitLegs: Int?
+        /// The bike router's answer, when asked and it came in time.
+        var bike: Itinerary?
+
+        init(itineraries: [Itinerary], baseIds: Set<String>, baseMinTransitLegs: Int?, bike: Itinerary? = nil) {
+            self.itineraries = itineraries
+            self.baseIds = baseIds
+            self.baseMinTransitLegs = baseMinTransitLegs
+            self.bike = bike
+        }
     }
 
-    /// Runs `requests` together and merges the answers. The first request is
-    /// the base: its failure is only reported when every probe failed too,
-    /// and a probe's failure is ignored whenever anything else succeeded.
+    private enum PlanPart: Sendable {
+        case transit(Int, Result<[Itinerary], Error>)
+        case bike(Itinerary?)
+    }
+
+    /// Runs `requests` together (and the cycling job, when given) and merges
+    /// the answers. The first request is the base: its failure is only
+    /// reported when every probe failed too, and a probe's failure is
+    /// ignored whenever anything else succeeded. A bike router failure or
+    /// timeout is silent: the engine's own direct cycle, if any, stays.
     nonisolated static func plan(_ requests: [JourneyRequest],
-                                 with provider: any JourneyProvider) async throws -> PlanOutcome {
+                                 with provider: any JourneyProvider,
+                                 cycling: CyclingJob? = nil) async throws -> PlanOutcome {
         var results: [Int: Result<[Itinerary], Error>] = [:]
-        await withTaskGroup(of: (Int, Result<[Itinerary], Error>).self) { group in
+        var bike: Itinerary?
+        await withTaskGroup(of: PlanPart.self) { group in
             for (index, request) in requests.enumerated() {
                 group.addTask {
-                    do { return (index, .success(try await provider.plan(request))) }
-                    catch { return (index, .failure(error)) }
+                    do { return .transit(index, .success(try await provider.plan(request))) }
+                    catch { return .transit(index, .failure(error)) }
                 }
             }
-            for await (index, result) in group { results[index] = result }
+            if let cycling {
+                group.addTask { .bike(await cyclingOption(cycling)) }
+            }
+            for await part in group {
+                switch part {
+                case .transit(let index, let result): results[index] = result
+                case .bike(let found): bike = found
+                }
+            }
         }
 
         var seen: Set<String> = []
@@ -340,19 +402,57 @@ final class DirectionsViewModel {
             if case .failure(let error)? = results[0] { throw error }
             throw JourneyProviderError.unavailable(status: nil)
         }
+        if let bike { merged = merging(bike: bike, into: merged) }
+
         var baseIds: Set<String> = []
         var baseMin: Int?
         if case .success(let base)? = results[0] {
             baseIds = Set(base.map(\.id))
             baseMin = base.map(\.transitLegs.count).filter { $0 > 0 }.min()
         }
-        return PlanOutcome(itineraries: merged, baseIds: baseIds, baseMinTransitLegs: baseMin)
+        return PlanOutcome(itineraries: merged, baseIds: baseIds, baseMinTransitLegs: baseMin, bike: bike)
+    }
+
+    /// The bike router's answer, or nil when it failed or took longer than
+    /// `timeout`; the slow request is cancelled.
+    nonisolated static func cyclingOption(_ job: CyclingJob, timeout: Duration = cyclingTimeout) async -> Itinerary? {
+        await withTaskGroup(of: Itinerary?.self) { group in
+            group.addTask { try? await job.provider.route(job.request) }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// Puts the bike router's option where the engine's direct cycle was
+    /// (any further all-bike options go), or at the end when there was none.
+    nonisolated static func merging(bike: Itinerary, into itineraries: [Itinerary]) -> [Itinerary] {
+        var result: [Itinerary] = []
+        result.reserveCapacity(itineraries.count + 1)
+        var placed = false
+        for itinerary in itineraries {
+            if RankingRules.isBikeOnly(itinerary) {
+                if !placed {
+                    result.append(bike)
+                    placed = true
+                }
+            } else {
+                result.append(itinerary)
+            }
+        }
+        if !placed { result.append(bike) }
+        return result
     }
 
     /// Cancels any plan in flight and starts a new one after `debounce`
     /// (or at once). Only the newest generation may publish.
     func scheduleQuery(immediate: Bool = false) {
         queryTask?.cancel()
+        cyclingTask?.cancel()
         generation &+= 1
         let gen = generation
         guard let request = buildRequest() else {
@@ -371,15 +471,18 @@ final class DirectionsViewModel {
         }
     }
 
-    /// One whole search: the plan with its probes, then the forecast and,
-    /// when rain is likely, the plan again with shorter walks. Every publish
-    /// checks the generation so a superseded search changes nothing.
+    /// One whole search: the plan with its probes (and the bike route), then
+    /// the forecast and, when rain is likely, the plan again with shorter
+    /// walks. Every publish checks the generation so a superseded search
+    /// changes nothing.
     private func runQuery(_ request: JourneyRequest, generation gen: Int) async {
         let provider = self.provider
         let prefs = request.preferences
+        let cyclingJob = prefs.allowBikeDirect
+            ? CyclingJob(provider: cycling, request: Self.cyclingRequest(for: request)) : nil
         let outcome: Result<PlanOutcome, Error>
         do {
-            outcome = .success(try await Self.plan(Self.requests(for: request), with: provider))
+            outcome = .success(try await Self.plan(Self.requests(for: request), with: provider, cycling: cyclingJob))
         } catch {
             outcome = .failure(error)
         }
@@ -402,11 +505,38 @@ final class DirectionsViewModel {
         rainHint = hint
         guard hint != nil, prefs.walkToleranceMinutes > Self.rainWalkMinutes else { return }
 
-        guard let adjusted = try? await Self.plan(Self.requests(for: request, rainAdjusted: true), with: provider),
+        // The bike route does not depend on the walk limit: reuse it.
+        guard var adjusted = try? await Self.plan(Self.requests(for: request, rainAdjusted: true), with: provider),
               !adjusted.itineraries.isEmpty else { return }
         guard !Task.isCancelled, generation == gen else { return }
+        if let bike = planned.bike {
+            adjusted.itineraries = Self.merging(bike: bike, into: adjusted.itineraries)
+            adjusted.bike = bike
+        }
         rainAdjusted = true
         publish(.success(adjusted))
+    }
+
+    /// Asks the bike router again with the current style and swaps the
+    /// answer in for the cycle option on screen. The transit results stay as
+    /// they are; a re-plan started meanwhile wins.
+    private func refreshCyclingRoute() {
+        cyclingTask?.cancel()
+        guard prefs.allowBikeDirect, let request = buildRequest() else { return }
+        let job = CyclingJob(provider: cycling, request: Self.cyclingRequest(for: request))
+        let gen = generation
+        cyclingTask = Task { [weak self] in
+            guard let bike = await Self.cyclingOption(job) else { return }
+            guard let self, !Task.isCancelled, self.generation == gen else { return }
+            self.replaceBikeOption(with: bike)
+        }
+    }
+
+    private func replaceBikeOption(with bike: Itinerary) {
+        let bikeWasSelected = selectedItinerary.map(RankingRules.isBikeOnly) ?? false
+        itineraries = Self.merging(bike: bike, into: itineraries)
+        if case .empty = phase { phase = .results }
+        if bikeWasSelected { select(bike) }
     }
 
     /// First departure to last arrival of what was found, else the planned
@@ -494,6 +624,8 @@ final class DirectionsViewModel {
         isPresented = false
         queryTask?.cancel()
         queryTask = nil
+        cyclingTask?.cancel()
+        cyclingTask = nil
         generation &+= 1
         rainHint = nil
         if phase == .loading { phase = itineraries.isEmpty ? .idle : .results }
@@ -503,6 +635,8 @@ final class DirectionsViewModel {
     func reset() {
         queryTask?.cancel()
         queryTask = nil
+        cyclingTask?.cancel()
+        cyclingTask = nil
         generation &+= 1
         origin = nil
         destination = nil
@@ -520,7 +654,8 @@ extension DirectionsPreferencesSnapshot {
     func replacing(walkToleranceMinutes: Int? = nil, enabledModes: Set<TransitMode>? = nil,
                    allowBikeDirect: Bool? = nil, maxTransfers: Int? = nil,
                    preferRail: Bool? = nil, preferRailWalkCeilingMinutes: Int? = nil,
-                   rainAware: Bool? = nil, rainProbabilityThreshold: Int? = nil) -> DirectionsPreferencesSnapshot {
+                   rainAware: Bool? = nil, rainProbabilityThreshold: Int? = nil,
+                   cyclingStyle: CyclingStyle? = nil) -> DirectionsPreferencesSnapshot {
         DirectionsPreferencesSnapshot(
             walkToleranceMinutes: walkToleranceMinutes ?? self.walkToleranceMinutes,
             enabledModes: enabledModes ?? self.enabledModes,
@@ -529,7 +664,8 @@ extension DirectionsPreferencesSnapshot {
             preferRail: preferRail ?? self.preferRail,
             preferRailWalkCeilingMinutes: preferRailWalkCeilingMinutes ?? self.preferRailWalkCeilingMinutes,
             rainAware: rainAware ?? self.rainAware,
-            rainProbabilityThreshold: rainProbabilityThreshold ?? self.rainProbabilityThreshold
+            rainProbabilityThreshold: rainProbabilityThreshold ?? self.rainProbabilityThreshold,
+            cyclingStyle: cyclingStyle ?? self.cyclingStyle
         )
     }
 }

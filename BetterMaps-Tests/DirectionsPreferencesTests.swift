@@ -5,11 +5,11 @@ import SwiftData
 @MainActor
 final class DirectionsPreferencesTests: XCTestCase {
     private func snapshot(walk: Int = 10, transfers: Int = 2, ceiling: Int = 20,
-                          threshold: Int = 50) -> DirectionsPreferencesSnapshot {
+                          threshold: Int = 50, cycling: CyclingStyle = .quiet) -> DirectionsPreferencesSnapshot {
         DirectionsPreferencesSnapshot(
             walkToleranceMinutes: walk, enabledModes: [.bus, .dart], allowBikeDirect: false,
             maxTransfers: transfers, preferRail: false, preferRailWalkCeilingMinutes: ceiling,
-            rainAware: false, rainProbabilityThreshold: threshold
+            rainAware: false, rainProbabilityThreshold: threshold, cyclingStyle: cycling
         )
     }
 
@@ -43,7 +43,19 @@ final class DirectionsPreferencesTests: XCTestCase {
         XCTAssertEqual(d.preferRailWalkCeilingMinutes, 20)
         XCTAssertTrue(d.rainAware)
         XCTAssertEqual(d.rainProbabilityThreshold, 50)
+        XCTAssertEqual(d.cyclingStyle, .quiet)
         XCTAssertEqual(d.allowedTransitModes, [.bus, .luas, .dart, .rail])
+    }
+
+    func testCyclingStyleDefaultsToQuietWhenOmitted() {
+        let s = DirectionsPreferencesSnapshot(
+            walkToleranceMinutes: 10, enabledModes: [.bus], allowBikeDirect: true,
+            maxTransfers: 2, preferRail: true, preferRailWalkCeilingMinutes: 20,
+            rainAware: true, rainProbabilityThreshold: 50)
+        XCTAssertEqual(s.cyclingStyle, .quiet)
+        XCTAssertEqual(s.replacing(cyclingStyle: .fast).cyclingStyle, .fast)
+        XCTAssertEqual(s.replacing(cyclingStyle: .fast).replacing(walkToleranceMinutes: 20).cyclingStyle, .fast,
+                       "other replacements keep the style")
     }
 
     func testAllowedTransitModesDropsWalkAndBike() {
@@ -69,13 +81,23 @@ final class DirectionsPreferencesTests: XCTestCase {
         let before = Date(timeIntervalSince1970: 1_700_000_000)
         prefs.updatedAt = before
 
-        let custom = snapshot(walk: 15, transfers: 1, ceiling: 30, threshold: 70)
+        let custom = snapshot(walk: 15, transfers: 1, ceiling: 30, threshold: 70, cycling: .balanced)
         prefs.apply(custom)
         try context.save()
 
         XCTAssertEqual(prefs.snapshot, custom)
         XCTAssertEqual(prefs.enabledModesRaw, ["bus", "dart"])
+        XCTAssertEqual(prefs.cyclingStyleRaw, "balanced")
         XCTAssertGreaterThan(prefs.updatedAt, before)
+    }
+
+    func testUnknownCyclingStyleReadsAsQuiet() {
+        let prefs = DirectionsPreferences()
+        XCTAssertEqual(prefs.cyclingStyleRaw, "quiet", "the stored default")
+        prefs.cyclingStyleRaw = "hoverboard"
+        XCTAssertEqual(prefs.snapshot.cyclingStyle, .quiet)
+        prefs.cyclingStyleRaw = "fast"
+        XCTAssertEqual(prefs.snapshot.cyclingStyle, .fast)
     }
 
     func testFetchOrCreateOnEmptyContextInsertsOneRow() throws {

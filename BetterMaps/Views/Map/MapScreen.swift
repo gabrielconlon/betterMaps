@@ -72,7 +72,8 @@ struct MapScreen: View {
     private static var arrivalsPeek: PresentationDetent { .fraction(0.3) }
     /// Public transport directions; one planner for the screen's lifetime.
     @State private var directions = DirectionsViewModel(provider: JourneyProviderFactory.make(),
-                                                        weather: JourneyProviderFactory.makeWeather())
+                                                        weather: JourneyProviderFactory.makeWeather(),
+                                                        cycling: JourneyProviderFactory.makeCycling())
     /// The directions sheet's detent: picking an option drops it to the
     /// peek height so the drawn journey shows.
     @State private var directionsDetent: PresentationDetent = .medium

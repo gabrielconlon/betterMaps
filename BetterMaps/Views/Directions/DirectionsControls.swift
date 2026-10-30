@@ -62,6 +62,26 @@ struct DirectionsControls: View {
                     .font(.subheadline)
             }
             .frame(minHeight: 44)
+            .accessibilityIdentifier("directions.bikeDirect")
+
+            if prefs.allowBikeDirect {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Cycling")
+                        .font(.subheadline)
+                    Picker("Cycling", selection: Binding(
+                        get: { prefs.cyclingStyle },
+                        set: { onChange(prefs.replacing(cyclingStyle: $0)) }
+                    )) {
+                        ForEach(CyclingStyle.allCases) { style in
+                            Text(style.displayName).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .accessibilityIdentifier("directions.cyclingStyle")
+                }
+                .padding(.vertical, 4)
+            }
 
             Stepper(value: Binding(
                 get: { prefs.maxTransfers },

@@ -28,6 +28,9 @@ final class DirectionsPreferences {
     var rainAware: Bool = true
     /// Rain probability (percent) above which `rainAware` kicks in.
     var rainProbabilityThreshold: Int = 50
+    /// `CyclingStyle.rawValue` for the cycle-the-whole-way option. A string
+    /// so a future style needs no migration; unknown values read as quiet.
+    var cyclingStyleRaw: String = CyclingStyle.quiet.rawValue
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
@@ -47,7 +50,8 @@ final class DirectionsPreferences {
             preferRail: preferRail,
             preferRailWalkCeilingMinutes: preferRailWalkCeilingMinutes,
             rainAware: rainAware,
-            rainProbabilityThreshold: rainProbabilityThreshold
+            rainProbabilityThreshold: rainProbabilityThreshold,
+            cyclingStyle: CyclingStyle(rawValue: cyclingStyleRaw) ?? .quiet
         )
     }
 
@@ -65,6 +69,7 @@ final class DirectionsPreferences {
         preferRailWalkCeilingMinutes = s.preferRailWalkCeilingMinutes
         rainAware = s.rainAware
         rainProbabilityThreshold = s.rainProbabilityThreshold
+        cyclingStyleRaw = s.cyclingStyle.rawValue
         updatedAt = date
     }
 
@@ -101,6 +106,8 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
     let preferRailWalkCeilingMinutes: Int
     let rainAware: Bool
     let rainProbabilityThreshold: Int
+    /// How the cycle-the-whole-way route is chosen.
+    let cyclingStyle: CyclingStyle
 
     static let `default` = DirectionsPreferencesSnapshot(
         walkToleranceMinutes: 10,
@@ -110,12 +117,13 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
         preferRail: true,
         preferRailWalkCeilingMinutes: 20,
         rainAware: true,
-        rainProbabilityThreshold: 50
+        rainProbabilityThreshold: 50,
+        cyclingStyle: .quiet
     )
 
     init(walkToleranceMinutes: Int, enabledModes: Set<TransitMode>, allowBikeDirect: Bool,
          maxTransfers: Int, preferRail: Bool, preferRailWalkCeilingMinutes: Int,
-         rainAware: Bool, rainProbabilityThreshold: Int) {
+         rainAware: Bool, rainProbabilityThreshold: Int, cyclingStyle: CyclingStyle = .quiet) {
         self.walkToleranceMinutes = Self.snapWalkTolerance(walkToleranceMinutes)
         self.enabledModes = enabledModes
         self.allowBikeDirect = allowBikeDirect
@@ -124,6 +132,7 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
         self.preferRailWalkCeilingMinutes = min(max(preferRailWalkCeilingMinutes, 0), 60)
         self.rainAware = rainAware
         self.rainProbabilityThreshold = min(max(rainProbabilityThreshold, 0), 100)
+        self.cyclingStyle = cyclingStyle
     }
 
     /// Nearest of 5/10/15/20; an exact midpoint (7.5 cannot occur with Ints,

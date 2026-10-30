@@ -39,7 +39,9 @@ enum RankingRules {
     /// 2. Everything else follows by duration, then start time, then input
     ///    order. A probe extra (not in `baseIds`) that boards fewer vehicles
     ///    than any main-query option is tagged "Fewer changes".
-    /// Every other `reason` is cleared; this function owns the field.
+    /// Every other `reason` is cleared; this function owns the field. The one
+    /// exception is a cycle-the-whole-way option, whose reason ("Quiet
+    /// roads") comes from the cycling provider and is kept as given.
     static func rank(_ itineraries: [Itinerary], context: RankingContext = RankingContext()) -> [Itinerary] {
         // Decorate with the index so the sort is stable; `sorted` is not
         // guaranteed to be.
@@ -67,10 +69,17 @@ enum RankingRules {
         }
         for entry in rest {
             var itinerary = entry.itinerary
-            itinerary.reason = hasFewerChanges(itinerary, context: context) ? fewerChangesReason : nil
+            if !isBikeOnly(itinerary) {
+                itinerary.reason = hasFewerChanges(itinerary, context: context) ? fewerChangesReason : nil
+            }
             result.append(itinerary)
         }
         return result
+    }
+
+    /// Every leg is a cycle: the direct bike option.
+    static func isBikeOnly(_ itinerary: Itinerary) -> Bool {
+        !itinerary.legs.isEmpty && itinerary.legs.allSatisfy { $0.mode == .bike }
     }
 
     /// Rides only Luas/DART/Rail, with the walks at either end inside the

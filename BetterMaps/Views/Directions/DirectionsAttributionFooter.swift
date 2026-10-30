@@ -1,20 +1,32 @@
 import SwiftUI
 
-/// "Routing by Transitous · OpenStreetMap · Weather by Open-Meteo", linked
-/// to their source and licence pages (Open-Meteo data is CC BY 4.0).
-/// Caption-sized so it never competes with the results.
+/// "Routing by Transitous · OpenStreetMap · Weather by Open-Meteo · Cycling
+/// by BRouter", linked to their source and licence pages (Open-Meteo data is
+/// CC BY 4.0; BRouter's public server asks for the credit). Caption-sized so
+/// it never competes with the results.
 struct DirectionsAttributionFooter: View {
     var body: some View {
-        // One line where it fits, two on a narrow phone.
+        // One line where it fits, two or three on a narrow phone.
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 4) {
                 routing
                 Text("·")
                 weather
+                Text("·")
+                cycling
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) { routing }
+                HStack(spacing: 4) {
+                    weather
+                    Text("·")
+                    cycling
+                }
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) { routing }
                 HStack(spacing: 4) { weather }
+                HStack(spacing: 4) { cycling }
             }
         }
         .font(.caption2)
@@ -35,5 +47,11 @@ struct DirectionsAttributionFooter: View {
     private var weather: some View {
         Text("Weather by")
         Link("Open-Meteo", destination: URL(string: "https://open-meteo.com/")!)
+    }
+
+    @ViewBuilder
+    private var cycling: some View {
+        Text("Cycling by")
+        Link("BRouter", destination: URL(string: "https://brouter.de/")!)
     }
 }

@@ -179,6 +179,25 @@ final class RankingRulesTests: XCTestCase {
         XCTAssertEqual(ranked.map(\.reason), [nil, nil])
     }
 
+    func testBikeOnlyReasonIsPreserved() {
+        // The cycling provider names the style ("Quiet roads"); ranking does
+        // not own that reason and leaves it as it found it.
+        let bikeStart = t0
+        let bikeLeg = Leg(id: "bike-leg", mode: .bike, fromName: "Start", toName: "Destination",
+                          start: bikeStart, end: bikeStart.addingTimeInterval(1500), durationSeconds: 1500)
+        let bike = Itinerary(id: "bike", legs: [bikeLeg], start: bikeStart, end: bikeStart.addingTimeInterval(1500),
+                             durationSeconds: 1500, transfers: 0, walkSeconds: 0, bikeSeconds: 1500, reason: "Quiet roads")
+        let ranked = RankingRules.rank(heustonSet + [bike], context: context(baseIds: ["bus", "rail", "bus2"], baseMin: 1))
+        XCTAssertEqual(ranked.map(\.id), ["rail", "bike", "bus", "bus2"], "pinned rail, then by duration")
+        XCTAssertEqual(ranked.first { $0.id == "bike" }?.reason, "Quiet roads")
+        XCTAssertTrue(RankingRules.isBikeOnly(bike))
+        XCTAssertFalse(RankingRules.isBikeOnly(heustonSet[0]))
+
+        var plainBike = bike
+        plainBike.reason = nil
+        XCTAssertNil(RankingRules.rank([plainBike], context: context()).first?.reason, "nothing is invented either")
+    }
+
     func testEmptyInputGivesEmptyOutput() {
         XCTAssertTrue(RankingRules.rank([]).isEmpty)
     }
