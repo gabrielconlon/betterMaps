@@ -130,6 +130,49 @@ final class MotisQueryTests: XCTestCase {
         XCTAssertEqual(q["maxTransfers"], "0")
     }
 
+    func testTransitModesOverrideReplacesPreferences() throws {
+        var req = request(prefs(modes: [.bus, .luas, .dart, .rail]))
+        req.transitModesOverride = [.luas, .dart, .rail]
+        XCTAssertEqual(try items(MotisQuery.url(for: req))["transitModes"], "TRAM,RAIL")
+
+        var busOnlyPrefs = request(prefs(modes: [.bus]))
+        busOnlyPrefs.transitModesOverride = [.dart]
+        XCTAssertEqual(try items(MotisQuery.url(for: busOnlyPrefs))["transitModes"], "RAIL",
+                       "the override wins even over a set that excludes it")
+
+        var walkOnly = request(.default)
+        walkOnly.transitModesOverride = [.walk, .bike]
+        XCTAssertEqual(try items(MotisQuery.url(for: walkOnly))["transitModes"], "")
+        XCTAssertEqual(walkOnly.effectiveTransitModes, [])
+    }
+
+    func testWalkToleranceOverrideReplacesPreferences() throws {
+        var req = request(prefs(walk: 10))
+        req.walkToleranceOverrideMinutes = 20
+        let q = try items(MotisQuery.url(for: req))
+        XCTAssertEqual(q["maxPreTransitTime"], "1200")
+        XCTAssertEqual(q["maxPostTransitTime"], "1200")
+        XCTAssertEqual(req.effectiveWalkToleranceMinutes, 20)
+        XCTAssertEqual(req.preferences.walkToleranceMinutes, 10, "the preference itself is untouched")
+
+        req.walkToleranceOverrideMinutes = 5
+        XCTAssertEqual(try items(MotisQuery.url(for: req))["maxPreTransitTime"], "300")
+        XCTAssertEqual(q.count, 11, "overrides add no query items")
+    }
+
+    func testOverridesDefaultToNil() {
+        let req = request(.default)
+        XCTAssertNil(req.transitModesOverride)
+        XCTAssertNil(req.walkToleranceOverrideMinutes)
+        XCTAssertEqual(req.effectiveTransitModes, DirectionsPreferencesSnapshot.default.allowedTransitModes)
+        XCTAssertEqual(req.effectiveWalkToleranceMinutes, 10)
+        let explicit = JourneyRequest(origin: heuston, destination: dunLaoghaire, time: departure,
+                                      preferences: .default, transitModesOverride: [.bus],
+                                      walkToleranceOverrideMinutes: 15)
+        XCTAssertEqual(explicit.transitModesOverride, [.bus])
+        XCTAssertEqual(explicit.walkToleranceOverrideMinutes, 15)
+    }
+
     func testNumItinerariesAndBaseOverride() throws {
         let base = URL(string: "http://localhost:8080/api/v6/plan")!
         let url = MotisQuery.url(for: request(.default), base: base, numItineraries: 8)

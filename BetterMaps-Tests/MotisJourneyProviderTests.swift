@@ -156,6 +156,30 @@ final class MotisJourneyProviderTests: XCTestCase {
         XCTAssertEqual(result, [])
     }
 
+    func testTransitModesOverrideDrivesThePostFilter() async throws {
+        // Bus-only preferences would drop every Heuston itinerary (they all
+        // ride Luas + rail); a rail probe's override keeps them.
+        let busOnly = DirectionsPreferencesSnapshot.default.replacing(enabledModes: [.bus])
+        var probe = request(busOnly)
+        probe.transitModesOverride = [.luas, .dart, .rail]
+        let body = try MotisFixture.heuston.data()
+        let kept = try await provider(body: body).plan(probe)
+        XCTAssertEqual(kept.count, 3)
+        let dropped = try await provider(body: body).plan(request(busOnly))
+        XCTAssertEqual(dropped.count, 0, "without the override the same preferences drop them all")
+
+        // And the other way: everything enabled, but the probe says bus only.
+        var busProbe = request(.default)
+        busProbe.transitModesOverride = [.bus]
+        let busOnlyResults = try await provider(body: body).plan(busProbe)
+        XCTAssertEqual(busOnlyResults, [])
+
+        let response = try MotisFixture.heuston.response()
+        XCTAssertEqual(MotisMapper.itineraries(from: response, preferences: busOnly, transitModesOverride: [.luas, .dart]).count, 2,
+                       "DART only: the plain-rail itinerary is dropped")
+        XCTAssertEqual(MotisMapper.itineraries(from: response, preferences: .default, transitModesOverride: nil).count, 3)
+    }
+
     func testDirectBikeSurvivesTransitFilter() async throws {
         let prefs = DirectionsPreferencesSnapshot(
             walkToleranceMinutes: 10, enabledModes: [], allowBikeDirect: true,
