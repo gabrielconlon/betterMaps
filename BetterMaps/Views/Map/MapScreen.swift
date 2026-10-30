@@ -499,16 +499,14 @@ struct MapScreen: View {
         return nil
     }
 
-    /// A picked journey or the search's previews are on the map.
-    private var directionsDrawn: Bool {
-        transitStore.drawnItinerary != nil || !transitStore.previewItineraries.isEmpty
-    }
+    /// A picked journey, the search's previews or its pins are on the map.
+    private var directionsDrawn: Bool { transitStore.hasDirectionsContent }
 
     private var routeChip: HighlightedRouteChip? {
         if directionsDrawn {
             let label = transitStore.drawnItinerary != nil ? directions.drawnLabel : nil
             return HighlightedRouteChip(label: label ?? "Directions",
-                                        onClear: { directions.clearMap() },
+                                        onClear: { directions.chipCleared() },
                                         systemImage: "arrow.triangle.turn.up.right.diamond.fill",
                                         tint: .accentColor,
                                         prefix: nil,

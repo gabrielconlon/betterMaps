@@ -21,7 +21,7 @@ final class DirectionsPreferences {
     /// future mode does not need a migration.
     var enabledModesRaw: [String] = ["bus", "luas", "dart", "rail"]
     /// Offer a cycle-the-whole-way option alongside transit.
-    var allowBikeDirect: Bool = true
+    var allowBikeDirect: Bool = false
     var maxTransfers: Int = 2
     /// Put a rail/DART option first when it exists and does not add more
     /// than `preferRailWalkCeilingMinutes` of walking.
@@ -118,7 +118,7 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
     static let `default` = DirectionsPreferencesSnapshot(
         walkToleranceMinutes: 10,
         enabledModes: [.bus, .luas, .dart, .rail],
-        allowBikeDirect: true,
+        allowBikeDirect: false,
         maxTransfers: 2,
         preferRail: true,
         preferRailWalkCeilingMinutes: 20,
@@ -153,15 +153,27 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
         return best
     }
 
+    /// A walk limit in minutes as the planner and ranker take it: seconds,
+    /// or nil when `minutes` is `noWalkLimit`. The one place that
+    /// conversion lives.
+    static func walkSeconds(forMinutes minutes: Int) -> Int? {
+        minutes == noWalkLimit ? nil : minutes * 60
+    }
+
     /// The walk limit in seconds; nil when there is none.
     var walkToleranceSeconds: Int? {
-        walkToleranceMinutes == Self.noWalkLimit ? nil : walkToleranceMinutes * 60
+        Self.walkSeconds(forMinutes: walkToleranceMinutes)
     }
 
     /// "Walk up to 30 min" / "Walk any distance", for the slider and the
     /// sheet's Options summary.
     var walkToleranceLabel: String {
-        walkToleranceMinutes == Self.noWalkLimit ? "Walk any distance" : "Walk up to \(walkToleranceMinutes) min"
+        Self.walkToleranceLabel(forMinutes: walkToleranceMinutes)
+    }
+
+    /// `walkToleranceLabel` for a value the slider is still being dragged to.
+    static func walkToleranceLabel(forMinutes minutes: Int) -> String {
+        minutes == noWalkLimit ? "Walk any distance" : "Walk up to \(minutes) min"
     }
 
     /// `enabledModes` without walk/bike, which are never timetabled.

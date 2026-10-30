@@ -116,6 +116,13 @@ final class TransitLayerStore {
     /// Where the current search starts and ends, for the map's pins.
     private(set) var directionsEndpoints: DirectionsEndpoints?
 
+    /// Anything a directions search has put on the map: a drawn option,
+    /// the previews or just the two pins. The map's clear chip shows for
+    /// all of these, and a tap on empty map clears them all.
+    var hasDirectionsContent: Bool {
+        drawnItinerary != nil || !previewItineraries.isEmpty || directionsEndpoints != nil
+    }
+
     @ObservationIgnored private(set) var grid = TransitSpatialGrid(stops: [])
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var visibleTask: Task<Void, Never>?
@@ -337,12 +344,7 @@ final class TransitLayerStore {
     /// Draws a directions option (one polyline per leg). Replaces any
     /// highlighted route: the map shows one journey at a time.
     func setDrawnItinerary(_ legs: [Leg], label: String) {
-        if highlightedRouteId != nil || highlightedRoute != nil {
-            highlightTask?.cancel()
-            highlightedRouteId = nil
-            highlightedRouteLabel = nil
-            highlightedRoute = nil
-        }
+        dropHighlightedRouteForDirections()
         drawnItinerary = legs
         drawnItineraryLabel = label
         previewItineraries = []
@@ -361,12 +363,24 @@ final class TransitLayerStore {
 
     /// Faint polylines for the options worth a glance before picking one.
     /// Ignored while an option is drawn: the picked journey is the map's
-    /// one story then.
+    /// one story then. Previews worth drawing replace a highlighted route
+    /// for the same reason; clearing them (an empty list) leaves it be.
     func setPreviews(_ itineraries: [[Leg]]) {
         guard drawnItinerary == nil else { return }
         guard itineraries != previewItineraries else { return }
+        if !itineraries.isEmpty { dropHighlightedRouteForDirections() }
         previewItineraries = itineraries
         version &+= 1
+    }
+
+    /// Directions content wins over a favorite's route; the caller bumps
+    /// `version`.
+    private func dropHighlightedRouteForDirections() {
+        guard highlightedRouteId != nil || highlightedRoute != nil else { return }
+        highlightTask?.cancel()
+        highlightedRouteId = nil
+        highlightedRouteLabel = nil
+        highlightedRoute = nil
     }
 
     func setDirectionsEndpoints(_ endpoints: DirectionsEndpoints) {

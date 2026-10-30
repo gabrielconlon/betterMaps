@@ -26,6 +26,28 @@ final class HighlightedRouteTests: XCTestCase {
         store.clearHighlightedRoute()
     }
 
+    /// Directions previews are directions content: like a drawn option, they
+    /// replace a favorite's highlighted route. Clearing them (an empty list)
+    /// is not drawing anything, so the route stays.
+    @MainActor
+    func testPreviewsReplaceHighlightedRouteButClearingThemDoesNot() {
+        let store = TransitLayerStore()
+        let leg = Leg(id: "walk", mode: .walk, fromName: "A", toName: "B",
+                      start: Date(), end: Date().addingTimeInterval(600), durationSeconds: 600)
+
+        store.toggleHighlightedRoute("route-mu1", label: "MU1")
+        store.setPreviews([])
+        XCTAssertEqual(store.highlightedRouteId, "route-mu1", "nothing to draw, nothing to replace")
+        XCTAssertEqual(store.highlightedRouteLabel, "MU1")
+
+        store.setPreviews([[leg]])
+        XCTAssertNil(store.highlightedRouteId)
+        XCTAssertNil(store.highlightedRouteLabel)
+        XCTAssertNil(store.highlightedRoute)
+        XCTAssertEqual(store.previewItineraries.count, 1)
+        XCTAssertTrue(store.hasDirectionsContent)
+    }
+
     @MainActor
     func testClearDropsRouteAndLabel() {
         let store = TransitLayerStore()

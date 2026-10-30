@@ -53,7 +53,7 @@ final class DirectionsPreferencesTests: XCTestCase {
         let d = DirectionsPreferencesSnapshot.default
         XCTAssertEqual(d.walkToleranceMinutes, 10)
         XCTAssertEqual(d.enabledModes, [.bus, .luas, .dart, .rail])
-        XCTAssertTrue(d.allowBikeDirect)
+        XCTAssertFalse(d.allowBikeDirect, "cycling is opt-in")
         XCTAssertEqual(d.maxTransfers, 2)
         XCTAssertTrue(d.preferRail)
         XCTAssertEqual(d.preferRailWalkCeilingMinutes, 20)

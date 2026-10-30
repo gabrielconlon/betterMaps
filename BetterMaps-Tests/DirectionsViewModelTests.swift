@@ -113,10 +113,22 @@ final class FakeWeather: @unchecked Sendable {
 }
 
 /// A planner that answers each request from a closure, so probes and the
-/// base can be told apart and made to succeed or fail separately.
+/// base can be told apart and made to succeed or fail separately. Every
+/// request is logged.
 struct RoutingFakeProvider: JourneyProvider {
     let route: @Sendable (JourneyRequest) throws -> [Itinerary]
-    func plan(_ request: JourneyRequest) async throws -> [Itinerary] { try route(request) }
+    let log = RequestLog()
+    func plan(_ request: JourneyRequest) async throws -> [Itinerary] {
+        log.record(request)
+        return try route(request)
+    }
+}
+
+final class RequestLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requests: [JourneyRequest] = []
+    var requests: [JourneyRequest] { lock.lock(); defer { lock.unlock() }; return _requests }
+    func record(_ request: JourneyRequest) { lock.lock(); _requests.append(request); lock.unlock() }
 }
 
 @MainActor
@@ -329,13 +341,34 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(store.previewItineraries, [buses[0].legs, dart.legs, luas.legs],
                        "the first row and the fastest on each other network")
 
-        let previews = DirectionsViewModel.previewLegs(model.itineraries)
+        let previews = DirectionsViewModel.previewLegs(model.ranked)
         XCTAssertEqual(previews.count, 3)
+        XCTAssertEqual(model.ranked.guaranteedIds, ["bus0", "dart", "luas"])
         XCTAssertLessThanOrEqual(previews.count, DirectionsViewModel.maxPreviews)
 
         model.reset()
         XCTAssertTrue(store.previewItineraries.isEmpty)
         XCTAssertNil(store.directionsEndpoints)
+    }
+
+    func testBikeWithTheRoutersOwnReasonIsPreviewed() async {
+        let provider = FakeJourneyProvider()
+        let buses = (0..<3).map { makeItinerary("bus\($0)", minutes: 30 + $0, modes: [.walk, .bus, .walk]) }
+        provider.result = .success(buses)
+        let cycling = FakeCyclingProvider()
+        let quiet = makeBike("bike", minutes: 60, reason: "Quiet roads")
+        cycling.result = .success(quiet)
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store, cycling: cycling)
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(preferRail: false).replacing(allowBikeDirect: true))
+        model.scheduleQuery(immediate: true)
+        await settle()
+
+        XCTAssertEqual(model.itineraries.map(\.id), ["bus0", "bus1", "bus2", "bike"])
+        XCTAssertEqual(model.itineraries.last?.reason, "Quiet roads", "the router's words, not \"Fastest by Bike\"")
+        XCTAssertTrue(model.ranked.guaranteedIds.contains("bike"))
+        XCTAssertEqual(store.previewItineraries, [buses[0].legs, quiet.legs],
+                       "the only cycle option is previewed whatever its chip says")
     }
 
     func testPreviewsAreIgnoredWhileAnOptionIsDrawn() {
@@ -350,6 +383,70 @@ final class DirectionsViewModelTests: XCTestCase {
         store.toggleHighlightedRoute("r1", label: "39A")
         XCTAssertTrue(store.previewItineraries.isEmpty, "a highlighted route replaces the previews too")
         store.clearHighlightedRoute()
+    }
+
+    func testSheetDismissedWithoutResultsClearsThePinsAndWithResultsKeepsThem() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([])
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store)
+        model.isPresented = true
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertNotNil(store.directionsEndpoints, "pinned while the sheet shows the empty state")
+        if case .empty = model.phase {} else { XCTFail("expected empty, got \(model.phase)") }
+        model.sheetDismissed()
+        XCTAssertNil(store.directionsEndpoints, "nothing came of the search: no pins left behind")
+        XCTAssertFalse(store.hasDirectionsContent)
+
+        provider.result = .failure(JourneyProviderError.unavailable(status: 503))
+        model.isPresented = true
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertNotNil(store.directionsEndpoints)
+        model.sheetDismissed()
+        XCTAssertNil(store.directionsEndpoints, "unreachable counts as no results")
+
+        let a = makeItinerary("a")
+        provider.result = .success([a])
+        model.isPresented = true
+        model.scheduleQuery(immediate: true)
+        await settle()
+        model.sheetDismissed()
+        XCTAssertEqual(model.phase, .results)
+        XCTAssertNotNil(store.directionsEndpoints, "the journey stays on the map")
+        XCTAssertEqual(store.previewItineraries, [a.legs])
+        XCTAssertTrue(store.hasDirectionsContent)
+    }
+
+    func testChipClearKeepsContextWhileTheSheetIsUpAndClearsTheMapOtherwise() async {
+        let provider = FakeJourneyProvider()
+        let a = makeItinerary("a")
+        provider.result = .success([a])
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store)
+        model.isPresented = true
+        model.scheduleQuery(immediate: true)
+        await settle()
+        model.select(a)
+        XCTAssertNotNil(store.drawnItinerary)
+
+        model.chipCleared()
+        XCTAssertNil(model.selectedId, "the option goes back in the list")
+        XCTAssertNil(store.drawnItinerary)
+        XCTAssertEqual(store.previewItineraries, [a.legs], "the previews come back")
+        XCTAssertNotNil(store.directionsEndpoints, "the pins stay: the sheet is still about this journey")
+        XCTAssertTrue(store.hasDirectionsContent, "so the chip stays too")
+
+        model.select(a)
+        model.sheetDismissed()
+        model.chipCleared()
+        XCTAssertNil(model.selectedId)
+        XCTAssertNil(store.drawnItinerary)
+        XCTAssertTrue(store.previewItineraries.isEmpty)
+        XCTAssertNil(store.directionsEndpoints, "with the sheet away, the chip clears the map")
+        XCTAssertFalse(store.hasDirectionsContent)
+        XCTAssertEqual(model.itineraries.map(\.id), ["a"], "the list is kept for a reopen")
     }
 
     func testSelectionSurvivesRequeryWhenStillOffered() async {
@@ -388,13 +485,36 @@ final class DirectionsViewModelTests: XCTestCase {
 
     // MARK: Outcomes
 
-    func testEmptyResultSuggestsRelaxingWalkAtDefaults() async {
+    func testEmptyResultAtDefaultsDoesNotSuggestRelaxingWalk() async {
+        // The no-limit probes already ran for every network that is on, so a
+        // longer walk cannot turn anything up.
         let provider = FakeJourneyProvider()
         provider.result = .success([])
         let model = makeModel(provider)
         model.scheduleQuery(immediate: true)
         await settle()
+        XCTAssertEqual(provider.familyProbes.count, 3)
+        XCTAssertEqual(model.phase, .empty(suggestRelaxWalk: false, suggestTransfers: false))
+    }
+
+    func testEmptyResultWithoutAnyNetworkOnSuggestsRelaxingWalk() async {
+        // Nothing to probe without a network: the user's own limit is the
+        // only thing that was planned with.
+        let provider = FakeJourneyProvider()
+        provider.result = .success([])
+        let model = makeModel(provider)
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(enabledModes: [.bike]))
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertEqual(provider.requests.count, 1, "just the base")
         XCTAssertEqual(model.phase, .empty(suggestRelaxWalk: true, suggestTransfers: false))
+
+        model.setWalkTolerance(DirectionsPreferencesSnapshot.noWalkLimit)
+        model.setMaxTransfers(0)
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertEqual(model.phase, .empty(suggestRelaxWalk: false, suggestTransfers: true),
+                       "nothing to relax when any walk is already fine; the transfer hint is untouched")
     }
 
     func testEmptyResultAtZeroTransfersSuggestsChanges() async {
@@ -505,7 +625,7 @@ final class DirectionsViewModelTests: XCTestCase {
         model.apply(DirectionsPreferencesSnapshot.default.replacing(enabledModes: [.bus, .dart], preferRail: false))
         model.scheduleQuery(immediate: true)
         await settle()
-        XCTAssertEqual(provider.familyProbes.map(\.transitModesOverride), [[.bus], [.dart]], "only the families that are on")
+        XCTAssertEqual(Set(provider.familyProbes.compactMap(\.transitModesOverride)), [[.bus], [.dart]], "only the families that are on")
         XCTAssertEqual(provider.requests.count, 3)
 
         // Bus only with no walk limit: the bus probe would repeat the base.
@@ -533,9 +653,11 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(plain[2...].map(\.walkToleranceOverrideMinutes), [0, 0, 0])
 
         let rain = DirectionsViewModel.requests(for: base, rainAdjusted: true)
-        XCTAssertEqual(rain.count, 5, "the family probes still run in rain, so the train still shows")
-        XCTAssertEqual(rain.map(\.walkToleranceOverrideMinutes), [5, 5, 0, 0, 0])
+        XCTAssertEqual(rain.count, 2, "only the two requests with a limit to shorten; the probes' first answers are reused")
+        XCTAssertEqual(rain.map(\.walkToleranceOverrideMinutes), [5, 5])
         XCTAssertEqual(rain[1].transitModesOverride, [.luas, .dart, .rail])
+        XCTAssertFalse(rain.contains(where: DirectionsViewModel.isFamilyProbe))
+        XCTAssertEqual(plain.filter(DirectionsViewModel.isFamilyProbe).count, 3)
 
         // No walk limit and no Luas: the rail probe is DART alone at the
         // no-limit walk, so the DART family probe would repeat it.
@@ -642,6 +764,33 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertTrue(model.rainAdjusted)
         XCTAssertEqual(model.rainHint?.nearName, "Heuston")
         XCTAssertEqual(provider.walkProbes(5).count, 2)
+    }
+
+    func testRainRePlanRunsOnlyTheBaseAndRailAndKeepsTheProbesFinds() async {
+        let rainy = rainyItineraries()
+        let train = makeItinerary("train", minutes: 50, startOffsetHours: 3, modes: [.walk, .dart, .walk])
+        let provider = RoutingFakeProvider { request in
+            if DirectionsViewModel.isFamilyProbe(request) {
+                return request.transitModesOverride == [.dart, .rail] ? [train] : []
+            }
+            return rainy
+        }
+        let weather = FakeWeather(fixture: .rain)
+        let store = TransitLayerStore()
+        let model = DirectionsViewModel(provider: provider, store: store, weather: weather.service, cycling: FakeCyclingProvider())
+        model.origin = heuston
+        model.destination = dunLaoghaire
+        model.scheduleQuery(immediate: true)
+        await settle(.milliseconds(300))
+
+        XCTAssertTrue(model.rainAdjusted)
+        let requests = provider.log.requests
+        XCTAssertEqual(requests.count, DirectionsViewModel.maxPlanCalls + 2, "the first pass, then the base and rail probe again")
+        XCTAssertEqual(requests.filter(DirectionsViewModel.isFamilyProbe).count, 3, "the no-limit probes ran once")
+        XCTAssertEqual(requests.filter { $0.walkToleranceOverrideMinutes == DirectionsViewModel.rainWalkMinutes }.count, 2)
+        XCTAssertEqual(Set(model.itineraries.map(\.id)), ["a", "b", "train"], "the probe's train is still offered")
+        XCTAssertEqual(model.itineraries.last?.reason, "Fastest by DART", "and still guaranteed its row")
+        XCTAssertEqual(store.previewItineraries.count, 2, "the first row and the train")
     }
 
     func testRainHintWithoutAdjustmentWhenWalkLimitAlreadyShort() async {
@@ -894,6 +1043,7 @@ final class DirectionsViewModelTests: XCTestCase {
         let cycling = FakeCyclingProvider()
         cycling.result = .success(makeBike("brouter", minutes: 32, reason: "Quiet roads"))
         let model = makeModel(provider, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
 
@@ -914,6 +1064,7 @@ final class DirectionsViewModelTests: XCTestCase {
         let cycling = FakeCyclingProvider()
         cycling.result = .failure(JourneyProviderError.unavailable(status: 502))
         let model = makeModel(provider, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
         XCTAssertEqual(model.phase, .results)
@@ -927,6 +1078,7 @@ final class DirectionsViewModelTests: XCTestCase {
         let cycling = FakeCyclingProvider()
         cycling.result = .success(makeBike("brouter", minutes: 32, reason: "Quiet roads"))
         let model = makeModel(provider, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
         XCTAssertEqual(model.itineraries.map(\.id), ["a", "brouter"])
@@ -950,6 +1102,7 @@ final class DirectionsViewModelTests: XCTestCase {
         cycling.result = .success(quiet)
         let store = TransitLayerStore()
         let model = makeModel(provider, store: store, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
         model.select(quiet)

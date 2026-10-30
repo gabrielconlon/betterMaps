@@ -49,8 +49,7 @@ struct JourneyRequest: Sendable {
     /// The walk limit this request plans with, in seconds; nil when there
     /// is none.
     var effectiveWalkToleranceSeconds: Int? {
-        let minutes = effectiveWalkToleranceMinutes
-        return minutes == DirectionsPreferencesSnapshot.noWalkLimit ? nil : minutes * 60
+        DirectionsPreferencesSnapshot.walkSeconds(forMinutes: effectiveWalkToleranceMinutes)
     }
 }
 

@@ -18,7 +18,9 @@ import SwiftData
 /// whole way" on, the bike router is asked at the same time and its route
 /// stands in for the engine's own direct cycle. With rain awareness on, the
 /// forecast is checked after the results land and, when a shower is likely,
-/// the plan is run again with a five-minute walk limit.
+/// the user's query and the rail probe are run again with a five-minute
+/// walk limit; the no-limit probes have no walk limit to shorten, so their
+/// first answers are kept and merged back in.
 @MainActor
 @Observable
 final class DirectionsViewModel {
@@ -50,7 +52,9 @@ final class DirectionsViewModel {
     /// sync, filling in a late location fix) is gated on it.
     var isPresented = false
     private(set) var prefs: DirectionsPreferencesSnapshot = .default
-    private(set) var itineraries: [Itinerary] = []
+    /// The options as ranked, with the rows the previews are drawn from.
+    private(set) var ranked = RankedItineraries()
+    var itineraries: [Itinerary] { ranked.itineraries }
     var selectedId: Itinerary.ID?
     private(set) var phase: Phase = .idle
     /// Chip text for the drawn option; nil when nothing is drawn.
@@ -64,6 +68,9 @@ final class DirectionsViewModel {
 
     /// The walk limit planned with when rain is likely.
     nonisolated static let rainWalkMinutes = 5
+    /// `rainWalkMinutes` for ranking costs and limit comparisons. Never nil:
+    /// five minutes is a limit, not `noWalkLimit`.
+    nonisolated static let rainWalkSeconds = DirectionsPreferencesSnapshot.walkSeconds(forMinutes: rainWalkMinutes) ?? 0
     /// The most `/plan` calls one search makes: the base, the rail probe and
     /// one no-limit probe per network family (bus, Luas, DART/Rail).
     /// Transitous asks clients to stay around 720 calls a day, so a search
@@ -200,7 +207,7 @@ final class DirectionsViewModel {
 
     /// The journey changed: nothing found for the old one may linger.
     private func forgetResults() {
-        itineraries = []
+        ranked = RankedItineraries()
         dropSelection()
         store.setPreviews([])
     }
@@ -322,8 +329,9 @@ final class DirectionsViewModel {
     /// options whatever the limit. A probe that would repeat an earlier
     /// request (same networks, same limit) is dropped, keeping a search at
     /// `maxPlanCalls` or fewer. `rainAdjusted` swaps the user's walk limit
-    /// for the rain limit on the base and the rail probe; the family probes
-    /// still run so the train is still offered, just lower down.
+    /// for the rain limit on the base and the rail probe and leaves the
+    /// family probes out: a no-limit probe has nothing to shorten, so the
+    /// caller reuses the first pass's answers (`PlanOutcome.probeItineraries`).
     nonisolated static func requests(for base: JourneyRequest, rainAdjusted: Bool = false) -> [JourneyRequest] {
         let prefs = base.preferences
         var main = base
@@ -343,6 +351,7 @@ final class DirectionsViewModel {
             rail.transitModesOverride = railModes
             add(rail)
         }
+        guard !rainAdjusted else { return result }
         for family in probeFamilies {
             let modes = family.intersection(prefs.allowedTransitModes)
             guard !modes.isEmpty else { continue }
@@ -353,6 +362,12 @@ final class DirectionsViewModel {
         }
         assert(result.count <= maxPlanCalls)
         return result
+    }
+
+    /// A per-network probe with no walk limit.
+    nonisolated static func isFamilyProbe(_ request: JourneyRequest) -> Bool {
+        request.transitModesOverride != nil
+            && request.walkToleranceOverrideMinutes == DirectionsPreferencesSnapshot.noWalkLimit
     }
 
     /// A bike route to ask for alongside the transit plan.
@@ -369,10 +384,14 @@ final class DirectionsViewModel {
         var itineraries: [Itinerary]
         /// The bike router's answer, when asked and it came in time.
         var bike: Itinerary?
+        /// What the no-limit family probes found, kept apart so a rain
+        /// re-plan can merge them in without asking again.
+        var probeItineraries: [Itinerary]
 
-        init(itineraries: [Itinerary], bike: Itinerary? = nil) {
+        init(itineraries: [Itinerary], bike: Itinerary? = nil, probeItineraries: [Itinerary] = []) {
             self.itineraries = itineraries
             self.bike = bike
+            self.probeItineraries = probeItineraries
         }
     }
 
@@ -409,22 +428,32 @@ final class DirectionsViewModel {
             }
         }
 
-        var seen: Set<String> = []
-        var merged: [Itinerary] = []
-        var anySucceeded = false
+        var answers: [[Itinerary]] = []
+        var probeAnswers: [[Itinerary]] = []
         for index in requests.indices {
             guard case .success(let found)? = results[index] else { continue }
-            anySucceeded = true
-            for itinerary in found where seen.insert(itinerary.id).inserted {
-                merged.append(itinerary)
-            }
+            answers.append(found)
+            if isFamilyProbe(requests[index]) { probeAnswers.append(found) }
         }
-        guard anySucceeded else {
+        guard !answers.isEmpty else {
             if case .failure(let error)? = results[0] { throw error }
             throw JourneyProviderError.unavailable(status: nil)
         }
+        var merged = deduplicated(answers)
         if let bike { merged = merging(bike: bike, into: merged) }
-        return PlanOutcome(itineraries: merged, bike: bike)
+        return PlanOutcome(itineraries: merged, bike: bike, probeItineraries: deduplicated(probeAnswers))
+    }
+
+    /// The groups in order, each option once (by id) at its first appearance.
+    nonisolated static func deduplicated(_ groups: [[Itinerary]]) -> [Itinerary] {
+        var seen: Set<String> = []
+        var merged: [Itinerary] = []
+        for group in groups {
+            for itinerary in group where seen.insert(itinerary.id).inserted {
+                merged.append(itinerary)
+            }
+        }
+        return merged
     }
 
     /// The bike router's answer, or nil when it failed or took longer than
@@ -471,7 +500,7 @@ final class DirectionsViewModel {
         let gen = generation
         pinEndpoints()
         guard let request = buildRequest() else {
-            itineraries = []
+            ranked = RankedItineraries()
             phase = .idle
             dropSelection()
             store.setPreviews([])
@@ -519,12 +548,16 @@ final class DirectionsViewModel {
             window: window, threshold: prefs.rainProbabilityThreshold)
         guard !Task.isCancelled, generation == gen else { return }
         rainHint = hint
-        guard hint != nil, prefs.walkToleranceSeconds.map({ $0 > Self.rainWalkMinutes * 60 }) ?? true else { return }
+        guard hint != nil, prefs.walkToleranceSeconds.map({ $0 > Self.rainWalkSeconds }) ?? true else { return }
 
-        // The bike route does not depend on the walk limit: reuse it.
-        guard var adjusted = try? await Self.plan(Self.requests(for: request, rainAdjusted: true), with: provider),
-              !adjusted.itineraries.isEmpty else { return }
+        // Only the base and the rail probe have a limit to shorten. The
+        // family probes' answers and the bike route do not depend on it:
+        // both are reused from the first pass.
+        guard var adjusted = try? await Self.plan(Self.requests(for: request, rainAdjusted: true), with: provider) else { return }
         guard !Task.isCancelled, generation == gen else { return }
+        adjusted.itineraries = Self.deduplicated([adjusted.itineraries, planned.probeItineraries])
+        adjusted.probeItineraries = planned.probeItineraries
+        guard !adjusted.itineraries.isEmpty else { return }
         if let bike = planned.bike {
             adjusted.itineraries = Self.merging(bike: bike, into: adjusted.itineraries)
             adjusted.bike = bike
@@ -550,12 +583,12 @@ final class DirectionsViewModel {
 
     private func replaceBikeOption(with bike: Itinerary) {
         let bikeWasSelected = selectedItinerary.map(RankingRules.isBikeOnly) ?? false
-        itineraries = RankingRules.rank(Self.merging(bike: bike, into: itineraries), context: rankingContext)
+        ranked = RankingRules.rank(Self.merging(bike: bike, into: itineraries), context: rankingContext)
         if case .empty = phase { phase = .results }
         if bikeWasSelected {
             select(bike)
         } else if selectedId == nil {
-            store.setPreviews(Self.previewLegs(itineraries))
+            store.setPreviews(Self.previewLegs(ranked))
         }
     }
 
@@ -586,24 +619,26 @@ final class DirectionsViewModel {
         return RankingContext(
             preferRail: prefs.preferRail,
             railWalkCeilingSeconds: prefs.preferRailWalkCeilingMinutes * 60,
-            walkToleranceSeconds: rainAdjusted ? Self.rainWalkMinutes * 60 : prefs.walkToleranceSeconds,
+            walkToleranceSeconds: rainAdjusted ? Self.rainWalkSeconds : prefs.walkToleranceSeconds,
             enabledModes: enabled)
     }
 
     private func publish(_ outcome: Result<PlanOutcome, Error>) {
         switch outcome {
         case .success(let planned):
-            let ranked = RankingRules.rank(planned.itineraries, context: rankingContext)
-            itineraries = ranked
-            if ranked.isEmpty {
-                phase = .empty(suggestRelaxWalk: prefs.walkToleranceSeconds != nil,
+            ranked = RankingRules.rank(planned.itineraries, context: rankingContext)
+            if itineraries.isEmpty {
+                // With a network on, a no-limit probe already ran for it, so
+                // lifting the walk limit cannot find anything more.
+                let probed = !prefs.allowedTransitModes.isEmpty
+                phase = .empty(suggestRelaxWalk: prefs.walkToleranceSeconds != nil && !probed,
                                suggestTransfers: prefs.maxTransfers == 0)
             } else {
                 phase = .results
             }
             // Keep the pick if the same option is still offered; otherwise
             // the map shows the previews.
-            if let selectedId, let kept = ranked.first(where: { $0.id == selectedId }) {
+            if let selectedId, let kept = itineraries.first(where: { $0.id == selectedId }) {
                 draw(kept)
             } else {
                 dropSelection()
@@ -638,7 +673,7 @@ final class DirectionsViewModel {
     /// come back.
     func clearSelection() {
         dropSelection()
-        store.setPreviews(Self.previewLegs(itineraries))
+        store.setPreviews(Self.previewLegs(ranked))
     }
 
     /// Takes everything the search drew off the map (the chip's clear, a tap
@@ -648,25 +683,24 @@ final class DirectionsViewModel {
         store.clearDirectionsEndpoints()
     }
 
+    /// The map's clear chip. With the sheet up it only puts the picked
+    /// option back in the list (the previews and pins are the sheet's
+    /// context); with the sheet away it clears the map.
+    func chipCleared() {
+        if isPresented { clearSelection() } else { clearMap() }
+    }
+
     private func dropSelection() {
         selectedId = nil
         drawnLabel = nil
         store.clearDrawnItinerary()
     }
 
-    /// The options worth previewing before one is picked: the first row,
-    /// the rail pin and the fastest per network, in list order, at most
-    /// `maxPreviews`.
-    nonisolated static func previewLegs(_ ranked: [Itinerary]) -> [[Leg]] {
-        var result: [[Leg]] = []
-        var seen: Set<String> = []
-        for (index, itinerary) in ranked.enumerated() where result.count < maxPreviews {
-            let reason = itinerary.reason ?? ""
-            let worthIt = index == 0 || reason == RankingRules.railReason || reason.hasPrefix(RankingRules.fastestByPrefix)
-            guard worthIt, seen.insert(itinerary.id).inserted else { continue }
-            result.append(itinerary.legs)
-        }
-        return result
+    /// The options worth previewing before one is picked: the ranker's
+    /// guaranteed rows (the first, the rail pin, the fastest per network and
+    /// the bike), in list order, at most `maxPreviews`.
+    nonisolated static func previewLegs(_ ranked: RankedItineraries) -> [[Leg]] {
+        ranked.guaranteed.prefix(maxPreviews).map(\.legs)
     }
 
     /// Marks the search's ends on the map as soon as they are known. The
@@ -683,8 +717,10 @@ final class DirectionsViewModel {
     // MARK: - Lifecycle
 
     /// The sheet went away. Stops the work in flight and drops the forecast
-    /// line, but keeps the endpoints, the list and the drawn option: the map
-    /// still shows the journey, and reopening has something to show at once.
+    /// line. With results, the endpoints, the list and the drawn option
+    /// stay: the map still shows the journey, and reopening has something
+    /// to show at once. Without any, the pins go too, or they would mark a
+    /// search nothing came of.
     func sheetDismissed() {
         isPresented = false
         queryTask?.cancel()
@@ -694,6 +730,7 @@ final class DirectionsViewModel {
         generation &+= 1
         rainHint = nil
         if phase == .loading { phase = itineraries.isEmpty ? .idle : .results }
+        if phase != .results { clearMap() }
     }
 
     /// Back to nothing.
@@ -707,7 +744,7 @@ final class DirectionsViewModel {
         destination = nil
         departNow = true
         arriveBy = false
-        itineraries = []
+        ranked = RankedItineraries()
         phase = .idle
         resetRainState()
         clearMap()
