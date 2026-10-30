@@ -551,7 +551,16 @@ struct MapScreen: View {
             return
         }
         // If a sheet is already showing (from a previous tap), don't POI search
-        if viewModel.activeSheet != nil { return }
+        if let sheet = viewModel.activeSheet {
+            #if targetEnvironment(macCatalyst)
+            // No swipe down on the Mac: a click on the map closes a map card,
+            // as clicking away from a card does in Maps.
+            if sheet.isMapCard { viewModel.dismissSheet() }
+            #else
+            _ = sheet
+            #endif
+            return
+        }
         guard let coordinate else { return }
         // Project only trails whose bbox contains the tap, while the camera
         // is exactly where the user tapped.
@@ -814,6 +823,7 @@ struct MapScreen: View {
                 .presentationDetents([.fraction(0.25), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .mapCardCloseButton { viewModel.dismissSheet() }
 
         case .poiDetail(let mapItem):
             POIAddToLayerView(mapItem: mapItem, onDismiss: { viewModel.dismissSheet() },
@@ -822,6 +832,7 @@ struct MapScreen: View {
                 .presentationDetents([.fraction(0.25), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .mapCardCloseButton { viewModel.dismissSheet() }
 
         case .poiLookup(let coordinate):
             POILookupSheet(coordinate: coordinate, onDismiss: { viewModel.dismissSheet() },
@@ -830,6 +841,7 @@ struct MapScreen: View {
                 .presentationDetents([.fraction(0.25), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .mapCardCloseButton { viewModel.dismissSheet() }
 
         case .directions:
             DirectionsSheet(
@@ -869,6 +881,7 @@ struct MapScreen: View {
                 .presentationDetents([Self.arrivalsPeek, .medium, .large], selection: $arrivalsDetent)
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .mapCardCloseButton { viewModel.dismissSheet() }
 
         case .layerDetail(let id):
             if let layer = layers.first(where: { $0.id == id }) {
@@ -903,6 +916,7 @@ struct MapScreen: View {
                     },
                     onDelete: { refreshTrails(layerId: nil) }
                 )
+                .mapCardCloseButton { viewModel.dismissSheet() }
             } else {
                 StatusView(status: .empty(title: "This trail was deleted", hint: nil,
                                           systemImage: "point.topleft.down.to.point.bottomright.curvepath",
