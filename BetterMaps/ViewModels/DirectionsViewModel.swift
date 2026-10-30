@@ -10,6 +10,12 @@ import SwiftData
 /// Every control change writes the `@Model`, then re-plans after a short
 /// debounce; a newer change cancels the in-flight plan so a slow answer
 /// never lands on top of a newer one.
+///
+/// A plan is more than one request: beside the user's own query run a
+/// rail-only probe (when they prefer rail) and a longer-walk probe (when
+/// their walk limit is short), merged and ranked together. With rain
+/// awareness on, the forecast is checked after the results land and, when a
+/// shower is likely, the plan is run again with a five-minute walk limit.
 @MainActor
 @Observable
 final class DirectionsViewModel {
@@ -40,17 +46,35 @@ final class DirectionsViewModel {
     private(set) var phase: Phase = .idle
     /// Chip text for the drawn option; nil when nothing is drawn.
     var drawnLabel: String?
+    /// The forecast's verdict for this search; nil when dry, off, or unknown.
+    private(set) var rainHint: RainHint?
+    /// True while the results shown were planned with the rain walk limit.
+    private(set) var rainAdjusted = false
+    /// Set by `undoRainAdjustment`; cleared when either endpoint changes.
+    private var rainUndoneForSearch = false
+
+    /// The walk limit planned with when rain is likely.
+    nonisolated static let rainWalkMinutes = 5
+    /// Walk limit the relaxed probe plans with.
+    nonisolated static let relaxedWalkMinutes = 20
+    /// Walk limits at or below this get a relaxed probe alongside.
+    nonisolated static let relaxedProbeCeilingMinutes = 10
+    /// Fallback forecast window when the plan found nothing to time it by.
+    nonisolated static let fallbackWindow: TimeInterval = 90 * 60
 
     @ObservationIgnored private let provider: any JourneyProvider
+    @ObservationIgnored private let weather: WeatherHintService
     @ObservationIgnored private let store: TransitLayerStore
     @ObservationIgnored private var context: ModelContext?
     @ObservationIgnored private var prefsModel: DirectionsPreferences?
     @ObservationIgnored private var queryTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
 
-    init(provider: any JourneyProvider, store: TransitLayerStore = .shared) {
+    init(provider: any JourneyProvider, store: TransitLayerStore = .shared,
+         weather: WeatherHintService = WeatherHintService()) {
         self.provider = provider
         self.store = store
+        self.weather = weather
     }
 
     // MARK: - Preferences
@@ -98,22 +122,33 @@ final class DirectionsViewModel {
         departNow = true
         time = Date()
         clearSelection()
+        resetRainState()
         scheduleQuery(immediate: true)
     }
 
     func setOrigin(_ endpoint: DirectionsEndpoint) {
         origin = endpoint
+        resetRainState()
         scheduleQuery(immediate: true)
     }
 
     func setDestination(_ endpoint: DirectionsEndpoint) {
         destination = endpoint
+        resetRainState()
         scheduleQuery(immediate: true)
     }
 
     func swapEndpoints() {
         (origin, destination) = (destination, origin)
+        resetRainState()
         scheduleQuery(immediate: true)
+    }
+
+    /// A new journey: forget the old forecast and any undo.
+    private func resetRainState() {
+        rainHint = nil
+        rainAdjusted = false
+        rainUndoneForSearch = false
     }
 
     // MARK: - Control writers
@@ -188,6 +223,79 @@ final class DirectionsViewModel {
                               preferences: prefs)
     }
 
+    /// The requests one plan is made of: the user's own query first, then
+    /// the probes. The rail probe rides only the rail modes the user has on
+    /// (Luas included, since it is how most people reach a DART station).
+    /// `rainAdjusted` swaps the user's walk limit for the rain limit and
+    /// drops the longer-walk probe, which would defeat the point.
+    nonisolated static func requests(for base: JourneyRequest, rainAdjusted: Bool = false) -> [JourneyRequest] {
+        let prefs = base.preferences
+        var main = base
+        if rainAdjusted { main.walkToleranceOverrideMinutes = rainWalkMinutes }
+        var result = [main]
+
+        let railModes = RankingRules.railModes.intersection(prefs.enabledModes)
+        if prefs.preferRail, railModes.contains(.dart) || railModes.contains(.rail) {
+            var rail = main
+            rail.transitModesOverride = railModes
+            result.append(rail)
+        }
+        if !rainAdjusted, prefs.walkToleranceMinutes <= relaxedProbeCeilingMinutes {
+            var relaxed = main
+            relaxed.walkToleranceOverrideMinutes = relaxedWalkMinutes
+            result.append(relaxed)
+        }
+        return result
+    }
+
+    /// What one round of planning produced, before ranking.
+    struct PlanOutcome: Sendable {
+        /// Base itineraries first, then each probe's, de-duplicated by id.
+        var itineraries: [Itinerary]
+        var baseIds: Set<String>
+        var baseMinTransitLegs: Int?
+    }
+
+    /// Runs `requests` together and merges the answers. The first request is
+    /// the base: its failure is only reported when every probe failed too,
+    /// and a probe's failure is ignored whenever anything else succeeded.
+    nonisolated static func plan(_ requests: [JourneyRequest],
+                                 with provider: any JourneyProvider) async throws -> PlanOutcome {
+        var results: [Int: Result<[Itinerary], Error>] = [:]
+        await withTaskGroup(of: (Int, Result<[Itinerary], Error>).self) { group in
+            for (index, request) in requests.enumerated() {
+                group.addTask {
+                    do { return (index, .success(try await provider.plan(request))) }
+                    catch { return (index, .failure(error)) }
+                }
+            }
+            for await (index, result) in group { results[index] = result }
+        }
+
+        var seen: Set<String> = []
+        var merged: [Itinerary] = []
+        var anySucceeded = false
+        for index in requests.indices {
+            guard case .success(let found)? = results[index] else { continue }
+            anySucceeded = true
+            for itinerary in found where seen.insert(itinerary.id).inserted {
+                merged.append(itinerary)
+            }
+        }
+        guard anySucceeded else {
+            if case .failure(let error)? = results[0] { throw error }
+            throw JourneyProviderError.unavailable(status: nil)
+        }
+
+        var baseIds: Set<String> = []
+        var baseMin: Int?
+        if case .success(let base)? = results[0] {
+            baseIds = Set(base.map(\.id))
+            baseMin = base.map(\.transitLegs.count).filter { $0 > 0 }.min()
+        }
+        return PlanOutcome(itineraries: merged, baseIds: baseIds, baseMinTransitLegs: baseMin)
+    }
+
     /// Cancels any plan in flight and starts a new one after `debounce`
     /// (or at once). Only the newest generation may publish.
     func scheduleQuery(immediate: Bool = false) {
@@ -201,29 +309,80 @@ final class DirectionsViewModel {
             return
         }
         phase = .loading
-        let provider = self.provider
         queryTask = Task { [weak self] in
             if !immediate {
                 try? await Task.sleep(for: Self.debounce)
                 guard !Task.isCancelled else { return }
             }
-            let outcome: Result<[Itinerary], Error>
-            do {
-                outcome = .success(try await provider.plan(request))
-            } catch {
-                outcome = .failure(error)
-            }
-            guard !Task.isCancelled, let self, self.generation == gen else { return }
-            self.publish(outcome)
+            await self?.runQuery(request, generation: gen)
         }
     }
 
-    private func publish(_ outcome: Result<[Itinerary], Error>) {
+    /// One whole search: the plan with its probes, then the forecast and,
+    /// when rain is likely, the plan again with shorter walks. Every publish
+    /// checks the generation so a superseded search changes nothing.
+    private func runQuery(_ request: JourneyRequest, generation gen: Int) async {
+        let provider = self.provider
+        let prefs = request.preferences
+        let outcome: Result<PlanOutcome, Error>
+        do {
+            outcome = .success(try await Self.plan(Self.requests(for: request), with: provider))
+        } catch {
+            outcome = .failure(error)
+        }
+        guard !Task.isCancelled, generation == gen else { return }
+        rainAdjusted = false
+        publish(outcome)
+
+        guard prefs.rainAware else {
+            rainHint = nil
+            return
+        }
+        guard !rainUndoneForSearch, case .success(let planned) = outcome else { return }
+
+        let window = Self.forecastWindow(for: planned.itineraries, around: request.time)
+        let hint = await weather.hint(
+            origin: request.origin, destination: request.destination,
+            originName: origin?.name ?? "the start", destinationName: destination?.name ?? "the destination",
+            window: window, threshold: prefs.rainProbabilityThreshold)
+        guard !Task.isCancelled, generation == gen else { return }
+        rainHint = hint
+        guard hint != nil, prefs.walkToleranceMinutes > Self.rainWalkMinutes else { return }
+
+        guard let adjusted = try? await Self.plan(Self.requests(for: request, rainAdjusted: true), with: provider),
+              !adjusted.itineraries.isEmpty else { return }
+        guard !Task.isCancelled, generation == gen else { return }
+        rainAdjusted = true
+        publish(.success(adjusted))
+    }
+
+    /// First departure to last arrival of what was found, else the planned
+    /// time plus `fallbackWindow`.
+    nonisolated static func forecastWindow(for itineraries: [Itinerary], around time: Date) -> ClosedRange<Date> {
+        guard let first = itineraries.map(\.start).min(), let last = itineraries.map(\.end).max(),
+              first <= last else {
+            return time...time.addingTimeInterval(fallbackWindow)
+        }
+        return first...last
+    }
+
+    /// Goes back to the user's own walk limit for this journey. The hint
+    /// stays on screen; the adjustment is not applied again until an
+    /// endpoint changes.
+    func undoRainAdjustment() {
+        rainUndoneForSearch = true
+        rainAdjusted = false
+        scheduleQuery(immediate: true)
+    }
+
+    private func publish(_ outcome: Result<PlanOutcome, Error>) {
         switch outcome {
-        case .success(let found):
-            let ranked = RankingRules.rank(found, context: RankingContext(
+        case .success(let planned):
+            let ranked = RankingRules.rank(planned.itineraries, context: RankingContext(
                 preferRail: prefs.preferRail,
-                railWalkCeilingSeconds: prefs.preferRailWalkCeilingMinutes * 60))
+                railWalkCeilingSeconds: prefs.preferRailWalkCeilingMinutes * 60,
+                baseIds: planned.baseIds,
+                baseMinTransitLegs: planned.baseMinTransitLegs))
             itineraries = ranked
             if ranked.isEmpty {
                 phase = .empty(suggestRelaxWalk: prefs.walkToleranceMinutes < 20,
@@ -284,6 +443,7 @@ final class DirectionsViewModel {
         arriveBy = false
         itineraries = []
         phase = .idle
+        resetRainState()
         dropSelection()
     }
 }
@@ -291,16 +451,18 @@ final class DirectionsViewModel {
 extension DirectionsPreferencesSnapshot {
     /// A copy with the given fields changed; the initializer re-clamps.
     func replacing(walkToleranceMinutes: Int? = nil, enabledModes: Set<TransitMode>? = nil,
-                   allowBikeDirect: Bool? = nil, maxTransfers: Int? = nil) -> DirectionsPreferencesSnapshot {
+                   allowBikeDirect: Bool? = nil, maxTransfers: Int? = nil,
+                   preferRail: Bool? = nil, preferRailWalkCeilingMinutes: Int? = nil,
+                   rainAware: Bool? = nil, rainProbabilityThreshold: Int? = nil) -> DirectionsPreferencesSnapshot {
         DirectionsPreferencesSnapshot(
             walkToleranceMinutes: walkToleranceMinutes ?? self.walkToleranceMinutes,
             enabledModes: enabledModes ?? self.enabledModes,
             allowBikeDirect: allowBikeDirect ?? self.allowBikeDirect,
             maxTransfers: maxTransfers ?? self.maxTransfers,
-            preferRail: preferRail,
-            preferRailWalkCeilingMinutes: preferRailWalkCeilingMinutes,
-            rainAware: rainAware,
-            rainProbabilityThreshold: rainProbabilityThreshold
+            preferRail: preferRail ?? self.preferRail,
+            preferRailWalkCeilingMinutes: preferRailWalkCeilingMinutes ?? self.preferRailWalkCeilingMinutes,
+            rainAware: rainAware ?? self.rainAware,
+            rainProbabilityThreshold: rainProbabilityThreshold ?? self.rainProbabilityThreshold
         )
     }
 }
