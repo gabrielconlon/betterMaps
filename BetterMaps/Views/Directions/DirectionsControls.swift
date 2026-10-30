@@ -79,6 +79,66 @@ struct DirectionsControls: View {
             }
             .frame(minHeight: 44)
             .accessibilityValue("\(prefs.maxTransfers)")
+
+            Toggle(isOn: Binding(
+                get: { prefs.preferRail },
+                set: { onChange(prefs.replacing(preferRail: $0)) }
+            )) {
+                Label("Prefer rail", systemImage: "tram.fill")
+                    .font(.subheadline)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("directions.preferRail")
+
+            if prefs.preferRail {
+                Stepper(value: Binding(
+                    get: { prefs.preferRailWalkCeilingMinutes },
+                    set: { onChange(prefs.replacing(preferRailWalkCeilingMinutes: $0)) }
+                ), in: 5...40, step: 5) {
+                    HStack {
+                        Text("If walking totals ≤")
+                            .font(.subheadline)
+                        Spacer()
+                        Text("\(prefs.preferRailWalkCeilingMinutes) min")
+                            .font(.subheadline.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 44)
+                .accessibilityLabel("Prefer rail if walking totals up to")
+                .accessibilityValue("\(prefs.preferRailWalkCeilingMinutes) minutes")
+            }
+
+            Toggle(isOn: Binding(
+                get: { prefs.rainAware },
+                set: { onChange(prefs.replacing(rainAware: $0)) }
+            )) {
+                Label("Rain aware", systemImage: "cloud.rain")
+                    .font(.subheadline)
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("directions.rainAware")
+
+            if prefs.rainAware {
+                Stepper(value: Binding(
+                    get: { prefs.rainProbabilityThreshold },
+                    set: { onChange(prefs.replacing(rainProbabilityThreshold: $0)) }
+                ), in: 20...90, step: 10) {
+                    HStack {
+                        Text("Rain chance ≥")
+                            .font(.subheadline)
+                        Spacer()
+                        Text("\(prefs.rainProbabilityThreshold) %")
+                            .font(.subheadline.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 44)
+                .accessibilityLabel("Rain chance at least")
+                .accessibilityValue("\(prefs.rainProbabilityThreshold) percent")
+            }
         }
     }
 }
