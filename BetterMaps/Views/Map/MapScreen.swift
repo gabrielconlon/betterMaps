@@ -202,7 +202,14 @@ struct MapScreen: View {
                 onLongPress: handleLongPress,
                 onCameraSettled: { region in
                     transitStore.region = region
-                    if isSearchFocused { isSearchFocused = false }
+                    // A pan dismisses the keyboard, but only where the user
+                    // could have panned: focusing search expands the sheet
+                    // over the map, and settles that happen then come from
+                    // launch, transit loads or the keyboard's own layout
+                    // pass. On iOS 18 (an iPhone 12 Pro tester) one of those
+                    // landed right after every tap and the keyboard never
+                    // stayed up.
+                    if isSearchFocused, sheetDetent != .expanded { isSearchFocused = false }
                 }
             )
             .ignoresSafeArea(.keyboard)
