@@ -7,6 +7,8 @@ import MapKit
 struct POILookupSheet: View {
     let coordinate: CLLocationCoordinate2D
     let onDismiss: () -> Void
+    var onDirections: (DirectionsEndpoint) -> Void = { _ in }
+    var onOpenStop: (TransitStop) -> Void = { _ in }
 
     private enum Phase {
         case loading
@@ -26,7 +28,8 @@ struct POILookupSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .accessibilityAddTraits(.updatesFrequently)
             case .found(let item):
-                POIAddToLayerView(mapItem: item, onDismiss: onDismiss)
+                POIAddToLayerView(mapItem: item, onDismiss: onDismiss,
+                                  onDirections: onDirections, onOpenStop: onOpenStop)
             case .nothing:
                 StatusView(status: .empty(title: "Nothing here",
                                           hint: "Long-press to save a spot.",

@@ -72,6 +72,9 @@ struct MapCanvas: View {
                                         zoomBucket: shown.zoomBucket,
                                         mapHeading: mapHeading,
                                         onTapStop: onTapStop)
+                    if let legs = shown.itineraryLegs {
+                        ItineraryLayerContent(legs: legs)
+                    }
                     if let droppedPin {
                         Annotation("Dropped Pin", coordinate: droppedPin, anchor: .bottom) {
                             DroppedPinAnnotation()
@@ -181,6 +184,8 @@ struct MapCanvasContent {
     var stops: [TransitStop] = []
     var lines: [TransitLine] = []
     var highlightedRoute: [[CLLocationCoordinate2D]]?
+    /// The picked directions option, one entry per leg.
+    var itineraryLegs: [Leg]?
     var zoomBucket = TransitZoomBucket(latitudeDelta: 0.2)
 
     @MainActor
@@ -192,6 +197,7 @@ struct MapCanvasContent {
         stops = transit.visibleStops
         lines = transit.visibleLines
         highlightedRoute = transit.highlightedRoute
+        itineraryLegs = transit.drawnItinerary
         zoomBucket = transit.zoomBucket
     }
 }

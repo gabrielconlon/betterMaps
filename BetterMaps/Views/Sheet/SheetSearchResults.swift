@@ -14,6 +14,8 @@ struct SheetSearchResults: View {
     /// Draws the route on the map.
     let onSelectRoute: (TransitRoute) -> Void
     let onSelectPOI: (MKMapItem) -> Void
+    /// Plans a journey to a place, stop or nearby result.
+    let onDirections: (DirectionsEndpoint) -> Void
 
     static let sectionLimit = 5
     @State private var expanded: Set<SearchState.SearchSection> = []
@@ -98,12 +100,27 @@ struct SheetSearchResults: View {
     private func placeRow(_ place: Place) -> some View {
         let color = (place.layers ?? []).first.flatMap { Color(hex: $0.colorHex) } ?? .gray
         let layerNames = (place.layers ?? []).map(\.name)
-        return Button { onSelectPlace(place) } label: {
-            SearchResultRow(icon: "mappin", iconColor: color, iconShape: .circle,
-                            title: place.name,
-                            subtitle: layerNames.isEmpty ? "Saved place" : layerNames.joined(separator: ", "))
+        return HStack(spacing: 0) {
+            Button { onSelectPlace(place) } label: {
+                SearchResultRow(icon: "mappin", iconColor: color, iconShape: .circle,
+                                title: place.name,
+                                subtitle: layerNames.isEmpty ? "Saved place" : layerNames.joined(separator: ", "))
+            }
+            .buttonStyle(.plain)
+            directionsButton(name: place.name, coordinate: place.coordinate)
+        }
+    }
+
+    /// Trailing 44 pt arrow: plan a journey to this result.
+    private func directionsButton(name: String, coordinate: CLLocationCoordinate2D) -> some View {
+        Button { onDirections(DirectionsEndpoint(name: name, coordinate: coordinate)) } label: {
+            Image(systemName: "arrow.triangle.turn.up.right.diamond")
+                .foregroundStyle(.tint)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Directions to \(name)")
     }
 
     private func routeRow(_ route: TransitRoute) -> some View {
@@ -128,22 +145,29 @@ struct SheetSearchResults: View {
     }
 
     private func stopRow(_ stop: TransitStop) -> some View {
-        Button { onSelectStop(stop) } label: {
-            SearchResultRow(icon: stop.kind.systemImage, iconColor: TransitColors.pin(for: stop),
-                            iconShape: .rounded, title: stop.name,
-                            subtitle: stop.code.map { "\(stop.kind.displayName) · Stop \($0)" } ?? stop.kind.displayName)
+        HStack(spacing: 0) {
+            Button { onSelectStop(stop) } label: {
+                SearchResultRow(icon: stop.kind.systemImage, iconColor: TransitColors.pin(for: stop),
+                                iconShape: .rounded, title: stop.name,
+                                subtitle: stop.code.map { "\(stop.kind.displayName) · Stop \($0)" } ?? stop.kind.displayName)
+            }
+            .buttonStyle(.plain)
+            directionsButton(name: stop.name, coordinate: stop.coordinate)
         }
-        .buttonStyle(.plain)
     }
 
     private func poiRow(_ item: MKMapItem) -> some View {
-        Button { onSelectPOI(item) } label: {
-            SearchResultRow(icon: "magnifyingglass", iconColor: .gray, iconShape: .circle,
-                            title: item.name ?? "Unnamed place",
-                            subtitle: [item.placemark.thoroughfare, item.placemark.locality]
-                                .compactMap { $0 }.joined(separator: ", "))
+        let name = item.name ?? "Unnamed place"
+        return HStack(spacing: 0) {
+            Button { onSelectPOI(item) } label: {
+                SearchResultRow(icon: "magnifyingglass", iconColor: .gray, iconShape: .circle,
+                                title: name,
+                                subtitle: [item.placemark.thoroughfare, item.placemark.locality]
+                                    .compactMap { $0 }.joined(separator: ", "))
+            }
+            .buttonStyle(.plain)
+            directionsButton(name: name, coordinate: item.placemark.coordinate)
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Pinned routes

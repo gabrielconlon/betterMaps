@@ -9,17 +9,24 @@ struct POIAddToLayerView: View {
 
     let mapItem: MKMapItem
     let onDismiss: () -> Void
+    /// Opens the directions sheet for this place (in place of this one).
+    let onDirections: (DirectionsEndpoint) -> Void
+    /// Opens a stop's arrivals in place of this sheet (one sheet at a time).
+    let onOpenStop: (TransitStop) -> Void
 
-    init(mapItem: MKMapItem, onDismiss: @escaping () -> Void) {
+    init(mapItem: MKMapItem, onDismiss: @escaping () -> Void,
+         onDirections: @escaping (DirectionsEndpoint) -> Void = { _ in },
+         onOpenStop: @escaping (TransitStop) -> Void = { _ in }) {
         self.mapItem = mapItem
         self.onDismiss = onDismiss
+        self.onDirections = onDirections
+        self.onOpenStop = onOpenStop
     }
 
     @State private var showAddToLayer = false
     /// The transit stop this POI stands for (nearest via the stop grid);
-    /// non-nil presents the arrivals sheet.
+    /// gives the action row its "Arrivals" tile.
     @State private var nearbyStop: TransitStop?
-    @State private var arrivalsStop: TransitStop?
     @State private var yelpBusiness: YelpBusiness?
     @State private var yelpReviews: [YelpReview] = []
     @State private var yelpStatus: InlineStatus?
@@ -87,7 +94,13 @@ struct POIAddToLayerView: View {
                 PlaceActionRow(name: placeName, coordinate: mapItem.placemark.coordinate,
                                primaryTitle: "Add tags", primarySystemImage: "tag",
                                onPrimary: { showAddToLayer = true },
+                               onDirections: {
+                                   onDirections(DirectionsEndpoint(name: placeName,
+                                                                   coordinate: mapItem.placemark.coordinate))
+                               },
                                extra: arrivalsAction)
+
+                NearbyTransitSection(coordinate: mapItem.placemark.coordinate, onOpenStop: onOpenStop)
 
                 // --- Extended details (visible when swiped up) ---
 
@@ -199,10 +212,6 @@ struct POIAddToLayerView: View {
             await store.loadIfNeeded()
             nearbyStop = store.nearestStop(to: mapItem.placemark.coordinate, title: mapItem.name)
         }
-        .sheet(item: $arrivalsStop) { stop in
-            TransitArrivalsView(stop: stop)
-                .presentationDetents([.medium, .large])
-        }
         .sheet(isPresented: $showAddToLayer) {
             AddToLayerSheet(
                 mapItem: mapItem,
@@ -219,7 +228,7 @@ struct POIAddToLayerView: View {
     /// "Arrivals" for a transit POI once its stop is resolved.
     private var arrivalsAction: PlaceActionRow.Extra? {
         guard isTransitPOI, let nearbyStop else { return nil }
-        return PlaceActionRow.Extra(title: "Arrivals", systemImage: "clock") { arrivalsStop = nearbyStop }
+        return PlaceActionRow.Extra(title: "Arrivals", systemImage: "clock") { onOpenStop(nearbyStop) }
     }
 
     // MARK: - Yelp
