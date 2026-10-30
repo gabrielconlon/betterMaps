@@ -70,6 +70,14 @@ struct MapScreen: View {
     /// height and show the route instead of covering it.
     @State private var arrivalsDetent: PresentationDetent = Self.arrivalsPeek
     private static var arrivalsPeek: PresentationDetent { .fraction(0.3) }
+    /// Public transport directions; one planner for the screen's lifetime.
+    @State private var directions = DirectionsViewModel(provider: JourneyProviderFactory.make(),
+                                                        weather: JourneyProviderFactory.makeWeather(),
+                                                        cycling: JourneyProviderFactory.makeCycling())
+    /// The directions sheet's detent: picking an option drops it to the
+    /// peek height so the drawn journey shows.
+    @State private var directionsDetent: PresentationDetent = .medium
+    static let directionsPeek: PresentationDetent = .fraction(0.3)
 
     private static var initialDetent: SheetDetent {
         #if DEBUG
@@ -218,6 +226,7 @@ struct MapScreen: View {
                       onRequestLocation: locateUser)
                 .animation(.easeInOut(duration: 0.2), value: draftStore.hasDraft)
                 .animation(.easeInOut(duration: 0.2), value: transitStore.highlightedRouteId)
+                .animation(.easeInOut(duration: 0.2), value: transitStore.drawnItinerary != nil)
 
             if isLayersPanelOpen {
                 layersPanel
@@ -255,7 +264,12 @@ struct MapScreen: View {
         .sensoryFeedback(.selection, trigger: trailHitCount)
         // Location is requested on first use (locate, quick add, search),
         // not at launch; an existing grant still shows the blue dot.
-        .onChange(of: locationManager.userLocation?.latitude) { _, _ in centreOnUserIfPending() }
+        .onChange(of: locationManager.userLocation?.latitude) { _, _ in
+            centreOnUserIfPending()
+            // The first fix after permission was granted fills in "My Location"
+            // for a directions sheet that opened without one.
+            if let location = locationManager.userLocation { directions.userLocationDidUpdate(location) }
+        }
         .onChange(of: locationManager.authorizationStatus) { _, status in
             if status == .denied || status == .restricted { pendingLocate = false }
         }
@@ -268,12 +282,29 @@ struct MapScreen: View {
             if isSearchFocused { isSearchFocused = false }
             if sheetDetent != .collapsed { sheetDetent = .collapsed }
             if case .transitArrivals = sheet { arrivalsDetent = Self.arrivalsPeek }
+            if case .directions = sheet { requestLocationIfUndetermined() }
+        }
+        // The directions sheet has one fixed id so a new destination re-plans
+        // inside it rather than re-presenting; this is what notices the
+        // destination itself, on open and on re-targeting alike.
+        .onChange(of: directionsDestination) { _, destination in
+            guard let destination else {
+                if directions.isPresented { directions.sheetDismissed() }
+                return
+            }
+            directionsDetent = .medium
+            directions.attach(context: modelContext)
+            directions.isPresented = true
+            directions.start(destination: destination, userLocation: directionsOrigin)
         }
         .onChange(of: snapshotTrigger, initial: true) { _, _ in rebuildSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
             .merge(with: NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange))
             .receive(on: RunLoop.main)) { _ in
             dataChangeToken &+= 1
+            // Settings (or another device) may have changed the directions
+            // preferences; the open sheet re-plans if so.
+            directions.refreshPrefs()
         }
         .onReceive(NotificationCenter.default.publisher(for: TrailSnapshotter.didChangeNotification)) { _ in
             feedStore(snapshot)
@@ -371,6 +402,11 @@ struct MapScreen: View {
                 onSelectPOI: { item in
                     showResult(at: item.placemark.coordinate)
                     viewModel.showPOI(item)
+                },
+                onDirections: { endpoint in
+                    dismissSearch()
+                    sheetDetent = .collapsed
+                    viewModel.showDirections(to: endpoint)
                 }
             ),
             onDrawTrail: { startDrawTrail(in: $0) }
@@ -401,10 +437,38 @@ struct MapScreen: View {
 
     private var isRouterSheetOpen: Bool { viewModel.activeSheet != nil }
 
+    /// The destination the open directions sheet is about; nil when another
+    /// sheet, or none, is up.
+    private var directionsDestination: DirectionsEndpoint? {
+        if case .directions(let destination) = viewModel.activeSheet { return destination }
+        return nil
+    }
+
     private var routeChip: HighlightedRouteChip? {
+        if transitStore.drawnItinerary != nil {
+            return HighlightedRouteChip(label: directions.drawnLabel ?? "Directions",
+                                        onClear: { directions.clearSelection() },
+                                        systemImage: "arrow.triangle.turn.up.right.diamond.fill",
+                                        tint: .accentColor,
+                                        prefix: nil,
+                                        accessibilityIdentifier: "directions.clear")
+        }
         guard transitStore.highlightedRouteId != nil else { return nil }
         return HighlightedRouteChip(label: transitStore.highlightedRouteLabel,
                                     onClear: { transitStore.clearHighlightedRoute() })
+    }
+
+    /// Where a journey starts: the user's location when known. Under the
+    /// UI-test fixture flag, a fixed Dublin point stands in so the fake
+    /// planner has something to plan from without location access.
+    private var directionsOrigin: CLLocationCoordinate2D? {
+        if let location = locationManager.userLocation { return location }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-UITestFakeDirections") {
+            return CLLocationCoordinate2D(latitude: 53.3464, longitude: -6.2923)
+        }
+        #endif
+        return nil
     }
 
     private func setLayersPanel(open: Bool) {
@@ -512,10 +576,14 @@ struct MapScreen: View {
                 viewModel.showTrailDetail(hitTrail)
                 return
             }
-            // With a route drawn, a tap on empty map clears it (as in Maps)
-            // rather than looking up a place.
+            // With a route or journey drawn, a tap on empty map clears it
+            // (as in Maps) rather than looking up a place.
             if transitStore.highlightedRouteId != nil {
                 transitStore.clearHighlightedRoute()
+                return
+            }
+            if transitStore.drawnItinerary != nil {
+                directions.clearSelection()
                 return
             }
             viewModel.lookUpPlace(at: coordinate)
@@ -743,25 +811,48 @@ struct MapScreen: View {
     private func sheetContent(for sheet: ActiveSheet) -> some View {
         switch sheet {
         case .placeDetail(let place):
-            PlaceDetailSheet(place: place)
+            PlaceDetailSheet(place: place,
+                             onDirections: { viewModel.showDirections(to: $0) },
+                             onOpenStop: { viewModel.showTransitArrivals(for: $0) })
                 .presentationDetents([.fraction(0.25), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                 .mapCardCloseButton { viewModel.dismissSheet() }
 
         case .poiDetail(let mapItem):
-            POIAddToLayerView(mapItem: mapItem, onDismiss: { viewModel.dismissSheet() })
+            POIAddToLayerView(mapItem: mapItem, onDismiss: { viewModel.dismissSheet() },
+                              onDirections: { viewModel.showDirections(to: $0) },
+                              onOpenStop: { viewModel.showTransitArrivals(for: $0) })
                 .presentationDetents([.fraction(0.25), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                 .mapCardCloseButton { viewModel.dismissSheet() }
 
         case .poiLookup(let coordinate):
-            POILookupSheet(coordinate: coordinate, onDismiss: { viewModel.dismissSheet() })
+            POILookupSheet(coordinate: coordinate, onDismiss: { viewModel.dismissSheet() },
+                           onDirections: { viewModel.showDirections(to: $0) },
+                           onOpenStop: { viewModel.showTransitArrivals(for: $0) })
                 .presentationDetents([.fraction(0.25), .medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                 .mapCardCloseButton { viewModel.dismissSheet() }
+
+        case .directions:
+            DirectionsSheet(
+                model: directions,
+                onSelectItinerary: {
+                    #if !targetEnvironment(macCatalyst)
+                    directionsDetent = Self.directionsPeek
+                    #endif
+                },
+                onOpenInAppleMaps: { name, coordinate in
+                    PlaceActionRow.openInAppleMaps(name: name, coordinate: coordinate)
+                },
+                onEditEndpoints: { directionsDetent = .large }
+            )
+            .presentationDetents([Self.directionsPeek, .medium, .large], selection: $directionsDetent)
+            .presentationDragIndicator(.visible)
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
 
         case .newPlace(let coordinate, let name, let layerId):
             PlaceFormView(coordinate: coordinate, mapCenter: settledMapCenter,
@@ -835,8 +926,9 @@ struct MapScreen: View {
     #if DEBUG
     /// Launch arguments that open screens for simulator screenshots:
     /// `-openQuickAdd 53.3438,-6.2546`, `-openTrailEditor YES`,
-    /// `-openLayersPanel YES`, and `-debugSelectTags 2 -debugTagMatch all`
-    /// (selects the first N tags by sortOrder).
+    /// `-openLayersPanel YES`, `-openPlaceDetail YES` (the first place by
+    /// name, after `-PerfSeed` has run), and `-debugSelectTags 2
+    /// -debugTagMatch all` (selects the first N tags by sortOrder).
     private func openDebugScreens() {
         let defaults = UserDefaults.standard
         let selectCount = defaults.integer(forKey: "debugSelectTags")
@@ -854,6 +946,16 @@ struct MapScreen: View {
             viewModel.startQuickAdd(at: c)
         } else if defaults.bool(forKey: "openTrailEditor") {
             startDrawTrail(in: nil)
+        } else if defaults.bool(forKey: "openPlaceDetail") {
+            // The seed runs from a sibling task; give it a moment to land.
+            Task {
+                try? await Task.sleep(for: .seconds(1))
+                var descriptor = FetchDescriptor<Place>(sortBy: [SortDescriptor(\.name)])
+                descriptor.fetchLimit = 1
+                guard let place = try? modelContext.fetch(descriptor).first else { return }
+                focus(on: place.coordinate)
+                viewModel.selectPlace(place)
+            }
         }
     }
     #endif

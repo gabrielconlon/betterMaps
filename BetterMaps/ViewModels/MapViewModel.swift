@@ -21,6 +21,9 @@ enum ActiveSheet: Identifiable {
     case editLayer(UUID)
     case trailDetail(UUID)
     case settings
+    /// Public transport directions to `destination`. One fixed id: a new
+    /// destination re-plans inside the open sheet instead of re-presenting.
+    case directions(destination: DirectionsEndpoint)
 
     var id: String {
         switch self {
@@ -35,6 +38,7 @@ enum ActiveSheet: Identifiable {
         case .editLayer(let id): return "editLayer-\(id)"
         case .trailDetail(let id): return "trail-\(id)"
         case .settings: return "settings"
+        case .directions: return "directions"
         }
     }
 
@@ -112,6 +116,11 @@ class MapViewModel {
 
     func showLayerDetail(_ layerId: UUID) {
         activeSheet = .layerDetail(layerId)
+    }
+
+    /// Opens (or re-targets) the directions sheet.
+    func showDirections(to destination: DirectionsEndpoint) {
+        activeSheet = .directions(destination: destination)
     }
 
     /// A trail was tapped (map hit-test or list row).

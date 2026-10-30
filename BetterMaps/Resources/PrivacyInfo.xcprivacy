@@ -15,6 +15,10 @@
 		<!-- A saved place's coordinate goes to api.yelp.com (YelpService.lookup) when the
 		     user has entered their own Yelp key. No account or device identifier travels
 		     with it. Luas, Irish Rail and the transit-data download send stop codes only.
+		     Directions send the origin and destination coordinates to api.transitous.org
+		     (journey planning), api.open-meteo.com (rain forecast) and brouter.de (the
+		     cycle-the-whole-way route); none of these requests carries anything that
+		     links it to the user, and nothing is used for tracking.
 		     Places and trails sync through the user's own private iCloud database, which
 		     Apple does not count as collection by the developer. -->
 		<dict>

@@ -105,6 +105,12 @@ final class TransitLayerStore {
     /// caller had none to give.
     private(set) var highlightedRouteLabel: String?
 
+    /// Legs of the directions option the user picked; drawn by
+    /// `ItineraryLayerContent`. Mutually exclusive with `highlightedRoute`.
+    private(set) var drawnItinerary: [Leg]?
+    /// Chip text for the drawn itinerary (the destination name).
+    private(set) var drawnItineraryLabel: String?
+
     @ObservationIgnored private(set) var grid = TransitSpatialGrid(stops: [])
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var visibleTask: Task<Void, Never>?
@@ -278,6 +284,11 @@ final class TransitLayerStore {
             clearHighlightedRoute()
             return
         }
+        // One thing drawn at a time: a route replaces a directions option.
+        if drawnItinerary != nil {
+            drawnItinerary = nil
+            drawnItineraryLabel = nil
+        }
         highlightedRouteId = routeId
         highlightedRouteLabel = label
         highlightedRoute = nil
@@ -312,6 +323,29 @@ final class TransitLayerStore {
         highlightedRouteId = nil
         highlightedRouteLabel = nil
         highlightedRoute = nil
+        version &+= 1
+    }
+
+    // MARK: - Drawn itinerary
+
+    /// Draws a directions option (one polyline per leg). Replaces any
+    /// highlighted route: the map shows one journey at a time.
+    func setDrawnItinerary(_ legs: [Leg], label: String) {
+        if highlightedRouteId != nil || highlightedRoute != nil {
+            highlightTask?.cancel()
+            highlightedRouteId = nil
+            highlightedRouteLabel = nil
+            highlightedRoute = nil
+        }
+        drawnItinerary = legs
+        drawnItineraryLabel = label
+        version &+= 1
+    }
+
+    func clearDrawnItinerary() {
+        guard drawnItinerary != nil || drawnItineraryLabel != nil else { return }
+        drawnItinerary = nil
+        drawnItineraryLabel = nil
         version &+= 1
     }
 }
