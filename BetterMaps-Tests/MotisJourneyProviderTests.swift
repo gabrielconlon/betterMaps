@@ -189,13 +189,47 @@ final class MotisJourneyProviderTests: XCTestCase {
         XCTAssertEqual(result.map { $0.legs.map(\.mode) }, [[.bike]], "no transit legs, nothing to filter")
     }
 
-    func testResultsAreSortedByDuration() async throws {
+    func testResultsKeepTheEnginesOrderAndContent() async throws {
+        // The provider does not rank: `DirectionsViewModel` does, once the
+        // probes' answers are merged in. Transit first, direct after.
         let result = try await provider(body: try MotisFixture.heuston.data()).plan(request())
-        XCTAssertEqual(result.map(\.durationSeconds), [2820, 2880, 3000])
+        XCTAssertEqual(result.map(\.durationSeconds).sorted(), [2820, 2880, 3000])
+        XCTAssertEqual(result.map(\.durationSeconds), [2880, 3000, 2820], "the engine's own order")
 
         let mixed = try await provider(body: try MotisFixture.bikewalk.data()).plan(request())
-        XCTAssertEqual(mixed.map(\.durationSeconds), [3042, 4020, 4200, 4260])
-        XCTAssertEqual(mixed.first?.legs.map(\.mode), [.bike], "the fastest option is the direct cycle")
+        XCTAssertEqual(mixed.map(\.durationSeconds).sorted(), [3042, 4020, 4200, 4260])
+        XCTAssertEqual(mixed.filter { $0.legs.map(\.mode) == [.bike] }.count, 1, "one direct cycle")
+        XCTAssertTrue(mixed.allSatisfy { $0.reason == nil }, "no reasons until the view model ranks")
+    }
+
+    func testItineraryWithUnknownModeIsDroppedOthersKept() {
+        let t = Date(timeIntervalSince1970: 1_793_694_960)
+        func leg(_ mode: String, trip: String?, offset: Int) -> MotisLeg {
+            MotisLeg(mode: mode, from: MotisPlace(name: "A", lat: 53.3, lon: -6.2),
+                     to: MotisPlace(name: "B", lat: 53.31, lon: -6.21),
+                     duration: 600, startTime: t.addingTimeInterval(TimeInterval(offset)),
+                     endTime: t.addingTimeInterval(TimeInterval(offset + 600)),
+                     tripId: trip, legGeometry: MotisPolyline(points: ""))
+        }
+        let busOnly = MotisItinerary(duration: 1200, startTime: t, endTime: t.addingTimeInterval(1200), transfers: 0,
+                                     legs: [leg("WALK", trip: nil, offset: 0), leg("BUS", trip: "bus-1", offset: 600)])
+        let viaFerry = MotisItinerary(duration: 1800, startTime: t, endTime: t.addingTimeInterval(1800), transfers: 1,
+                                      legs: [leg("WALK", trip: nil, offset: 0), leg("FERRY", trip: "ferry-1", offset: 600),
+                                             leg("BUS", trip: "bus-2", offset: 1200)])
+        let byCar = MotisItinerary(duration: 900, startTime: t, endTime: t.addingTimeInterval(900), transfers: 0,
+                                   legs: [leg("CAR", trip: nil, offset: 0)])
+        let response = MotisPlanResponse(itineraries: [viaFerry, busOnly], direct: [byCar])
+        let mapped = MotisMapper.itineraries(from: response, preferences: .default)
+        XCTAssertEqual(mapped.map(\.id), ["WALK|bus-1|1793694960|1793696160"])
+        XCTAssertEqual(mapped.first?.legs.map(\.mode), [.walk, .bus])
+    }
+
+    func testDateParserReadsBothIsoForms() {
+        XCTAssertEqual(MotisDateParser.parse("2026-11-03T10:36:00Z"), Date(timeIntervalSince1970: 1_793_702_160))
+        XCTAssertEqual(MotisDateParser.parse("2026-11-03T10:36:00.500Z"), Date(timeIntervalSince1970: 1_793_702_160.5))
+        XCTAssertEqual(MotisDateParser.parse("2026-11-03T11:36:00+01:00"), Date(timeIntervalSince1970: 1_793_702_160))
+        XCTAssertNil(MotisDateParser.parse("2026-11-03 10:36"))
+        XCTAssertNil(MotisDateParser.parse(""))
     }
 
     func testEmptyResponseYieldsNoItineraries() async throws {

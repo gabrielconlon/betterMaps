@@ -263,7 +263,12 @@ struct MapScreen: View {
         .sensoryFeedback(.selection, trigger: trailHitCount)
         // Location is requested on first use (locate, quick add, search),
         // not at launch; an existing grant still shows the blue dot.
-        .onChange(of: locationManager.userLocation?.latitude) { _, _ in centreOnUserIfPending() }
+        .onChange(of: locationManager.userLocation?.latitude) { _, _ in
+            centreOnUserIfPending()
+            // The first fix after permission was granted fills in "My Location"
+            // for a directions sheet that opened without one.
+            if let location = locationManager.userLocation { directions.userLocationDidUpdate(location) }
+        }
         .onChange(of: locationManager.authorizationStatus) { _, status in
             if status == .denied || status == .restricted { pendingLocate = false }
         }
@@ -276,12 +281,20 @@ struct MapScreen: View {
             if isSearchFocused { isSearchFocused = false }
             if sheetDetent != .collapsed { sheetDetent = .collapsed }
             if case .transitArrivals = sheet { arrivalsDetent = Self.arrivalsPeek }
-            if case .directions(let destination) = sheet {
-                directionsDetent = .medium
-                directions.attach(context: modelContext)
-                directions.start(destination: destination, userLocation: directionsOrigin)
-                requestLocationIfUndetermined()
+            if case .directions = sheet { requestLocationIfUndetermined() }
+        }
+        // The directions sheet has one fixed id so a new destination re-plans
+        // inside it rather than re-presenting; this is what notices the
+        // destination itself, on open and on re-targeting alike.
+        .onChange(of: directionsDestination) { _, destination in
+            guard let destination else {
+                if directions.isPresented { directions.sheetDismissed() }
+                return
             }
+            directionsDetent = .medium
+            directions.attach(context: modelContext)
+            directions.isPresented = true
+            directions.start(destination: destination, userLocation: directionsOrigin)
         }
         .onChange(of: snapshotTrigger, initial: true) { _, _ in rebuildSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
@@ -422,6 +435,13 @@ struct MapScreen: View {
     }
 
     private var isRouterSheetOpen: Bool { viewModel.activeSheet != nil }
+
+    /// The destination the open directions sheet is about; nil when another
+    /// sheet, or none, is up.
+    private var directionsDestination: DirectionsEndpoint? {
+        if case .directions(let destination) = viewModel.activeSheet { return destination }
+        return nil
+    }
 
     private var routeChip: HighlightedRouteChip? {
         if transitStore.drawnItinerary != nil {

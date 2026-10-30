@@ -60,16 +60,22 @@ struct TransitSpatialGrid: Sendable {
     /// Stops within `meters` of `coordinate`, nearest first.
     func nearest(to coordinate: CLLocationCoordinate2D, within meters: Double,
                  where include: (TransitStop) -> Bool = { _ in true }) -> [TransitStop] {
+        nearestWithDistance(to: coordinate, within: meters, where: include).map(\.stop)
+    }
+
+    /// `nearest`, with each stop's distance from `coordinate` in metres so a
+    /// caller that shows the distance need not measure it again.
+    func nearestWithDistance(to coordinate: CLLocationCoordinate2D, within meters: Double,
+                             where include: (TransitStop) -> Bool = { _ in true }) -> [(stop: TransitStop, meters: Double)] {
         let dLat = meters / 111_000
         let dLon = meters / (111_000 * max(cos(coordinate.latitude * .pi / 180), 0.01))
         let box = GeoBox(minLat: coordinate.latitude - dLat, maxLat: coordinate.latitude + dLat,
                          minLon: coordinate.longitude - dLon, maxLon: coordinate.longitude + dLon)
         return stops(in: box)
             .filter(include)
-            .map { ($0, WaypointGraph.meters($0.coordinate, coordinate)) }
-            .filter { $0.1 <= meters }
-            .sorted { $0.1 < $1.1 }
-            .map(\.0)
+            .map { (stop: $0, meters: WaypointGraph.meters($0.coordinate, coordinate)) }
+            .filter { $0.meters <= meters }
+            .sorted { $0.meters < $1.meters }
     }
 }
 

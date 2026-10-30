@@ -62,6 +62,16 @@ final class NearbyTransitServiceTests: XCTestCase {
         XCTAssertEqual(two.map(\.stop.id), ["8220GA00408", "8220DB000004"])
     }
 
+    func testGridDistancesMatchTheStopsReturned() {
+        let withDistance = grid.nearestWithDistance(to: abbeyStreet, within: 700)
+        XCTAssertEqual(withDistance.map(\.stop), grid.nearest(to: abbeyStreet, within: 700))
+        XCTAssertEqual(withDistance.map(\.meters), withDistance.map(\.meters).sorted())
+        for entry in withDistance {
+            XCTAssertEqual(entry.meters, WaypointGraph.meters(entry.stop.coordinate, abbeyStreet), accuracy: 0.01)
+            XCTAssertLessThanOrEqual(entry.meters, 700)
+        }
+    }
+
     func testNothingNearbyIsEmpty() async throws {
         let service = NearbyTransitService(timetable: try installedService())
         let found = await service.nearby(Dublin.howth, grid: grid, radiusMeters: 400)

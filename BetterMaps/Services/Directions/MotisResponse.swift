@@ -37,17 +37,16 @@ struct MotisPlanResponse: Decodable, Sendable {
     }
 }
 
-/// Parses ISO 8601 with and without fractional seconds. `ISO8601DateFormatter`
-/// is not Sendable, so each call makes a fresh one; the payloads are small
-/// enough (a few hundred dates) that this does not matter.
+/// Parses ISO 8601 with and without fractional seconds. The two format
+/// styles are value types and Sendable, so they are built once and shared;
+/// a plan payload carries a few hundred dates.
 enum MotisDateParser {
+    private static let plain = Date.ISO8601FormatStyle()
+    private static let fractional = Date.ISO8601FormatStyle().time(includingFractionalSeconds: true)
+
     static func parse(_ text: String) -> Date? {
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        if let date = plain.date(from: text) { return date }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: text)
+        if let date = try? plain.parse(text) { return date }
+        return try? fractional.parse(text)
     }
 }
 

@@ -40,7 +40,7 @@ final class MotisResponseDecodingTests: XCTestCase {
 
     func testHeustonLegModesAndStopIds() throws {
         let response = try MotisFixture.heuston.response()
-        let first = MotisMapper.itinerary(response.itineraries[0])
+        let first = try XCTUnwrap(MotisMapper.itinerary(response.itineraries[0]))
         XCTAssertEqual(first.legs.map(\.mode), [.walk, .luas, .walk, .dart, .walk])
         XCTAssertEqual(first.modes, [.walk, .luas, .walk, .dart, .walk])
 
@@ -53,7 +53,8 @@ final class MotisResponseDecodingTests: XCTestCase {
         XCTAssertNil(first.legs[0].fromStopId, "an address has no stop id")
         XCTAssertNil(first.legs[0].routeShortName, "walk legs carry no route name")
 
-        let mapped = response.itineraries.map(MotisMapper.itinerary)
+        let mapped = response.itineraries.compactMap(MotisMapper.itinerary)
+        XCTAssertEqual(mapped.count, response.itineraries.count)
         let railLegs = mapped.flatMap(\.legs).filter { $0.mode == .rail }
         XCTAssertEqual(railLegs.count, 1, "the 'rail' short name maps to .rail, not .dart")
         XCTAssertEqual(railLegs.first?.routeShortName, "rail")
@@ -62,7 +63,7 @@ final class MotisResponseDecodingTests: XCTestCase {
 
     func testRideLegsHaveIntermediateStopsWithBareIds() throws {
         let response = try MotisFixture.heuston.response()
-        let first = MotisMapper.itinerary(response.itineraries[0])
+        let first = try XCTUnwrap(MotisMapper.itinerary(response.itineraries[0]))
         let luas = first.legs[1]
         XCTAssertEqual(luas.intermediateStops.count, 5)
         XCTAssertEqual(luas.intermediateStops.first?.name, "Museum")
@@ -75,7 +76,7 @@ final class MotisResponseDecodingTests: XCTestCase {
         XCTAssertTrue(first.legs[0].intermediateStops.isEmpty)
     }
 
-    func testIntermediateStopWithoutTimesIsSkipped() {
+    func testIntermediateStopWithoutTimesIsSkipped() throws {
         let t = Date(timeIntervalSince1970: 1_793_781_360)
         let leg = MotisLeg(
             mode: "BUS", from: MotisPlace(name: "A", lat: 53.3, lon: -6.2, stopId: "ie_1"),
@@ -87,7 +88,7 @@ final class MotisResponseDecodingTests: XCTestCase {
                 MotisPlace(name: "departure only", lat: 53.306, lon: -6.206, stopId: "ie_4",
                            departure: t.addingTimeInterval(300)),
             ])
-        let mapped = MotisMapper.leg(leg)
+        let mapped = try XCTUnwrap(MotisMapper.leg(leg))
         XCTAssertEqual(mapped.intermediateStops.map(\.name), ["departure only"])
         XCTAssertEqual(mapped.intermediateStops.first?.stopId, "4")
         XCTAssertEqual(mapped.id, "BUS|\(t.timeIntervalSince1970)|A", "no trip id falls back to the mode")
@@ -96,7 +97,7 @@ final class MotisResponseDecodingTests: XCTestCase {
     func testWalkAndBikeSecondsAreSummedFromLegs() throws {
         let heuston = try MotisFixture.heuston.response()
         let motisFirst = heuston.itineraries[0]
-        let first = MotisMapper.itinerary(motisFirst)
+        let first = try XCTUnwrap(MotisMapper.itinerary(motisFirst))
         let expectedWalk = motisFirst.legs.filter { $0.mode == "WALK" }.reduce(0) { $0 + $1.duration }
         XCTAssertGreaterThan(expectedWalk, 0)
         XCTAssertEqual(first.walkSeconds, expectedWalk)
@@ -107,7 +108,7 @@ final class MotisResponseDecodingTests: XCTestCase {
         XCTAssertEqual(first.end, motisFirst.endTime)
 
         let bike2rail = try MotisFixture.bike2rail.response()
-        let cycled = MotisMapper.itinerary(bike2rail.itineraries[0])
+        let cycled = try XCTUnwrap(MotisMapper.itinerary(bike2rail.itineraries[0]))
         XCTAssertEqual(cycled.legs.map(\.mode), [.bike, .dart, .walk])
         XCTAssertEqual(cycled.bikeSeconds, bike2rail.itineraries[0].legs[0].duration)
         XCTAssertEqual(cycled.walkSeconds, bike2rail.itineraries[0].legs[2].duration)
@@ -149,6 +150,8 @@ final class MotisResponseDecodingTests: XCTestCase {
         for rail in ["SUBURBAN", "HIGHSPEED_RAIL", "LONG_DISTANCE", "NIGHT_RAIL", "SUBWAY", "METRO", "REGIONAL_FAST_RAIL"] {
             XCTAssertEqual(MotisMapper.mode(rail, routeShortName: "IC", displayName: nil), .rail, rail)
         }
-        XCTAssertEqual(MotisMapper.mode("FERRY", routeShortName: nil, displayName: nil), .bus, "unknown falls back to bus")
+        for unknown in ["FERRY", "CAR", "RENTAL", "ODM", "AIRPLANE", "FLEX", ""] {
+            XCTAssertNil(MotisMapper.mode(unknown, routeShortName: nil, displayName: nil), "\(unknown) is not a network the app has")
+        }
     }
 }

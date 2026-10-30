@@ -576,6 +576,189 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(DirectionsViewModel.forecastWindow(for: found, around: at), t0...t0.addingTimeInterval(90 * 60))
     }
 
+    // MARK: Lifecycle (review fixes)
+
+    func testStartWithNewDestinationClearsOldResultsBeforeLoading() async {
+        let provider = FakeJourneyProvider()
+        let a = makeItinerary("a")
+        provider.result = .success([a])
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store)
+        model.start(destination: dunLaoghaire, userLocation: heuston.coordinate)
+        await settle()
+        model.select(a)
+        XCTAssertNotNil(store.drawnItinerary)
+
+        // The same journey again (sheet reopened): the list and the drawn
+        // option stay while the plan refreshes.
+        provider.delay = .milliseconds(200)
+        model.start(destination: dunLaoghaire, userLocation: heuston.coordinate)
+        XCTAssertEqual(model.phase, .loading)
+        XCTAssertEqual(model.itineraries.map(\.id), ["a"])
+        XCTAssertEqual(model.selectedId, "a")
+        await settle(.milliseconds(400))
+        XCTAssertEqual(model.phase, .results)
+        XCTAssertEqual(model.selectedId, "a")
+
+        // Another destination while the sheet is up: nothing stale lingers.
+        provider.result = .success([makeItinerary("b")])
+        let blanch = DirectionsEndpoint(name: "Blanchardstown", coordinate: CLLocationCoordinate2D(latitude: 53.3928, longitude: -6.3903))
+        model.start(destination: blanch, userLocation: heuston.coordinate)
+        XCTAssertEqual(model.phase, .loading)
+        XCTAssertTrue(model.itineraries.isEmpty)
+        XCTAssertNil(model.selectedId)
+        XCTAssertNil(store.drawnItinerary)
+        XCTAssertNil(model.drawnLabel)
+        await settle(.milliseconds(400))
+        XCTAssertEqual(model.itineraries.map(\.id), ["b"])
+        XCTAssertEqual(provider.baseRequests.last?.destination.latitude, blanch.coordinate.latitude)
+    }
+
+    func testEndpointChangeClearsStaleResultsAndPreferenceChangeKeepsThem() async {
+        let provider = FakeJourneyProvider()
+        let a = makeItinerary("a")
+        provider.result = .success([a])
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store)
+        model.scheduleQuery(immediate: true)
+        await settle()
+        model.select(a)
+
+        // Preferences: the old list shows dimmed while the new one loads.
+        provider.delay = .milliseconds(300)
+        model.setWalkTolerance(20)
+        XCTAssertEqual(model.phase, .loading)
+        XCTAssertEqual(model.itineraries.map(\.id), ["a"], "kept while loading")
+        XCTAssertEqual(model.selectedId, "a")
+        XCTAssertNotNil(store.drawnItinerary)
+        await settle(DirectionsViewModel.debounce + .milliseconds(500))
+        XCTAssertEqual(model.phase, .results)
+
+        // Endpoints: the list, the pick and the drawn option go at once.
+        for change in [
+            { model.setDestination(DirectionsEndpoint(name: "Blanchardstown", coordinate: CLLocationCoordinate2D(latitude: 53.3928, longitude: -6.3903))) },
+            { model.setOrigin(DirectionsEndpoint(name: "Howth", coordinate: CLLocationCoordinate2D(latitude: 53.3873, longitude: -6.0650))) },
+            { model.swapEndpoints() },
+        ] {
+            await settle(.milliseconds(400))
+            XCTAssertEqual(model.phase, .results)
+            model.select(model.itineraries[0])
+            XCTAssertNotNil(store.drawnItinerary)
+            change()
+            XCTAssertEqual(model.phase, .loading)
+            XCTAssertTrue(model.itineraries.isEmpty)
+            XCTAssertNil(model.selectedId)
+            XCTAssertNil(store.drawnItinerary)
+        }
+    }
+
+    func testSheetDismissedKeepsJourneyButStopsWork() async {
+        let provider = FakeJourneyProvider()
+        let a = makeItinerary("a")
+        provider.result = .success(rainyItineraries() + [a])
+        let weather = FakeWeather(fixture: .rain)
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store, weather: weather)
+        model.isPresented = true
+        model.scheduleQuery(immediate: true)
+        await settle(.milliseconds(300))
+        XCTAssertNotNil(model.rainHint)
+        model.select(a)
+
+        // A slow re-plan is in flight when the sheet closes: its answer must
+        // never land.
+        provider.result = .success([makeItinerary("late")])
+        provider.delay = .milliseconds(200)
+        model.setWalkTolerance(20)
+        model.sheetDismissed()
+        XCTAssertFalse(model.isPresented)
+        XCTAssertNil(model.rainHint, "the forecast line is for the open sheet")
+        XCTAssertEqual(model.phase, .results)
+        XCTAssertEqual(model.origin, heuston)
+        XCTAssertEqual(model.destination, dunLaoghaire)
+        XCTAssertEqual(model.selectedId, "a", "the drawn option stays on the map")
+        XCTAssertEqual(store.drawnItinerary?.map(\.id), ["a-leg"])
+        let requestsBefore = provider.requests.count
+        await settle(DirectionsViewModel.debounce + .milliseconds(500))
+        XCTAssertEqual(provider.requests.count, requestsBefore, "the debounced plan was cancelled")
+        XCTAssertEqual(model.selectedId, "a")
+        XCTAssertTrue(model.itineraries.contains { $0.id == "a" })
+        XCTAssertFalse(model.itineraries.contains { $0.id == "late" })
+    }
+
+    func testRefreshPrefsPlansOnlyWhileShown() async throws {
+        let container = try ModelContainer(for: DirectionsPreferences.self,
+                                           configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = container.mainContext
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a")])
+        let model = makeModel(provider)
+        model.attach(context: context)
+        let row = try XCTUnwrap(context.fetch(FetchDescriptor<DirectionsPreferences>()).first)
+
+        // Hidden: the change is mirrored, nothing is planned, nothing fetched.
+        row.apply(model.prefs.replacing(maxTransfers: 0))
+        try context.save()
+        model.refreshPrefs()
+        XCTAssertEqual(model.prefs.maxTransfers, 0)
+        await settle(DirectionsViewModel.debounce + .milliseconds(200))
+        XCTAssertTrue(provider.requests.isEmpty)
+        XCTAssertEqual(model.phase, .idle)
+
+        // An unrelated save with nothing changed: still nothing.
+        model.refreshPrefs()
+        await settle(DirectionsViewModel.debounce + .milliseconds(200))
+        XCTAssertTrue(provider.requests.isEmpty)
+
+        // Shown: the change re-plans.
+        model.isPresented = true
+        row.apply(model.prefs.replacing(maxTransfers: 3))
+        try context.save()
+        model.refreshPrefs()
+        XCTAssertEqual(model.prefs.maxTransfers, 3)
+        XCTAssertEqual(model.phase, .loading)
+        await settle(DirectionsViewModel.debounce + .milliseconds(300))
+        XCTAssertEqual(provider.baseRequests.count, 1)
+        XCTAssertEqual(provider.baseRequests.first?.preferences.maxTransfers, 3)
+    }
+
+    func testLateLocationFixFillsInTheOriginWhileShown() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a")])
+        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(),
+                                        weather: FakeWeather().service)
+        model.start(destination: dunLaoghaire, userLocation: nil)
+        XCTAssertNil(model.origin)
+        XCTAssertEqual(model.phase, .idle)
+
+        // Hidden: the fix is remembered for the picker, nothing more.
+        model.userLocationDidUpdate(heuston.coordinate)
+        XCTAssertNil(model.origin)
+        XCTAssertEqual(model.userLocation?.latitude, heuston.coordinate.latitude)
+        XCTAssertTrue(provider.requests.isEmpty)
+
+        model.isPresented = true
+        model.userLocationDidUpdate(heuston.coordinate)
+        XCTAssertEqual(model.origin?.isUserLocation, true)
+        XCTAssertEqual(model.phase, .loading)
+        await settle()
+        XCTAssertEqual(provider.baseRequests.count, 1)
+        XCTAssertEqual(model.phase, .results)
+
+        // A later fix moves "My Location": the plan in hand stands.
+        model.userLocationDidUpdate(CLLocationCoordinate2D(latitude: 53.35, longitude: -6.30))
+        await settle()
+        XCTAssertEqual(provider.baseRequests.count, 1)
+        XCTAssertEqual(model.origin?.coordinate.latitude ?? 0, heuston.coordinate.latitude, accuracy: 1e-6)
+
+        // No destination yet: a fix alone starts nothing.
+        let bare = DirectionsViewModel(provider: provider, store: TransitLayerStore(),
+                                       weather: FakeWeather().service)
+        bare.isPresented = true
+        bare.userLocationDidUpdate(heuston.coordinate)
+        XCTAssertNil(bare.origin)
+    }
+
     func testFixtureProviderHonoursOverrides() async throws {
         let provider = FixtureJourneyProvider()
         let base = JourneyRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate)

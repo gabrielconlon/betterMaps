@@ -85,7 +85,7 @@ final class EncodedPolylineTests: XCTestCase {
 
     func testMappedLegCoordinatesHonourPrecision() throws {
         let response = try MotisFixture.heuston.response()
-        let leg = MotisMapper.leg(response.itineraries[0].legs[1])
+        let leg = try XCTUnwrap(MotisMapper.leg(response.itineraries[0].legs[1]))
         XCTAssertEqual(leg.coordinates.count, 207)
         XCTAssertEqual(leg.coordinates.first?.latitude ?? 0, 53.346684, accuracy: 1e-3)
         XCTAssertEqual(leg.coordinates.last?.longitude ?? 0, -6.251536, accuracy: 1e-3)

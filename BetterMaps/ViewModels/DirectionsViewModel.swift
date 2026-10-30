@@ -40,6 +40,10 @@ final class DirectionsViewModel {
     var arriveBy = false
     /// Last known user location, offered by the endpoint picker.
     var userLocation: CLLocationCoordinate2D?
+    /// True while the directions sheet is on screen. The host sets it; work
+    /// that only matters to someone looking (re-planning after a preferences
+    /// sync, filling in a late location fix) is gated on it.
+    var isPresented = false
     private(set) var prefs: DirectionsPreferencesSnapshot = .default
     private(set) var itineraries: [Itinerary] = []
     var selectedId: Itinerary.ID?
@@ -89,16 +93,24 @@ final class DirectionsViewModel {
         prefs = row.snapshot
     }
 
-    /// Re-reads the row (Settings or another device changed it) and
-    /// re-plans if anything differs.
+    /// Re-reads the preferences (Settings or another device changed them).
+    /// With the sheet up, the row is fetched again (collapsing anything
+    /// CloudKit merged in) and a change re-plans; hidden, the bound row is
+    /// only mirrored so a save elsewhere in the app costs no query.
     func refreshPrefs() {
         guard let context else { return }
-        guard let row = try? DirectionsPreferences.fetchOrCreate(in: context) else { return }
-        if row !== prefsModel { prefsModel = row }
-        let fresh = row.snapshot
+        let fresh: DirectionsPreferencesSnapshot
+        if isPresented {
+            guard let row = try? DirectionsPreferences.fetchOrCreate(in: context) else { return }
+            if row !== prefsModel { prefsModel = row }
+            fresh = row.snapshot
+        } else {
+            guard let prefsModel, !prefsModel.isDeleted else { return }
+            fresh = prefsModel.snapshot
+        }
         guard fresh != prefs else { return }
         prefs = fresh
-        scheduleQuery()
+        if isPresented { scheduleQuery() }
     }
 
     var selectedItinerary: Itinerary? {
@@ -110,38 +122,73 @@ final class DirectionsViewModel {
 
     /// Opens the sheet for `destination`. With a location the origin is
     /// "My Location" and planning starts at once; without one the phase
-    /// stays idle until the user picks a starting point.
+    /// stays idle until the user picks a starting point. A different journey
+    /// clears what was found for the old one first; the same journey (the
+    /// sheet reopened) keeps its list and drawn option while it refreshes.
     func start(destination: DirectionsEndpoint, userLocation: CLLocationCoordinate2D?) {
         self.userLocation = userLocation
-        self.destination = destination
+        let newOrigin: DirectionsEndpoint?
         if let userLocation {
-            origin = .userLocation(userLocation)
+            newOrigin = .userLocation(userLocation)
         } else if origin?.isUserLocation == true {
-            origin = nil
+            newOrigin = nil
+        } else {
+            newOrigin = origin
         }
+        // A fresher fix for "My Location" is still the same starting point.
+        let bothUserLocation = newOrigin?.isUserLocation == true && origin?.isUserLocation == true
+        let changed = destination != self.destination || (!bothUserLocation && newOrigin != origin)
+        self.destination = destination
+        origin = newOrigin
         departNow = true
         time = Date()
-        clearSelection()
+        if changed { forgetResults() }
         resetRainState()
         scheduleQuery(immediate: true)
     }
 
     func setOrigin(_ endpoint: DirectionsEndpoint) {
-        origin = endpoint
+        if endpoint != origin {
+            origin = endpoint
+            forgetResults()
+        }
         resetRainState()
         scheduleQuery(immediate: true)
     }
 
     func setDestination(_ endpoint: DirectionsEndpoint) {
-        destination = endpoint
+        if endpoint != destination {
+            destination = endpoint
+            forgetResults()
+        }
         resetRainState()
         scheduleQuery(immediate: true)
     }
 
     func swapEndpoints() {
         (origin, destination) = (destination, origin)
+        forgetResults()
         resetRainState()
         scheduleQuery(immediate: true)
+    }
+
+    /// A location fix arrived. Fills in a missing starting point while the
+    /// sheet is up (the first fix after permission was granted) and plans at
+    /// once. A later fix that merely moves "My Location" changes nothing:
+    /// the plan in hand started a few metres away, and re-planning on every
+    /// fix would churn the list under the user's thumb.
+    func userLocationDidUpdate(_ coordinate: CLLocationCoordinate2D) {
+        userLocation = coordinate
+        guard isPresented, origin == nil, destination != nil else { return }
+        origin = .userLocation(coordinate)
+        resetRainState()
+        scheduleQuery(immediate: true)
+    }
+
+    /// The journey changed: nothing found for the old one may linger.
+    private func forgetResults() {
+        itineraries = []
+        dropSelection()
     }
 
     /// A new journey: forget the old forecast and any undo.
@@ -202,13 +249,20 @@ final class DirectionsViewModel {
     }
 
     private func write(_ snapshot: DirectionsPreferencesSnapshot) {
-        guard snapshot != prefs else { return }
+        guard persist(snapshot) else { return }
+        scheduleQuery()
+    }
+
+    /// Mirrors and saves the snapshot without planning. False when it is
+    /// what we already have.
+    private func persist(_ snapshot: DirectionsPreferencesSnapshot) -> Bool {
+        guard snapshot != prefs else { return false }
         prefs = snapshot
         if let prefsModel {
             prefsModel.apply(snapshot)
             try? context?.save()
         }
-        scheduleQuery()
+        return true
     }
 
     // MARK: - Planning
@@ -286,7 +340,6 @@ final class DirectionsViewModel {
             if case .failure(let error)? = results[0] { throw error }
             throw JourneyProviderError.unavailable(status: nil)
         }
-
         var baseIds: Set<String> = []
         var baseMin: Int?
         if case .success(let base)? = results[0] {
@@ -432,7 +485,21 @@ final class DirectionsViewModel {
         store.clearDrawnItinerary()
     }
 
-    /// Back to nothing: the sheet closed.
+    // MARK: - Lifecycle
+
+    /// The sheet went away. Stops the work in flight and drops the forecast
+    /// line, but keeps the endpoints, the list and the drawn option: the map
+    /// still shows the journey, and reopening has something to show at once.
+    func sheetDismissed() {
+        isPresented = false
+        queryTask?.cancel()
+        queryTask = nil
+        generation &+= 1
+        rainHint = nil
+        if phase == .loading { phase = itineraries.isEmpty ? .idle : .results }
+    }
+
+    /// Back to nothing.
     func reset() {
         queryTask?.cancel()
         queryTask = nil
