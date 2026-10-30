@@ -31,9 +31,11 @@ struct SheetLayerLists: Equatable {
 }
 
 /// Body of the persistent sheet at medium / expanded: search results while a
-/// query is typed, otherwise hints, then management: tags, trail groups,
-/// pinned stops and routes. Nothing here changes what the map shows; that
-/// is the layers panel's job.
+/// query is typed, otherwise hints, then pinned routes and stops first (the
+/// things reached for on the way out the door), then tags and trail groups
+/// to browse. Creating, editing and deleting tags and trail groups lives in
+/// Settings and the "+" menu, so the sheet stays short. Nothing here changes
+/// what the map shows; that is the layers panel's job.
 struct LayersSheetContent: View {
     @Environment(\.modelContext) private var modelContext
 
@@ -43,7 +45,6 @@ struct LayersSheetContent: View {
     let searchState: SearchState
     let transitSettings: TransitLayerSettings
     let transitStore: TransitLayerStore
-    let timetable: BusTimetableModel
     let searchActions: SheetSearchActions
     /// Opens the trail editor; `nil` lets the screen pick or create the group.
     let onDrawTrail: (UUID?) -> Void
@@ -71,13 +72,14 @@ struct LayersSheetContent: View {
                                        onDirections: searchActions.onDirections)
                 } else {
                     FirstRunHintsView(hints: hints)
-                    tagsSection
-                    trailsSection
-                    TransitSheetSection(transitSettings: transitSettings, timetable: timetable,
-                                        onOpenStop: { stop in viewModel.showTransitArrivals(for: stop) })
                     PinnedRoutesSection(highlightedRouteId: transitStore.highlightedRouteId) { route in
                         transitStore.toggleHighlightedRoute(route.routeId, label: route.shortName)
                     }
+                    PinnedStopsGroup(pinnedStopIds: transitSettings.pinnedStopIds) { stop in
+                        viewModel.showTransitArrivals(for: stop)
+                    }
+                    tagsSection
+                    if !lists.trailGroups.isEmpty { trailsSection }
                 }
             }
             .padding(.horizontal, 16)
@@ -116,7 +118,6 @@ struct LayersSheetContent: View {
                     .contextMenu { contextMenu(for: tag) }
                 Divider().padding(.leading, 46)
             }
-            addRow("New tag") { viewModel.activeSheet = .newLayer(.places) }
         }
     }
 
@@ -134,11 +135,6 @@ struct LayersSheetContent: View {
                     .contextMenu { contextMenu(for: group) }
                 Divider().padding(.leading, 46)
             }
-            if lists.trailGroups.isEmpty {
-                addRow("Draw trail", systemImage: "pencil.and.scribble") { onDrawTrail(nil) }
-                Divider().padding(.leading, 46)
-            }
-            addRow("New trail group") { viewModel.activeSheet = .newLayer(.waypointPath) }
         }
     }
 
@@ -150,26 +146,6 @@ struct LayersSheetContent: View {
         Button(role: .destructive) { pendingDelete = layer } label: {
             Label("Delete", systemImage: "trash")
         }
-    }
-
-    private func addRow(_ title: String, systemImage: String = "plus",
-                        action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.body.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .background(Color.accentColor.opacity(0.15), in: Circle())
-                    .accessibilityHidden(true)
-                Text(title)
-                    .font(.body)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.tint)
-            .frame(minHeight: 56)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Actions

@@ -1,8 +1,8 @@
 import SwiftUI
 import SwiftData
 
-/// App settings: map style, iCloud sync status, offline transit data,
-/// directions preferences, about, and an Advanced section (collapsed) for
+/// App settings: map style, tag and trail-group management, iCloud sync
+/// status, offline transit data, directions preferences, about, and an Advanced section (collapsed) for
 /// the optional Yelp key, which lives in the Keychain.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -26,6 +26,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 mapSection
+                TagsAndTrailsSettingsSection()
                 syncSection
                 transitSection
                 directionsSection

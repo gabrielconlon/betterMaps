@@ -1,27 +1,6 @@
 import SwiftUI
 import SwiftData
 
-/// "Transit" section of the sheet: pinned stops and the bus timetable
-/// status row. The networks themselves are switched in the layers panel.
-struct TransitSheetSection: View {
-    let transitSettings: TransitLayerSettings
-    let timetable: BusTimetableModel
-    /// Opens a stop's arrivals (the host routes it, e.g.
-    /// `viewModel.showTransitArrivals`). The "Pinned stops" group only
-    /// shows when this is set.
-    var onOpenStop: ((TransitStop) -> Void)? = nil
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let onOpenStop {
-                PinnedStopsGroup(pinnedStopIds: transitSettings.pinnedStopIds, onOpen: onOpenStop)
-            }
-            SheetSectionHeader(title: "Transit")
-            BusTimetableStatusRow(model: timetable)
-        }
-    }
-}
-
 /// Stops the user starred in an arrivals sheet, in the order they were
 /// pinned. Tap opens the stop's arrivals. Hidden when nothing is pinned or
 /// none of the ids resolve against the bundled stop list.
@@ -68,67 +47,6 @@ struct PinnedStopsGroup: View {
         let networks = stop.kinds.map(\.displayName).joined(separator: " · ")
         guard let code = stop.code else { return networks }
         return "\(networks) · Stop \(code)"
-    }
-}
-
-/// Download / progress / last-updated line for the offline timetable.
-struct BusTimetableStatusRow: View {
-    let model: BusTimetableModel
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.body)
-                .foregroundStyle(isFailed ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
-                .frame(width: 34)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Timetable")
-                    .font(.subheadline)
-                Text(model.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                if case .downloading(let fraction) = model.state {
-                    ProgressView(value: fraction)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 160)
-                }
-            }
-            Spacer(minLength: 0)
-            switch model.state {
-            case .notDownloaded:
-                actionButton("Download") { model.download() }
-            case .failed:
-                actionButton("Try again") { model.download() }
-            default:
-                EmptyView()
-            }
-        }
-        .frame(minHeight: 56)
-        .accessibilityElement(children: .combine)
-        .task { await model.refresh() }
-    }
-
-    private var isFailed: Bool {
-        if case .failed = model.state { return true }
-        return false
-    }
-
-    private var icon: String {
-        switch model.state {
-        case .ready: return "clock.badge.checkmark"
-        case .failed: return "exclamationmark.triangle"
-        default: return "clock.arrow.circlepath"
-        }
-    }
-
-    private func actionButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .font(.subheadline.weight(.semibold))
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.capsule)
-            .frame(minHeight: 44)
     }
 }
 
