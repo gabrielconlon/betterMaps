@@ -93,6 +93,35 @@ final class DirectionsPreferences {
         context.insert(fresh)
         return fresh
     }
+
+    /// `fetchOrCreate` and the save that makes it stick: the one call for
+    /// views that need the row to exist before they bind to it.
+    @MainActor
+    @discardableResult
+    static func ensureRow(in context: ModelContext) throws -> DirectionsPreferences {
+        let row = try fetchOrCreate(in: context)
+        if context.hasChanges { try context.save() }
+        return row
+    }
+
+    /// `cached` while it is still a live row of `context`, else the row
+    /// `fetchOrCreate` picks now. Callers that hold a row across saves go
+    /// through this before reading `snapshot` or calling `apply`, so a row
+    /// CloudKit (or `fetchOrCreate` on another screen) deleted is never
+    /// written to. `isDeleted` only covers a deletion not yet saved, so a
+    /// saved one is caught by looking the id up in the store.
+    @MainActor
+    static func liveRow(_ cached: DirectionsPreferences?, in context: ModelContext) throws -> DirectionsPreferences {
+        if let cached, !cached.isDeleted, try isStored(cached, in: context) { return cached }
+        return try fetchOrCreate(in: context)
+    }
+
+    @MainActor
+    private static func isStored(_ row: DirectionsPreferences, in context: ModelContext) throws -> Bool {
+        let id = row.persistentModelID
+        let descriptor = FetchDescriptor<DirectionsPreferences>(predicate: #Predicate { $0.persistentModelID == id })
+        return try context.fetchCount(descriptor) == 1
+    }
 }
 
 /// Value copy of `DirectionsPreferences` for passing across actors and into

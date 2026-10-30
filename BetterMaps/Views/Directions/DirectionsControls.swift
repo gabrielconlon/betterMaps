@@ -69,7 +69,9 @@ struct DirectionsTripControls: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Travel by")
                     .font(.subheadline)
-                HStack(spacing: 8) {
+                // Two columns: four icon-and-name chips do not fit one row at
+                // iPhone width and were truncating to "B…", "L…", "D…".
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(Self.modes) { mode in
                         Toggle(isOn: Binding(
                             get: { prefs.enabledModes.contains(mode) },

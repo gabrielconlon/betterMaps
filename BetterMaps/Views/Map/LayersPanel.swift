@@ -138,13 +138,9 @@ struct LayersPanel: View {
             }
             HStack(spacing: 6) {
                 ForEach(TransitLayerKind.allCases) { kind in
-                    tile(title: kind.displayName, systemImage: kind.systemImage,
-                         color: TransitColors.pin(kind), isOn: settings.isEnabled(kind)) {
+                    TransitKindTile(kind: kind, isOn: settings.isEnabled(kind)) {
                         settings.toggle(kind)
                     }
-                    .accessibilityValue(settings.isEnabled(kind) ? "Shown" : "Hidden")
-                    .accessibilityHint(settings.isEnabled(kind) ? "Hides \(kind.displayName)"
-                                                                : "Shows \(kind.displayName)")
                 }
             }
         }
@@ -349,8 +345,8 @@ struct LayersPanel: View {
             sectionHeader("Map Style")
             HStack(spacing: 6) {
                 ForEach(MapStyleOption.allCases) { option in
-                    tile(title: option.rawValue, systemImage: option.icon,
-                         color: .accentColor, isOn: mapStyle == option) {
+                    LayerTile(title: option.rawValue, systemImage: option.icon,
+                              color: .accentColor, isOn: mapStyle == option) {
                         mapStyle = option
                     }
                     .accessibilityAddTraits(mapStyle == option ? .isSelected : [])
@@ -388,29 +384,6 @@ struct LayersPanel: View {
         }
         .buttonStyle(.plain)
         .padding(.vertical, -10)
-    }
-
-    /// Square tile: icon over label, tinted when on (transit, map style).
-    private func tile(title: String, systemImage: String, color: Color, isOn: Bool,
-                      action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .background(isOn ? color.opacity(0.25) : Color(.systemGray5),
-                        in: RoundedRectangle(cornerRadius: 8))
-            .foregroundStyle(isOn ? color : Color.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .sensoryFeedback(.selection, trigger: isOn)
-        .accessibilityLabel(title)
     }
 
     private func starButton(for layer: LayerLite) -> some View {
