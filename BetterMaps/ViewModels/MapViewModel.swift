@@ -49,7 +49,7 @@ enum ActiveSheet: Identifiable {
     /// (see `MapCardCloseButton`), because there is no swipe down.
     var isMapCard: Bool {
         switch self {
-        case .placeDetail, .poiDetail, .poiLookup, .transitArrivals, .trailDetail:
+        case .placeDetail, .poiDetail, .poiLookup, .transitArrivals, .trailDetail, .directions:
             return true
         case .newPlace, .quickAdd, .layerDetail, .newLayer, .editLayer, .settings:
             return false
