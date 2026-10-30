@@ -21,7 +21,15 @@ final class FakeJourneyProvider: JourneyProvider, @unchecked Sendable {
         requests.filter { $0.transitModesOverride == nil && $0.walkToleranceOverrideMinutes == nil }
     }
 
-    var railProbes: [JourneyRequest] { requests.filter { $0.transitModesOverride != nil } }
+    /// The rail-only probe: a mode override at the base's walk limit.
+    var railProbes: [JourneyRequest] {
+        requests.filter { $0.transitModesOverride != nil && $0.walkToleranceOverrideMinutes != DirectionsPreferencesSnapshot.noWalkLimit }
+    }
+
+    /// The per-network probes with no walk limit, in request order.
+    var familyProbes: [JourneyRequest] {
+        requests.filter { $0.transitModesOverride != nil && $0.walkToleranceOverrideMinutes == DirectionsPreferencesSnapshot.noWalkLimit }
+    }
 
     func walkProbes(_ minutes: Int) -> [JourneyRequest] {
         requests.filter { $0.transitModesOverride == nil && $0.walkToleranceOverrideMinutes == minutes }
@@ -245,7 +253,7 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .loading)
         await settle(DirectionsViewModel.debounce + .milliseconds(300))
         XCTAssertEqual(provider.baseRequests.count, 1)
-        XCTAssertEqual(provider.requests.count, 2, "one plan: the base and its rail probe (walk 15: no relaxed probe)")
+        XCTAssertEqual(provider.requests.count, 5, "one plan: the base, its rail probe and three family probes")
         XCTAssertEqual(provider.baseRequests.first?.preferences.walkToleranceMinutes, 15)
         XCTAssertEqual(provider.baseRequests.first?.preferences.maxTransfers, 3)
         XCTAssertEqual(model.phase, .results)
@@ -278,17 +286,70 @@ final class DirectionsViewModelTests: XCTestCase {
         model.scheduleQuery(immediate: true)
         await settle()
 
+        XCTAssertEqual(store.previewItineraries, [option.legs], "the results are previewed before a pick")
+        XCTAssertEqual(store.directionsEndpoints, DirectionsEndpoints(origin: heuston.coordinate,
+                                                                      destination: dunLaoghaire.coordinate))
+
         model.select(option)
         XCTAssertEqual(model.selectedId, "a")
         XCTAssertEqual(store.drawnItinerary?.map(\.id), ["a-leg"])
         XCTAssertEqual(store.drawnItineraryLabel, "Dún Laoghaire")
         XCTAssertEqual(model.drawnLabel, "Dún Laoghaire")
+        XCTAssertTrue(store.previewItineraries.isEmpty, "the picked journey is the map's one story")
+        XCTAssertNotNil(store.directionsEndpoints, "the pins stay")
 
         model.clearSelection()
         XCTAssertNil(model.selectedId)
         XCTAssertNil(store.drawnItinerary)
         XCTAssertNil(store.drawnItineraryLabel)
         XCTAssertNil(model.drawnLabel)
+        XCTAssertEqual(store.previewItineraries, [option.legs], "back to the list, previews back")
+        XCTAssertNotNil(store.directionsEndpoints)
+
+        model.clearMap()
+        XCTAssertTrue(store.previewItineraries.isEmpty)
+        XCTAssertNil(store.directionsEndpoints)
+        XCTAssertEqual(model.itineraries.map(\.id), ["a"], "the list is kept for the sheet")
+    }
+
+    func testPreviewsAreTheFastestPerModeAndTheUsersOwnLocationIsNotPinned() async {
+        let provider = FakeJourneyProvider()
+        let buses = (0..<6).map { makeItinerary("bus\($0)", minutes: 30 + $0, modes: [.walk, .bus, .walk]) }
+        let dart = makeItinerary("dart", minutes: 50, modes: [.walk, .dart, .walk])
+        let luas = makeItinerary("luas", minutes: 55, modes: [.walk, .luas, .walk])
+        provider.result = .success(buses + [dart, luas])
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store)
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(preferRail: false))
+        model.start(destination: dunLaoghaire, userLocation: heuston.coordinate)
+        XCTAssertEqual(store.directionsEndpoints, DirectionsEndpoints(origin: nil, destination: dunLaoghaire.coordinate),
+                       "pinned before the plan answers; My Location is already on the map")
+        await settle()
+        XCTAssertEqual(model.itineraries.map(\.reason), [nil, nil, nil, nil, nil, nil, "Fastest by DART", "Fastest by Luas"])
+        XCTAssertEqual(store.previewItineraries, [buses[0].legs, dart.legs, luas.legs],
+                       "the first row and the fastest on each other network")
+
+        let previews = DirectionsViewModel.previewLegs(model.itineraries)
+        XCTAssertEqual(previews.count, 3)
+        XCTAssertLessThanOrEqual(previews.count, DirectionsViewModel.maxPreviews)
+
+        model.reset()
+        XCTAssertTrue(store.previewItineraries.isEmpty)
+        XCTAssertNil(store.directionsEndpoints)
+    }
+
+    func testPreviewsAreIgnoredWhileAnOptionIsDrawn() {
+        let store = TransitLayerStore()
+        let a = makeItinerary("a")
+        store.setDrawnItinerary(a.legs, label: "Home")
+        store.setPreviews([a.legs])
+        XCTAssertTrue(store.previewItineraries.isEmpty)
+        store.clearDrawnItinerary()
+        store.setPreviews([a.legs])
+        XCTAssertEqual(store.previewItineraries.count, 1)
+        store.toggleHighlightedRoute("r1", label: "39A")
+        XCTAssertTrue(store.previewItineraries.isEmpty, "a highlighted route replaces the previews too")
+        store.clearHighlightedRoute()
     }
 
     func testSelectionSurvivesRequeryWhenStillOffered() async {
@@ -340,15 +401,17 @@ final class DirectionsViewModelTests: XCTestCase {
         let provider = FakeJourneyProvider()
         provider.result = .success([])
         let model = makeModel(provider)
-        model.setWalkTolerance(20)
+        model.setWalkTolerance(DirectionsPreferencesSnapshot.noWalkLimit)
         model.setMaxTransfers(0)
         model.scheduleQuery(immediate: true)
         await settle()
-        XCTAssertEqual(model.phase, .empty(suggestRelaxWalk: false, suggestTransfers: true))
+        XCTAssertEqual(model.phase, .empty(suggestRelaxWalk: false, suggestTransfers: true),
+                       "nothing to relax when any walk is already fine")
         model.allowTransfers()
         XCTAssertEqual(model.prefs.maxTransfers, 2)
+        model.setWalkTolerance(20)
         model.relaxWalkingLimit()
-        XCTAssertEqual(model.prefs.walkToleranceMinutes, 20)
+        XCTAssertEqual(model.prefs.walkToleranceMinutes, DirectionsPreferencesSnapshot.noWalkLimit, "lifts the limit")
     }
 
     func testUnavailableErrorIsUnreachable() async {
@@ -395,19 +458,21 @@ final class DirectionsViewModelTests: XCTestCase {
 
     // MARK: Probes
 
-    func testDefaultPlanRunsBaseRailAndRelaxedProbes() async {
+    func testDefaultPlanRunsBaseRailAndFamilyProbes() async {
         let provider = FakeJourneyProvider()
         provider.result = .success([makeItinerary("a")])
         let model = makeModel(provider)
         model.scheduleQuery(immediate: true)
         await settle()
-        XCTAssertEqual(provider.requests.count, 3)
+        XCTAssertEqual(provider.requests.count, 5)
+        XCTAssertLessThanOrEqual(provider.requests.count, DirectionsViewModel.maxPlanCalls)
         XCTAssertEqual(provider.baseRequests.count, 1)
         XCTAssertEqual(provider.railProbes.count, 1)
         XCTAssertEqual(provider.railProbes.first?.transitModesOverride, [.luas, .dart, .rail])
         XCTAssertNil(provider.railProbes.first?.walkToleranceOverrideMinutes)
-        XCTAssertEqual(provider.walkProbes(20).count, 1)
-        XCTAssertEqual(provider.walkProbes(20).first?.preferences.walkToleranceMinutes, 10, "preferences untouched")
+        XCTAssertEqual(provider.familyProbes.map(\.transitModesOverride), [[.bus], [.luas], [.dart, .rail]])
+        XCTAssertEqual(provider.familyProbes.first?.preferences.walkToleranceMinutes, 10, "preferences untouched")
+        XCTAssertTrue(provider.familyProbes.allSatisfy { $0.effectiveWalkToleranceSeconds == nil })
     }
 
     func testRailProbeNeedsPreferRailAndARailMode() async {
@@ -418,7 +483,7 @@ final class DirectionsViewModelTests: XCTestCase {
         model.scheduleQuery(immediate: true)
         await settle()
         XCTAssertEqual(provider.railProbes.count, 0, "prefer rail off")
-        XCTAssertEqual(provider.requests.count, 2)
+        XCTAssertEqual(provider.requests.count, 4, "the base and the three family probes")
 
         model.apply(DirectionsPreferencesSnapshot.default.replacing(enabledModes: [.bus, .luas]))
         model.scheduleQuery(immediate: true)
@@ -432,34 +497,51 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(provider.railProbes.first?.transitModesOverride, [.dart], "only the rail modes the user has on")
     }
 
-    func testRelaxedProbeOnlyForShortWalkLimits() async {
+    func testFamilyProbesFollowEnabledModesAndSkipRepeats() async {
         let provider = FakeJourneyProvider()
         provider.result = .success([makeItinerary("a")])
         let model = makeModel(provider)
-        model.apply(DirectionsPreferencesSnapshot.default.replacing(walkToleranceMinutes: 15, preferRail: false))
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(enabledModes: [.bus, .dart], preferRail: false))
         model.scheduleQuery(immediate: true)
         await settle()
-        XCTAssertEqual(provider.requests.count, 1, "walk 15: just the base")
-
-        model.apply(DirectionsPreferencesSnapshot.default.replacing(walkToleranceMinutes: 5, preferRail: false))
-        model.scheduleQuery(immediate: true)
-        await settle()
-        XCTAssertEqual(provider.walkProbes(20).count, 1, "walk 5: relaxed probe at 20")
+        XCTAssertEqual(provider.familyProbes.map(\.transitModesOverride), [[.bus], [.dart]], "only the families that are on")
         XCTAssertEqual(provider.requests.count, 3)
+
+        // Bus only with no walk limit: the bus probe would repeat the base.
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(walkToleranceMinutes: 0, enabledModes: [.bus], preferRail: false))
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertEqual(provider.requests.count, 4, "just the base this time")
+
+        // DART only with no walk limit: the rail probe and the DART probe
+        // would both repeat the base.
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(walkToleranceMinutes: 0, enabledModes: [.dart]))
+        model.scheduleQuery(immediate: true)
+        await settle()
+        XCTAssertEqual(provider.requests.count, 5, "again just the base")
     }
 
     func testRequestsBuilderIsPure() {
         let base = JourneyRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, preferences: .default)
         let plain = DirectionsViewModel.requests(for: base)
-        XCTAssertEqual(plain.count, 3)
+        XCTAssertEqual(plain.count, 5)
         XCTAssertNil(plain[0].walkToleranceOverrideMinutes)
         XCTAssertEqual(plain[1].transitModesOverride, [.luas, .dart, .rail])
-        XCTAssertEqual(plain[2].walkToleranceOverrideMinutes, 20)
+        XCTAssertNil(plain[1].walkToleranceOverrideMinutes)
+        XCTAssertEqual(plain[2...].map(\.transitModesOverride), [[.bus], [.luas], [.dart, .rail]])
+        XCTAssertEqual(plain[2...].map(\.walkToleranceOverrideMinutes), [0, 0, 0])
 
         let rain = DirectionsViewModel.requests(for: base, rainAdjusted: true)
-        XCTAssertEqual(rain.count, 2, "no relaxed probe when shortening walks")
-        XCTAssertEqual(rain.map(\.walkToleranceOverrideMinutes), [5, 5])
+        XCTAssertEqual(rain.count, 5, "the family probes still run in rain, so the train still shows")
+        XCTAssertEqual(rain.map(\.walkToleranceOverrideMinutes), [5, 5, 0, 0, 0])
         XCTAssertEqual(rain[1].transitModesOverride, [.luas, .dart, .rail])
+
+        // No walk limit and no Luas: the rail probe is DART alone at the
+        // no-limit walk, so the DART family probe would repeat it.
+        var anyWalk = base
+        anyWalk.preferences = DirectionsPreferencesSnapshot.default.replacing(walkToleranceMinutes: 0, enabledModes: [.bus, .dart])
+        let relaxed = DirectionsViewModel.requests(for: anyWalk)
+        XCTAssertEqual(relaxed.map(\.transitModesOverride), [nil, [.dart], [.bus]])
     }
 
     func testMergeKeepsBaseFirstAndDropsDuplicates() async throws {
@@ -467,8 +549,8 @@ final class DirectionsViewModelTests: XCTestCase {
         let baseOnly = makeItinerary("base", minutes: 30, modes: [.walk, .bus, .walk, .bus, .walk])
         let probeOnly = makeItinerary("probe", minutes: 50, modes: [.walk, .bus, .walk])
         let provider = RoutingFakeProvider { request in
+            if request.transitModesOverride == [.bus], request.walkToleranceOverrideMinutes == 0 { return [probeOnly, shared] }
             if request.transitModesOverride != nil { return [] }
-            if request.walkToleranceOverrideMinutes == 20 { return [probeOnly, shared] }
             return [shared, baseOnly]
         }
         let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
@@ -478,15 +560,13 @@ final class DirectionsViewModelTests: XCTestCase {
         await settle()
         XCTAssertEqual(Set(model.itineraries.map(\.id)), ["shared", "base", "probe"])
         XCTAssertEqual(model.itineraries.map(\.id), ["base", "shared", "probe"], "ranked by duration, no repeats")
-        XCTAssertEqual(model.itineraries.first { $0.id == "probe" }?.reason, "Fewer changes",
-                       "the probe extra boards one bus; every base option boards two")
-        XCTAssertEqual(model.itineraries.filter { $0.id != "probe" }.compactMap(\.reason), [])
+        XCTAssertEqual(model.itineraries.compactMap(\.reason), [], "the fastest bus is the first row: no chip")
     }
 
     func testProbeFailureIsIgnoredAndBaseFailureFallsBackToProbes() async {
         let good = makeItinerary("a")
         let probeFails = RoutingFakeProvider { request in
-            if request.walkToleranceOverrideMinutes == 20 { throw JourneyProviderError.unavailable(status: 503) }
+            if request.walkToleranceOverrideMinutes == 0 { throw JourneyProviderError.unavailable(status: 503) }
             return [good]
         }
         let model = DirectionsViewModel(provider: probeFails, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
@@ -545,7 +625,7 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertFalse(model.rainAdjusted)
         XCTAssertNotNil(model.rainHint, "the forecast line stays")
         XCTAssertEqual(weather.calls, 2, "no second forecast after undo")
-        XCTAssertEqual(provider.requests.count - before, 3, "base, rail and relaxed probes with the user's own limit")
+        XCTAssertEqual(provider.requests.count - before, 5, "base, rail and family probes with the user's own limit")
         XCTAssertEqual(provider.walkProbes(5).count, 1, "not shortened again")
 
         // A changed preference re-plans but honours the undo for this journey.
@@ -586,7 +666,7 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(weather.calls, 2)
         XCTAssertNil(model.rainHint)
         XCTAssertFalse(model.rainAdjusted)
-        XCTAssertEqual(provider.requests.count, 3)
+        XCTAssertEqual(provider.requests.count, 5)
     }
 
     func testRainAwareOffNeverAsksForWeather() async {
@@ -600,7 +680,7 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(weather.calls, 0)
         XCTAssertNil(model.rainHint)
         XCTAssertFalse(model.rainAdjusted)
-        XCTAssertEqual(provider.requests.count, 3)
+        XCTAssertEqual(provider.requests.count, 5)
     }
 
     func testWeatherFailureIsSilent() async {
@@ -956,6 +1036,12 @@ final class DirectionsViewModelTests: XCTestCase {
         let shortenedResults = try await provider.plan(shortened)
         XCTAssertEqual(shortenedResults.map(\.id), ["fixture-rail", "fixture-bus"],
                        "the override wins over a generous preference")
+
+        var noLimit = base
+        noLimit.transitModesOverride = [.bus]
+        noLimit.walkToleranceOverrideMinutes = DirectionsPreferencesSnapshot.noWalkLimit
+        let noLimitResults = try await provider.plan(noLimit)
+        XCTAssertEqual(noLimitResults.map(\.id), ["fixture-bus", "fixture-longbus"], "no limit reaches the longer walks")
     }
 
     func testFixtureProviderRespectsModesAndTransfers() async throws {

@@ -1,8 +1,10 @@
 import XCTest
 @testable import CustomMapApp
 
-/// Ranking is a stable sort by duration then start, with a rail pin in
-/// front when asked for; `reason` is owned by the ranker.
+/// Ranking is a stable sort by cost (duration plus double the walking past
+/// the user's limit), then duration, then start, with a rail pin in front
+/// when asked for and the fastest option per enabled mode always kept;
+/// `reason` is owned by the ranker.
 final class RankingRulesTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
@@ -47,10 +49,10 @@ final class RankingRulesTests: XCTestCase {
         ]
     }
 
-    private func context(preferRail: Bool = true, ceilingMinutes: Int = 20, baseIds: Set<String> = [],
-                         baseMin: Int? = nil) -> RankingContext {
+    private func context(preferRail: Bool = true, ceilingMinutes: Int = 20, walkMinutes: Int? = nil,
+                         enabled: Set<TransitMode> = []) -> RankingContext {
         RankingContext(preferRail: preferRail, railWalkCeilingSeconds: ceilingMinutes * 60,
-                       baseIds: baseIds, baseMinTransitLegs: baseMin)
+                       walkToleranceSeconds: walkMinutes.map { $0 * 60 }, enabledModes: enabled)
     }
 
     // MARK: Rail pin
@@ -103,38 +105,101 @@ final class RankingRulesTests: XCTestCase {
         XCTAssertEqual(RankingRules.rank(set, context: context()).map(\.id), ["rail-fast", "rail-slow", "bus"])
     }
 
-    // MARK: Fewer changes
+    // MARK: Walk limit as cost
 
-    func testProbeExtraWithFewerBoardingsIsTagged() {
-        let base = [
-            journey("b1", [(.walk, 3), (.bus, 20), (.walk, 1), (.bus, 20), (.walk, 1)]),
-            journey("b2", [(.walk, 3), (.bus, 25), (.walk, 1), (.luas, 20), (.walk, 1)]),
+    func testNoWalkLimitSortsByDurationAlone() {
+        let set = [
+            journey("long-walk", [(.walk, 20), (.bus, 10), (.walk, 10)]),
+            journey("short-walk", [(.walk, 2), (.bus, 40), (.walk, 2)]),
         ]
-        let probe = journey("p1", [(.walk, 12), (.bus, 40), (.walk, 8)])
-        let ranked = RankingRules.rank(base + [probe],
-                                       context: context(preferRail: false, baseIds: ["b1", "b2"], baseMin: 2))
-        XCTAssertEqual(ranked.first { $0.id == "p1" }?.reason, "Fewer changes")
-        XCTAssertEqual(ranked.filter { $0.id != "p1" }.compactMap(\.reason), [])
+        let ranked = RankingRules.rank(set, context: context(preferRail: false, walkMinutes: nil))
+        XCTAssertEqual(ranked.map(\.id), ["long-walk", "short-walk"], "40 min beats 44 min when any walk is fine")
+        XCTAssertEqual(RankingRules.cost(set[0], context: context(walkMinutes: nil)), 40 * 60)
     }
 
-    func testBaseItinerariesAndEqualBoardingsAreNotTagged() {
-        let base = journey("b1", [(.walk, 3), (.bus, 40), (.walk, 1)])
-        let sameChanges = journey("p1", [(.walk, 12), (.bus, 40), (.walk, 8)])
-        let walkOnly = itinerary("p2", duration: 3600)
-        let ranked = RankingRules.rank([base, sameChanges, walkOnly],
-                                       context: context(preferRail: false, baseIds: ["b1"], baseMin: 1))
-        XCTAssertEqual(ranked.compactMap(\.reason), [], "1 is not fewer than 1; a walk boards nothing")
-
-        let noBaseMin = RankingRules.rank([base, sameChanges], context: context(preferRail: false, baseIds: ["b1"]))
-        XCTAssertEqual(noBaseMin.compactMap(\.reason), [])
+    func testWalkingPastTheLimitCostsDouble() {
+        let set = [
+            journey("long-walk", [(.walk, 20), (.bus, 10), (.walk, 10)]),   // 40 min, 30 min walking
+            journey("short-walk", [(.walk, 2), (.bus, 40), (.walk, 2)]),    // 44 min, 4 min walking
+        ]
+        let ctx = context(preferRail: false, walkMinutes: 10)
+        XCTAssertEqual(RankingRules.cost(set[0], context: ctx), (40 + 2 * 20) * 60)
+        XCTAssertEqual(RankingRules.cost(set[1], context: ctx), 44 * 60, "walking within the limit is free")
+        XCTAssertEqual(RankingRules.rank(set, context: ctx).map(\.id), ["short-walk", "long-walk"])
+        XCTAssertEqual(RankingRules.rank(set, context: context(preferRail: false, walkMinutes: 30)).map(\.id),
+                       ["long-walk", "short-walk"], "a 30-minute limit makes the walk free again")
     }
 
-    func testRailPinWinsOverFewerChanges() {
-        let base = journey("b1", [(.walk, 3), (.bus, 20), (.walk, 1), (.bus, 20), (.walk, 1)])
-        let probe = journey("rail", [(.walk, 2), (.dart, 50), (.walk, 2)])
-        let ranked = RankingRules.rank([base, probe], context: context(baseIds: ["b1"], baseMin: 2))
-        XCTAssertEqual(ranked.map(\.id), ["rail", "b1"])
-        XCTAssertEqual(ranked.first?.reason, "Rail")
+    // MARK: Fastest per mode
+
+    func testFastestPerEnabledModeIsKeptAndTaggedEvenWhenItsCostIsWorst() {
+        var set = (0..<9).map { journey("bus\($0)", [(.walk, 2), (.bus, 30 + $0), (.walk, 2)]) }
+        set.append(journey("dart", [(.walk, 30), (.dart, 20), (.walk, 25)]))   // 75 min, 55 min walking
+        let ranked = RankingRules.rank(set, context: context(preferRail: false, walkMinutes: 5, enabled: [.bus, .dart]))
+        XCTAssertEqual(ranked.count, RankingRules.maxResults)
+        XCTAssertEqual(ranked.last?.id, "dart", "ranked last, but kept")
+        XCTAssertEqual(ranked.last?.reason, "Fastest by DART")
+        XCTAssertEqual(ranked.map(\.id).prefix(7), ["bus0", "bus1", "bus2", "bus3", "bus4", "bus5", "bus6"])
+        XCTAssertFalse(ranked.contains { $0.id == "bus7" || $0.id == "bus8" }, "the worst unguaranteed rows go")
+    }
+
+    func testFirstRowCarriesNoChip() {
+        let ranked = RankingRules.rank(heustonSet, context: context(preferRail: false, enabled: [.bus, .luas, .dart]))
+        XCTAssertEqual(ranked.map(\.id), ["rail", "bus", "bus2"])
+        XCTAssertNil(ranked[0].reason, "the fastest Luas and DART option is first: nothing to explain")
+        XCTAssertEqual(ranked[1].reason, "Fastest by Bus")
+        XCTAssertNil(ranked[2].reason)
+    }
+
+    func testRailPinOutranksFastestByChip() {
+        let slowRail = heustonSet.map { $0.id == "rail" ? journey("rail", [(.walk, 2), (.luas, 13), (.walk, 3), (.dart, 40), (.walk, 2)]) : $0 }
+        let ranked = RankingRules.rank(slowRail, context: context(enabled: [.bus, .luas, .dart]))
+        XCTAssertEqual(ranked.map(\.id), ["rail", "bus", "bus2"])
+        XCTAssertEqual(ranked[0].reason, "Rail", "pinned, so not 'Fastest by DART'")
+        XCTAssertEqual(ranked[1].reason, "Fastest by Bus")
+    }
+
+    func testOneChipPerRowNamesTheLongestRide() {
+        let set = [
+            journey("bus", [(.walk, 2), (.bus, 20), (.walk, 2)]),
+            journey("luas-dart", [(.walk, 2), (.luas, 13), (.walk, 3), (.dart, 26), (.walk, 2)]),
+            journey("dart-luas", [(.walk, 2), (.dart, 10), (.walk, 3), (.luas, 40), (.walk, 2)]),
+        ]
+        let ranked = RankingRules.rank(set, context: context(preferRail: false, enabled: [.bus, .luas, .dart]))
+        XCTAssertEqual(ranked.map(\.id), ["bus", "luas-dart", "dart-luas"])
+        XCTAssertEqual(ranked[1].reason, "Fastest by DART", "fastest on both networks; it rides DART longer")
+        XCTAssertNil(ranked[2].reason)
+        XCTAssertEqual(RankingRules.chipMode(for: set[2], among: [.luas, .dart]), .luas)
+        XCTAssertEqual(RankingRules.chipMode(for: set[0], among: [.bus]), .bus)
+    }
+
+    func testDisabledModesEarnNoChip() {
+        let ranked = RankingRules.rank(heustonSet, context: context(preferRail: false, enabled: [.luas]))
+        XCTAssertEqual(ranked.compactMap(\.reason), [], "the Luas option is first; the buses are not enabled modes")
+        XCTAssertEqual(RankingRules.rank(heustonSet, context: context(preferRail: false)).compactMap(\.reason), [])
+    }
+
+    func testListIsCappedAtEight() {
+        let set = (0..<12).map { journey("bus\($0)", [(.walk, 2), (.bus, 30 + $0), (.walk, 2)]) }
+        let ranked = RankingRules.rank(set, context: context(preferRail: false, enabled: [.bus]))
+        XCTAssertEqual(ranked.map(\.id), (0..<8).map { "bus\($0)" })
+        XCTAssertEqual(ranked.compactMap(\.reason), [])
+    }
+
+    func testBikeGuaranteeFallsBackToFastestByBike() {
+        let bikeStart = t0
+        let bikeLeg = Leg(id: "bike-leg", mode: .bike, fromName: "Start", toName: "Destination",
+                          start: bikeStart, end: bikeStart.addingTimeInterval(4200), durationSeconds: 4200)
+        let bike = Itinerary(id: "bike", legs: [bikeLeg], start: bikeStart, end: bikeStart.addingTimeInterval(4200),
+                             durationSeconds: 4200, transfers: 0, walkSeconds: 0, bikeSeconds: 4200)
+        let ranked = RankingRules.rank(heustonSet + [bike], context: context(preferRail: false, enabled: [.bike]))
+        XCTAssertEqual(ranked.last?.id, "bike")
+        XCTAssertEqual(ranked.last?.reason, "Fastest by Bike")
+
+        var quiet = bike
+        quiet.reason = "Quiet roads"
+        XCTAssertEqual(RankingRules.rank(heustonSet + [quiet], context: context(preferRail: false, enabled: [.bike])).last?.reason,
+                       "Quiet roads", "the cycling provider's words win")
     }
 
     // MARK: Determinism
@@ -146,9 +211,9 @@ final class RankingRulesTests: XCTestCase {
             journey("bus-a", [(.walk, 4), (.bus, 30), (.walk, 0)]),
             journey("bus-b", [(.walk, 4), (.bus, 30), (.walk, 0)]),
         ]
-        let first = RankingRules.rank(set, context: context(baseIds: ["rail-a", "bus-a"], baseMin: 1))
+        let first = RankingRules.rank(set, context: context(walkMinutes: 10, enabled: [.bus, .dart]))
         for _ in 0..<20 {
-            XCTAssertEqual(RankingRules.rank(set, context: context(baseIds: ["rail-a", "bus-a"], baseMin: 1)), first)
+            XCTAssertEqual(RankingRules.rank(set, context: context(walkMinutes: 10, enabled: [.bus, .dart])), first)
         }
         XCTAssertEqual(first.map(\.id), ["rail-a", "rail-b", "bus-a", "bus-b"], "ties keep input order")
     }
@@ -187,9 +252,10 @@ final class RankingRulesTests: XCTestCase {
                           start: bikeStart, end: bikeStart.addingTimeInterval(1500), durationSeconds: 1500)
         let bike = Itinerary(id: "bike", legs: [bikeLeg], start: bikeStart, end: bikeStart.addingTimeInterval(1500),
                              durationSeconds: 1500, transfers: 0, walkSeconds: 0, bikeSeconds: 1500, reason: "Quiet roads")
-        let ranked = RankingRules.rank(heustonSet + [bike], context: context(baseIds: ["bus", "rail", "bus2"], baseMin: 1))
+        let ranked = RankingRules.rank(heustonSet + [bike], context: context(enabled: [.bus, .luas, .dart, .rail, .bike]))
         XCTAssertEqual(ranked.map(\.id), ["rail", "bike", "bus", "bus2"], "pinned rail, then by duration")
         XCTAssertEqual(ranked.first { $0.id == "bike" }?.reason, "Quiet roads")
+        XCTAssertEqual(ranked.first { $0.id == "bus" }?.reason, "Fastest by Bus")
         XCTAssertTrue(RankingRules.isBikeOnly(bike))
         XCTAssertFalse(RankingRules.isBikeOnly(heustonSet[0]))
 
