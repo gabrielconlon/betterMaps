@@ -160,6 +160,19 @@ final class MotisQueryTests: XCTestCase {
         XCTAssertEqual(q.count, 11, "overrides add no query items")
     }
 
+    func testNoWalkLimitSendsNinetyMinutes() throws {
+        let q = try items(MotisQuery.url(for: request(prefs(walk: 0))))
+        XCTAssertEqual(q["maxPreTransitTime"], "5400")
+        XCTAssertEqual(q["maxPostTransitTime"], "5400")
+        XCTAssertEqual(MotisQuery.noWalkLimitSeconds, 5400)
+
+        var probe = request(prefs(walk: 10))
+        probe.walkToleranceOverrideMinutes = DirectionsPreferencesSnapshot.noWalkLimit
+        XCTAssertNil(probe.effectiveWalkToleranceSeconds)
+        XCTAssertEqual(try items(MotisQuery.url(for: probe))["maxPreTransitTime"], "5400",
+                       "the no-limit probe lifts a finite preference")
+    }
+
     func testOverridesDefaultToNil() {
         let req = request(.default)
         XCTAssertNil(req.transitModesOverride)

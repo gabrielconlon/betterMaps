@@ -19,9 +19,25 @@ final class DirectionsPreferencesTests: XCTestCase {
         // 7 is 2 from 5 and 3 from 10, so it snaps down.
         XCTAssertEqual(snapshot(walk: 7).walkToleranceMinutes, 5)
         XCTAssertEqual(snapshot(walk: 8).walkToleranceMinutes, 10)
-        XCTAssertEqual(snapshot(walk: 25).walkToleranceMinutes, 20)
-        XCTAssertEqual(snapshot(walk: 0).walkToleranceMinutes, 5)
+        XCTAssertEqual(snapshot(walk: 25).walkToleranceMinutes, 20, "a midpoint rounds down")
+        XCTAssertEqual(snapshot(walk: 28).walkToleranceMinutes, 30)
         XCTAssertEqual(snapshot(walk: 15).walkToleranceMinutes, 15)
+        XCTAssertEqual(snapshot(walk: 45).walkToleranceMinutes, 45)
+        XCTAssertEqual(snapshot(walk: -3).walkToleranceMinutes, 5)
+        for step in [5, 10, 15, 20] {
+            XCTAssertEqual(snapshot(walk: step).walkToleranceMinutes, step, "values stored before the longer steps still hold")
+        }
+    }
+
+    func testNoWalkLimitIsZeroAndAnythingOverTheLongestStep() {
+        XCTAssertEqual(DirectionsPreferencesSnapshot.walkToleranceSteps, [5, 10, 15, 20, 30, 45, 0])
+        XCTAssertEqual(snapshot(walk: 0).walkToleranceMinutes, 0)
+        XCTAssertEqual(snapshot(walk: 46).walkToleranceMinutes, 0)
+        XCTAssertEqual(snapshot(walk: 90).walkToleranceMinutes, 0)
+        XCTAssertNil(snapshot(walk: 0).walkToleranceSeconds)
+        XCTAssertEqual(snapshot(walk: 30).walkToleranceSeconds, 1800)
+        XCTAssertEqual(snapshot(walk: 0).walkToleranceLabel, "Walk any distance")
+        XCTAssertEqual(snapshot(walk: 30).walkToleranceLabel, "Walk up to 30 min")
     }
 
     func testTransfersCeilingAndThresholdAreClamped() {

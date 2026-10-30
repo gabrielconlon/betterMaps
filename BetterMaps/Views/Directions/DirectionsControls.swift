@@ -1,29 +1,42 @@
 import SwiftUI
 
-/// The travel preferences, as rows: how far to walk, which networks, a
-/// direct cycle option, how many changes. A pure value view shared by the
-/// directions sheet and Settings; every change hands back a whole snapshot.
-struct DirectionsControls: View {
+/// The travel preferences people change per trip: how far to walk (a slider
+/// up to "any distance"), which networks, a direct cycle option and its
+/// style. A pure value view used in the sheet's Options disclosure and, with
+/// the rarely changed options added, in Settings (`DirectionsSettingsControls`).
+/// Every change hands back a whole snapshot.
+struct DirectionsTripControls: View {
     let prefs: DirectionsPreferencesSnapshot
     let onChange: (DirectionsPreferencesSnapshot) -> Void
 
     private static var modes: [TransitMode] { DirectionsControlsOrder.modes }
+    private static let steps = DirectionsPreferencesSnapshot.walkToleranceSteps
 
     var body: some View {
         Group {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Walk up to")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(prefs.walkToleranceLabel)
                     .font(.subheadline)
-                Picker("Walk up to", selection: Binding(
-                    get: { prefs.walkToleranceMinutes },
-                    set: { onChange(prefs.replacing(walkToleranceMinutes: $0)) }
-                )) {
-                    ForEach(DirectionsPreferencesSnapshot.walkToleranceSteps, id: \.self) { minutes in
-                        Text("\(minutes) min").tag(minutes)
+                Slider(value: Binding(
+                    get: { Double(Self.steps.firstIndex(of: prefs.walkToleranceMinutes) ?? 1) },
+                    set: { value in
+                        let index = min(max(Int(value.rounded()), 0), Self.steps.count - 1)
+                        let minutes = Self.steps[index]
+                        if minutes != prefs.walkToleranceMinutes {
+                            onChange(prefs.replacing(walkToleranceMinutes: minutes))
+                        }
                     }
+                ), in: 0...Double(Self.steps.count - 1), step: 1) {
+                    Text("Walking")
+                } minimumValueLabel: {
+                    Text("5 min").font(.caption).foregroundStyle(.secondary)
+                } maximumValueLabel: {
+                    Text("Any").font(.caption).foregroundStyle(.secondary)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                .frame(minHeight: 44)
+                .accessibilityLabel("Walking")
+                .accessibilityValue(prefs.walkToleranceLabel)
+                .accessibilityIdentifier("directions.walkSlider")
             }
             .padding(.vertical, 4)
 
@@ -81,83 +94,6 @@ struct DirectionsControls: View {
                     .accessibilityIdentifier("directions.cyclingStyle")
                 }
                 .padding(.vertical, 4)
-            }
-
-            Stepper(value: Binding(
-                get: { prefs.maxTransfers },
-                set: { onChange(prefs.replacing(maxTransfers: $0)) }
-            ), in: 0...3) {
-                HStack {
-                    Label("Max changes", systemImage: "arrow.triangle.swap")
-                        .font(.subheadline)
-                    Spacer()
-                    Text("\(prefs.maxTransfers)")
-                        .font(.subheadline.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(minHeight: 44)
-            .accessibilityValue("\(prefs.maxTransfers)")
-
-            Toggle(isOn: Binding(
-                get: { prefs.preferRail },
-                set: { onChange(prefs.replacing(preferRail: $0)) }
-            )) {
-                Label("Prefer rail", systemImage: "tram.fill")
-                    .font(.subheadline)
-            }
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("directions.preferRail")
-
-            if prefs.preferRail {
-                Stepper(value: Binding(
-                    get: { prefs.preferRailWalkCeilingMinutes },
-                    set: { onChange(prefs.replacing(preferRailWalkCeilingMinutes: $0)) }
-                ), in: 5...40, step: 5) {
-                    HStack {
-                        Text("If walking totals ≤")
-                            .font(.subheadline)
-                        Spacer()
-                        Text("\(prefs.preferRailWalkCeilingMinutes) min")
-                            .font(.subheadline.weight(.semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(minHeight: 44)
-                .accessibilityLabel("Prefer rail if walking totals up to")
-                .accessibilityValue("\(prefs.preferRailWalkCeilingMinutes) minutes")
-            }
-
-            Toggle(isOn: Binding(
-                get: { prefs.rainAware },
-                set: { onChange(prefs.replacing(rainAware: $0)) }
-            )) {
-                Label("Rain aware", systemImage: "cloud.rain")
-                    .font(.subheadline)
-            }
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("directions.rainAware")
-
-            if prefs.rainAware {
-                Stepper(value: Binding(
-                    get: { prefs.rainProbabilityThreshold },
-                    set: { onChange(prefs.replacing(rainProbabilityThreshold: $0)) }
-                ), in: 20...90, step: 10) {
-                    HStack {
-                        Text("Rain chance ≥")
-                            .font(.subheadline)
-                        Spacer()
-                        Text("\(prefs.rainProbabilityThreshold) %")
-                            .font(.subheadline.weight(.semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(minHeight: 44)
-                .accessibilityLabel("Rain chance at least")
-                .accessibilityValue("\(prefs.rainProbabilityThreshold) percent")
             }
         }
     }

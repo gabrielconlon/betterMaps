@@ -126,7 +126,7 @@ struct DirectionsSheet: View {
 
         DisclosureGroup(isExpanded: $showsOptions) {
             VStack(alignment: .leading, spacing: 4) {
-                DirectionsControls(prefs: model.prefs, onChange: model.apply(_:))
+                DirectionsTripControls(prefs: model.prefs, onChange: model.apply(_:))
             }
             .padding(.top, 4)
         } label: {
@@ -180,12 +180,11 @@ struct DirectionsSheet: View {
         return text
     }
 
-    /// "Walk 10 min · Bus, Luas, DART, Rail · 2 changes"
+    /// "Walk up to 10 min · Bus, Luas, DART, Rail"
     private var optionsSummary: String {
         let modes = DirectionsControlsOrder.modes.filter { model.prefs.enabledModes.contains($0) }
         let modeText = modes.isEmpty ? "no transit" : modes.map(\.displayName).joined(separator: ", ")
-        let changes = model.prefs.maxTransfers == 1 ? "1 change" : "\(model.prefs.maxTransfers) changes"
-        return "Walk \(model.prefs.walkToleranceMinutes) min · \(modeText) · \(changes)"
+        return "\(model.prefs.walkToleranceLabel) · \(modeText)"
     }
 
     @ViewBuilder
@@ -227,7 +226,7 @@ struct DirectionsSheet: View {
                                           systemImage: "tram", action: nil))
                 HStack(spacing: 8) {
                     if suggestRelaxWalk {
-                        Button("Walk up to 20 min") { model.relaxWalkingLimit() }
+                        Button("Walk any distance") { model.relaxWalkingLimit() }
                             .buttonStyle(.bordered)
                     }
                     if suggestTransfers {
