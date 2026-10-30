@@ -56,6 +56,14 @@ struct MapScreen: View {
     @State private var draftStore = TrailDraftStore.shared
     @AppStorage("lastTrailLayerId") private var lastTrailLayerIdRaw: String = ""
     @AppStorage(FirstRunHints.storageKey) private var hintsRaw = 0
+    /// The first-run welcome was finished (or closed) once.
+    @AppStorage(WelcomeGate.storageKey) private var welcomeCompleted = false
+    /// The welcome walkthrough is up. Independent of `activeSheet`: it comes
+    /// before any router sheet, and Settings re-presents it after its own
+    /// sheet has gone (see `pendingWelcome`).
+    @State private var showWelcome = false
+    @State private var pendingWelcome = false
+    @State private var decidedWelcome = false
     /// Cached value snapshot of places and layers, rebuilt only when the
     /// full `SnapshotToken` changes. That token is computed outside the body,
     /// only when the cheap `snapshotTrigger` changes.
@@ -340,7 +348,7 @@ struct MapScreen: View {
                                              modelContext: modelContext)
         }
         #endif
-        .sheet(item: $viewModel.activeSheet, onDismiss: openPendingTrailEdit) { sheet in
+        .sheet(item: $viewModel.activeSheet, onDismiss: routerSheetDismissed) { sheet in
             sheetContent(for: sheet)
                 .environment(toastCenter)
                 .environment(\.mapCenter, settledMapCenter)
@@ -348,6 +356,53 @@ struct MapScreen: View {
         .fullScreenCover(item: $viewModel.drawTrailRequest) { request in
             trailEditor(for: request)
                 .environment(toastCenter)
+        }
+        .onAppear(perform: decideWelcome)
+        #if targetEnvironment(macCatalyst)
+        .sheet(isPresented: $showWelcome, onDismiss: welcomeDismissed) {
+            WelcomeWalkthrough(transitSettings: transitSettings, onFinish: finishWelcome)
+        }
+        #else
+        .fullScreenCover(isPresented: $showWelcome, onDismiss: welcomeDismissed) {
+            WelcomeWalkthrough(transitSettings: transitSettings, onFinish: finishWelcome)
+        }
+        #endif
+    }
+
+    // MARK: - Welcome
+
+    /// Once per screen: the first-run walkthrough shows when it has never
+    /// been finished and no automation drives this launch (`WelcomeGate`).
+    private func decideWelcome() {
+        guard !decidedWelcome else { return }
+        decidedWelcome = true
+        if WelcomeGate.resetRequested { welcomeCompleted = false }
+        guard WelcomeGate.shouldShowNow(completed: welcomeCompleted) else { return }
+        // Nothing opens underneath it: a router sheet already up (a debug
+        // launch) keeps the map, and the walkthrough waits for Settings.
+        guard viewModel.activeSheet == nil else { return }
+        showWelcome = true
+    }
+
+    private func finishWelcome() {
+        welcomeCompleted = true
+        showWelcome = false
+    }
+
+    /// Closing it any other way (Escape on the Mac) counts as finished too,
+    /// so it does not come back on every launch.
+    private func welcomeDismissed() {
+        welcomeCompleted = true
+    }
+
+    /// Settings' "Show the welcome again": the walkthrough is presented once
+    /// the Settings sheet has gone, so the two never stack.
+    private func routerSheetDismissed() {
+        openPendingTrailEdit()
+        if pendingWelcome {
+            pendingWelcome = false
+            welcomeCompleted = false
+            showWelcome = true
         }
     }
 
@@ -925,7 +980,7 @@ struct MapScreen: View {
             }
 
         case .settings:
-            SettingsView()
+            SettingsView(onShowWelcome: { pendingWelcome = true })
         }
     }
 

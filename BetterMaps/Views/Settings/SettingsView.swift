@@ -5,6 +5,10 @@ import SwiftData
 /// directions preferences, about, and an Advanced section (collapsed) for
 /// the optional Yelp key, which lives in the Keychain.
 struct SettingsView: View {
+    /// "Show the welcome again": the map presents the walkthrough once this
+    /// sheet has closed. Nil hides the row.
+    var onShowWelcome: (() -> Void)? = nil
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @AppStorage(MapStyleOption.storageKey) private var mapStyle: MapStyleOption = .standard
@@ -208,6 +212,16 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section("About") {
             LabeledContent("Version", value: Self.versionString)
+            if let onShowWelcome {
+                Button {
+                    onShowWelcome()
+                    dismiss()
+                } label: {
+                    Label("Show the welcome again", systemImage: "hand.wave")
+                }
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("settings.showWelcome")
+            }
         }
     }
 
