@@ -2,7 +2,8 @@ import Foundation
 import CoreLocation
 
 /// Builds the Transitous (MOTIS v6) `/plan` request from a `JourneyRequest`.
-/// Pure functions so the URL can be asserted item by item in tests.
+/// Pure functions so the URL can be asserted item by item in tests. The
+/// request's mode and walk overrides, when set, win over its preferences.
 enum MotisQuery {
     static let baseURL = URL(string: "https://api.transitous.org/api/v6/plan")!
 
@@ -12,7 +13,7 @@ enum MotisQuery {
 
     static func url(for request: JourneyRequest, base: URL = baseURL, numItineraries: Int = 5) -> URL {
         let prefs = request.preferences
-        let walkSeconds = prefs.walkToleranceMinutes * 60
+        let walkSeconds = request.effectiveWalkToleranceMinutes * 60
         var items: [URLQueryItem] = [
             URLQueryItem(name: "fromPlace", value: place(request.origin)),
             URLQueryItem(name: "toPlace", value: place(request.destination)),
@@ -22,7 +23,7 @@ enum MotisQuery {
             URLQueryItem(name: "maxTransfers", value: String(prefs.maxTransfers)),
             URLQueryItem(name: "maxPreTransitTime", value: String(walkSeconds)),
             URLQueryItem(name: "maxPostTransitTime", value: String(walkSeconds)),
-            URLQueryItem(name: "transitModes", value: transitModes(prefs.enabledModes)),
+            URLQueryItem(name: "transitModes", value: transitModes(request.effectiveTransitModes)),
             URLQueryItem(name: "directModes", value: prefs.allowBikeDirect ? "WALK,BIKE" : "WALK"),
         ]
         if prefs.allowBikeDirect {

@@ -1,19 +1,26 @@
 import Foundation
 import CoreLocation
 
-/// Debug/test only. Two synthetic Heuston → Dún Laoghaire options built in
-/// code (Luas + DART with one change, and a direct bus), timed relative to
-/// `request.time`. Defined unconditionally so the live-provider stub can
-/// fall back to it; `JourneyProviderFactory` only picks it under
-/// `-UITestFakeDirections`.
+/// Debug/test only. Synthetic Heuston → Dún Laoghaire options built in
+/// code (Luas + DART with one change, a direct bus, and, once the walk limit
+/// reaches 20 minutes, a second bus with longer walks), timed relative to
+/// `request.time`. Honours the request's mode and walk overrides so the
+/// view model's probes behave as they would against the real engine.
+/// Defined unconditionally so the live-provider stub can fall back to it;
+/// `JourneyProviderFactory` only picks it under `-UITestFakeDirections`.
 struct FixtureJourneyProvider: JourneyProvider {
+    /// Walk limit at which the longer-walk bus option appears.
+    static let longWalkMinutes = 20
+
     func plan(_ request: JourneyRequest) async throws -> [Itinerary] {
         let prefs = request.preferences
         guard prefs.maxTransfers > 0 else { return [] }
-        let allowed = prefs.allowedTransitModes
-        return Self.itineraries(anchor: request.time, arriveBy: request.arriveBy).filter { itinerary in
-            itinerary.transitLegs.allSatisfy { allowed.contains($0.mode) }
-        }
+        let allowed = request.effectiveTransitModes
+        let longWalks = request.effectiveWalkToleranceMinutes >= Self.longWalkMinutes
+        return Self.itineraries(anchor: request.time, arriveBy: request.arriveBy, longWalks: longWalks)
+            .filter { itinerary in
+                itinerary.transitLegs.allSatisfy { allowed.contains($0.mode) }
+            }
     }
 
     // MARK: - Fixture geometry
@@ -26,8 +33,41 @@ struct FixtureJourneyProvider: JourneyProvider {
     private static let dunLaoghaireStation = CLLocationCoordinate2D(latitude: 53.2946, longitude: -6.1341)
     private static let dunLaoghaire = CLLocationCoordinate2D(latitude: 53.2938, longitude: -6.1353)
 
-    static func itineraries(anchor: Date, arriveBy: Bool) -> [Itinerary] {
-        [railOption(anchor: anchor, arriveBy: arriveBy), busOption(anchor: anchor, arriveBy: arriveBy)]
+    static func itineraries(anchor: Date, arriveBy: Bool, longWalks: Bool = false) -> [Itinerary] {
+        var result = [railOption(anchor: anchor, arriveBy: arriveBy), busOption(anchor: anchor, arriveBy: arriveBy)]
+        if longWalks { result.append(longWalkBusOption(anchor: anchor, arriveBy: arriveBy)) }
+        return result
+    }
+
+    /// Walk 14 › Bus 7 38 › Walk 9 (61 min, no changes). Only within reach
+    /// when the walk limit allows a quarter of an hour on foot.
+    private static func longWalkBusOption(anchor: Date, arriveBy: Bool) -> Itinerary {
+        let total = 61 * 60
+        let start = arriveBy ? anchor.addingTimeInterval(TimeInterval(-total)) : anchor.addingTimeInterval(2 * 60)
+        let walkEnd = start.addingTimeInterval(14 * 60)
+        let busEnd = walkEnd.addingTimeInterval(38 * 60)
+        let end = busEnd.addingTimeInterval(9 * 60)
+        let stopA = CLLocationCoordinate2D(latitude: 53.3418, longitude: -6.2868)
+        let stopB = CLLocationCoordinate2D(latitude: 53.2972, longitude: -6.1420)
+        let legs = [
+            Leg(id: "fx-longbus-1", mode: .walk, fromName: "Heuston Station", toName: "James's Street, stop 1935",
+                start: start, end: walkEnd, durationSeconds: 14 * 60, coordinates: [heuston, stopA]),
+            Leg(id: "fx-longbus-2", mode: .bus, routeShortName: "7", headsign: "Brides Glen",
+                fromName: "James's Street, stop 1935", toName: "Monkstown, Purbeck",
+                fromStopId: "8220DB001935", toStopId: "8250DB002094",
+                start: walkEnd, end: busEnd, durationSeconds: 38 * 60,
+                coordinates: [stopA, CLLocationCoordinate2D(latitude: 53.3350, longitude: -6.2500),
+                              CLLocationCoordinate2D(latitude: 53.3200, longitude: -6.2000), stopB],
+                intermediateStops: [
+                    IntermediateStop(name: "Dame Street", time: walkEnd.addingTimeInterval(10 * 60), stopId: nil),
+                    IntermediateStop(name: "Ballsbridge", time: walkEnd.addingTimeInterval(20 * 60), stopId: nil),
+                    IntermediateStop(name: "Blackrock", time: walkEnd.addingTimeInterval(31 * 60), stopId: nil),
+                ]),
+            Leg(id: "fx-longbus-3", mode: .walk, fromName: "Monkstown, Purbeck", toName: "Dún Laoghaire",
+                start: busEnd, end: end, durationSeconds: 9 * 60, coordinates: [stopB, dunLaoghaire]),
+        ]
+        return Itinerary(id: "fixture-longbus", legs: legs, start: start, end: end,
+                         durationSeconds: total, transfers: 0, walkSeconds: 23 * 60, bikeSeconds: 0)
     }
 
     /// Walk 3 › Luas Red 13 › Walk 3 › DART 26 › Walk 3 (48 min, 1 change).

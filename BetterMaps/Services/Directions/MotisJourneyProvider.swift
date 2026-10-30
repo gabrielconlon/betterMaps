@@ -62,7 +62,8 @@ actor MotisJourneyProvider: JourneyProvider {
         }
 
         let prefs = request.preferences
-        let itineraries = MotisMapper.itineraries(from: decoded, preferences: prefs)
+        let itineraries = MotisMapper.itineraries(from: decoded, preferences: prefs,
+                                                  transitModesOverride: request.transitModesOverride)
         Self.logger.info("plan ok: \(decoded.itineraries.count) transit + \(decoded.direct.count) direct -> \(itineraries.count) after filter")
         let context = RankingContext(
             preferRail: prefs.preferRail,
@@ -145,12 +146,15 @@ enum MotisMapper {
     /// Transit itineraries followed by direct ones, de-duplicated by id (first
     /// wins), then anything that rides a network the user has switched off is
     /// dropped. The post-filter is what lets DART and Rail be toggled
-    /// separately although the engine has a single RAIL flag.
+    /// separately although the engine has a single RAIL flag. A request's
+    /// `transitModesOverride` replaces the user's set for that one filter, so
+    /// a rail-only probe keeps its rail answers whatever else is enabled.
     static func itineraries(from response: MotisPlanResponse,
-                            preferences: DirectionsPreferencesSnapshot) -> [Itinerary] {
+                            preferences: DirectionsPreferencesSnapshot,
+                            transitModesOverride: Set<TransitMode>? = nil) -> [Itinerary] {
         var seen: Set<String> = []
         var result: [Itinerary] = []
-        let allowed = preferences.allowedTransitModes
+        let allowed = transitModesOverride?.filter(\.isTransit) ?? preferences.allowedTransitModes
         for motis in response.itineraries + response.direct {
             let itinerary = itinerary(motis)
             guard seen.insert(itinerary.id).inserted else { continue }
