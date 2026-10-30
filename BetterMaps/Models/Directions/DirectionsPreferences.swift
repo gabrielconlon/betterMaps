@@ -21,7 +21,7 @@ final class DirectionsPreferences {
     /// future mode does not need a migration.
     var enabledModesRaw: [String] = ["bus", "luas", "dart", "rail"]
     /// Offer a cycle-the-whole-way option alongside transit.
-    var allowBikeDirect: Bool = true
+    var allowBikeDirect: Bool = false
     var maxTransfers: Int = 2
     /// Put a rail/DART option first when it exists and does not add more
     /// than `preferRailWalkCeilingMinutes` of walking.
@@ -118,7 +118,7 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
     static let `default` = DirectionsPreferencesSnapshot(
         walkToleranceMinutes: 10,
         enabledModes: [.bus, .luas, .dart, .rail],
-        allowBikeDirect: true,
+        allowBikeDirect: false,
         maxTransfers: 2,
         preferRail: true,
         preferRailWalkCeilingMinutes: 20,

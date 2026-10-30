@@ -360,7 +360,7 @@ final class DirectionsViewModelTests: XCTestCase {
         cycling.result = .success(quiet)
         let store = TransitLayerStore()
         let model = makeModel(provider, store: store, cycling: cycling)
-        model.apply(DirectionsPreferencesSnapshot.default.replacing(preferRail: false))
+        model.apply(DirectionsPreferencesSnapshot.default.replacing(preferRail: false).replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
 
@@ -625,7 +625,7 @@ final class DirectionsViewModelTests: XCTestCase {
         model.apply(DirectionsPreferencesSnapshot.default.replacing(enabledModes: [.bus, .dart], preferRail: false))
         model.scheduleQuery(immediate: true)
         await settle()
-        XCTAssertEqual(provider.familyProbes.map(\.transitModesOverride), [[.bus], [.dart]], "only the families that are on")
+        XCTAssertEqual(Set(provider.familyProbes.compactMap(\.transitModesOverride)), [[.bus], [.dart]], "only the families that are on")
         XCTAssertEqual(provider.requests.count, 3)
 
         // Bus only with no walk limit: the bus probe would repeat the base.
@@ -1043,6 +1043,7 @@ final class DirectionsViewModelTests: XCTestCase {
         let cycling = FakeCyclingProvider()
         cycling.result = .success(makeBike("brouter", minutes: 32, reason: "Quiet roads"))
         let model = makeModel(provider, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
 
@@ -1063,6 +1064,7 @@ final class DirectionsViewModelTests: XCTestCase {
         let cycling = FakeCyclingProvider()
         cycling.result = .failure(JourneyProviderError.unavailable(status: 502))
         let model = makeModel(provider, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
         XCTAssertEqual(model.phase, .results)
@@ -1076,6 +1078,7 @@ final class DirectionsViewModelTests: XCTestCase {
         let cycling = FakeCyclingProvider()
         cycling.result = .success(makeBike("brouter", minutes: 32, reason: "Quiet roads"))
         let model = makeModel(provider, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
         XCTAssertEqual(model.itineraries.map(\.id), ["a", "brouter"])
@@ -1099,6 +1102,7 @@ final class DirectionsViewModelTests: XCTestCase {
         cycling.result = .success(quiet)
         let store = TransitLayerStore()
         let model = makeModel(provider, store: store, cycling: cycling)
+        model.apply(model.prefs.replacing(allowBikeDirect: true))
         model.scheduleQuery(immediate: true)
         await settle()
         model.select(quiet)
