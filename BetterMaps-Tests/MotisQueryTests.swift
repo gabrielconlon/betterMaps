@@ -57,9 +57,9 @@ final class MotisQueryTests: XCTestCase {
         XCTAssertEqual(q["maxPreTransitTime"], "600")
         XCTAssertEqual(q["maxPostTransitTime"], "600")
         XCTAssertEqual(q["transitModes"], "BUS,COACH,TRAM,RAIL")
-        XCTAssertEqual(q["directModes"], "WALK,BIKE")
-        XCTAssertEqual(q["maxDirectTime"], "2700")
-        XCTAssertEqual(q.count, 11, "no unexpected items: \(q.keys.sorted())")
+        XCTAssertEqual(q["directModes"], "WALK", "cycling is opt-in by default")
+        XCTAssertNil(q["maxDirectTime"])
+        XCTAssertEqual(q.count, 10, "no unexpected items: \(q.keys.sorted())")
     }
 
     func testBikeOnAddsBikeDirectModeAndCap() throws {
