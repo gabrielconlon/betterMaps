@@ -205,8 +205,7 @@ struct SettingsView: View {
     /// has something to bind to.
     private func ensureDirectionsRow() {
         guard directionsRows.isEmpty else { return }
-        _ = try? DirectionsPreferences.fetchOrCreate(in: modelContext)
-        try? modelContext.save()
+        _ = try? DirectionsPreferences.ensureRow(in: modelContext)
     }
 
     private var aboutSection: some View {

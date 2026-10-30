@@ -20,47 +20,65 @@ enum WelcomePage: Int, CaseIterable, Identifiable {
 /// One headline, two lines and one control per page (progressive
 /// disclosure); Back/Next and page dots underneath. Every choice writes
 /// straight to the same stores the Layers card and Settings use, so there
-/// is nothing to "save" at the end.
+/// is nothing to "save" at the end (an edit the store refused is retried
+/// once from "Start exploring").
+///
+/// Each page is a scroll view that owns the top safe area, so long copy
+/// scrolls under the status bar like any iOS screen; the footer is a bottom
+/// safe-area inset the pages scroll beneath.
 ///
 /// `MapScreen` presents it full screen on iPhone/iPad and as a fixed-size
 /// sheet on the Mac, where a close button (Escape) also finishes it.
 struct WelcomeWalkthrough: View {
-    @Bindable var transitSettings: TransitLayerSettings
+    let transitSettings: TransitLayerSettings
     /// Called once when the person finishes or closes the walkthrough.
     let onFinish: () -> Void
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var page: WelcomePage = .welcome
-    /// The one preferences row, fetched (or created) when the walkthrough
-    /// opens so the Getting around page has something to bind to.
+    /// What the Getting around controls show; the store's values once read,
+    /// the person's edit from then on.
+    @State private var prefsState = WelcomePreferencesState()
+    /// The preferences row as last fetched. Only ever used through
+    /// `DirectionsPreferences.liveRow`, which refetches once it is deleted.
     @State private var prefsRow: DirectionsPreferences?
 
     #if targetEnvironment(macCatalyst)
     static let macSize = CGSize(width: 560, height: 700)
     #endif
 
-    var body: some View {
-        VStack(spacing: 0) {
-            #if targetEnvironment(macCatalyst)
-            closeRow
-            #endif
+    private var background: Color { Color(.systemGroupedBackground) }
 
+    var body: some View {
+        ZStack {
             pageBody
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .id(page)
                 .transition(reduceMotion ? .opacity : .asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
                     removal: .move(edge: .leading).combined(with: .opacity)))
-
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             footer
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 16)
+                .frame(maxWidth: .infinity)
+                .background(background)
         }
-        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        #if targetEnvironment(macCatalyst)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            closeRow.background(background)
+        }
+        #endif
+        .background(background.ignoresSafeArea())
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: page)
-        .onAppear(perform: ensurePrefsRow)
+        .onAppear(perform: loadPrefs)
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
+            .merge(with: NotificationCenter.default.publisher(for: .NSPersistentStoreRemoteChange))
+            .receive(on: RunLoop.main)) { _ in
+            refreshPrefs()
+        }
         #if targetEnvironment(macCatalyst)
         .frame(width: Self.macSize.width, height: Self.macSize.height)
         .interactiveDismissDisabled()
@@ -79,14 +97,13 @@ struct WelcomeWalkthrough: View {
             WelcomeTransitPage(settings: transitSettings)
                 .welcomePage(.transit)
         case .gettingAround:
-            WelcomeGettingAroundPage(prefs: prefsRow?.snapshot ?? .default) { snapshot in
-                guard let prefsRow else { return }
-                prefsRow.apply(snapshot)
-                try? modelContext.save()
+            WelcomeGettingAroundPage(prefs: prefsState.prefs) { snapshot in
+                prefsState.edited(snapshot)
+                persistPrefs()
             }
             .welcomePage(.gettingAround)
         case .done:
-            WelcomeDonePage(lines: WelcomeSummary.lines(prefs: prefsRow?.snapshot ?? .default,
+            WelcomeDonePage(lines: WelcomeSummary.lines(prefs: prefsState.prefs,
                                                         transitKinds: transitSettings.enabledKinds))
                 .welcomePage(.done)
         }
@@ -123,7 +140,7 @@ struct WelcomeWalkthrough: View {
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("welcome.next")
                 } else {
-                    Button(action: onFinish) {
+                    Button(action: finish) {
                         Text("Start exploring")
                             .frame(maxWidth: .infinity, minHeight: 32)
                     }
@@ -173,11 +190,43 @@ struct WelcomeWalkthrough: View {
 
     // MARK: - Data
 
-    private func ensurePrefsRow() {
+    /// Reads (or creates) the row once. When the store refuses, the controls
+    /// bind to the local defaults and `persistPrefs` tries the store again
+    /// on each edit.
+    private func loadPrefs() {
         guard prefsRow == nil else { return }
-        guard let row = try? DirectionsPreferences.fetchOrCreate(in: modelContext) else { return }
-        try? modelContext.save()
+        guard let row = try? DirectionsPreferences.ensureRow(in: modelContext) else { return }
         prefsRow = row
+        prefsState.loaded(row.snapshot)
+    }
+
+    /// Any save or remote change: the row is fetched again (it may have been
+    /// replaced or merged) and its values shown unless an edit is waiting.
+    private func refreshPrefs() {
+        guard let row = try? DirectionsPreferences.fetchOrCreate(in: modelContext) else { return }
+        if row !== prefsRow { prefsRow = row }
+        prefsState.loaded(row.snapshot)
+    }
+
+    /// Writes the working copy to the live row. A failure keeps the edit
+    /// (and `hasUnsavedEdit`) for the retry from "Start exploring".
+    private func persistPrefs() {
+        do {
+            let row = try DirectionsPreferences.liveRow(prefsRow, in: modelContext)
+            if row !== prefsRow { prefsRow = row }
+            row.apply(prefsState.prefs)
+            try modelContext.save()
+            prefsState.saved()
+        } catch {
+            // Left unsaved on purpose; see `finish`.
+        }
+    }
+
+    /// "Start exploring": one more go at an edit the store refused, then
+    /// hand the map back either way.
+    private func finish() {
+        if prefsState.hasUnsavedEdit { persistPrefs() }
+        onFinish()
     }
 }
 
@@ -196,9 +245,6 @@ private struct WelcomePageModifier: ViewModifier {
                 .frame(maxWidth: .infinity)
         }
         .scrollBounceBehavior(.basedOnSize)
-        // Kept off the safe-area edge so scrolled copy never runs under the
-        // status bar (a scroll view touching that edge draws beneath it).
-        .padding(.top, 1)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("welcome.page.\(page.rawValue)")
     }

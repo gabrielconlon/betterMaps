@@ -107,9 +107,8 @@ final class DirectionsViewModel {
     func attach(context: ModelContext) {
         guard self.context == nil else { return }
         self.context = context
-        guard let row = try? DirectionsPreferences.fetchOrCreate(in: context) else { return }
+        guard let row = try? DirectionsPreferences.ensureRow(in: context) else { return }
         prefsModel = row
-        try? context.save()
         prefs = row.snapshot
     }
 

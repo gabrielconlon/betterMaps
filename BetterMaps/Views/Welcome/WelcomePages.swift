@@ -60,10 +60,11 @@ struct WelcomeIntroPage: View {
 
 // MARK: - 2. Transit layers
 
-/// The four network switches, bound to the same `TransitLayerSettings` the
-/// Layers card uses, so what is chosen here is already on the map.
+/// The four network tiles (the Layers card's `TransitKindTile`, in its row
+/// style), bound to the same `TransitLayerSettings` the card uses, so what
+/// is chosen here is already on the map.
 struct WelcomeTransitPage: View {
-    @Bindable var settings: TransitLayerSettings
+    let settings: TransitLayerSettings
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -77,44 +78,14 @@ struct WelcomeTransitPage: View {
             WelcomeCard {
                 LazyVGrid(columns: columns, spacing: 10) {
                     ForEach(TransitLayerKind.allCases) { kind in
-                        tile(kind)
+                        TransitKindTile(kind: kind, isOn: settings.isEnabled(kind), style: .row) {
+                            settings.toggle(kind)
+                        }
+                        .accessibilityIdentifier("welcome.transit.\(kind.rawValue)")
                     }
                 }
             }
         }
-    }
-
-    private func tile(_ kind: TransitLayerKind) -> some View {
-        let isOn = settings.isEnabled(kind)
-        let color = TransitColors.pin(kind)
-        return Button {
-            settings.toggle(kind)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: kind.systemImage)
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 28)
-                Text(kind.displayName)
-                    .font(.headline)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-            }
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, minHeight: 64)
-            .background(isOn ? color.opacity(0.25) : Color(.systemGray5),
-                        in: RoundedRectangle(cornerRadius: 12))
-            .foregroundStyle(isOn ? color : Color.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .sensoryFeedback(.selection, trigger: isOn)
-        .accessibilityLabel(kind.displayName)
-        .accessibilityValue(isOn ? "Shown" : "Hidden")
-        .accessibilityHint(isOn ? "Hides \(kind.displayName)" : "Shows \(kind.displayName)")
-        .accessibilityAddTraits(isOn ? .isSelected : [])
-        .accessibilityIdentifier("welcome.transit.\(kind.rawValue)")
     }
 }
 

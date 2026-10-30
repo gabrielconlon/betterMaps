@@ -378,9 +378,9 @@ struct MapScreen: View {
         decidedWelcome = true
         if WelcomeGate.resetRequested { welcomeCompleted = false }
         guard WelcomeGate.shouldShowNow(completed: welcomeCompleted) else { return }
-        // Nothing opens underneath it: a router sheet already up (a debug
-        // launch) keeps the map, and the walkthrough waits for Settings.
-        guard viewModel.activeSheet == nil else { return }
+        // No router sheet can be up here: `activeSheet` starts nil, the only
+        // launch-time openers (`-open…`) also suppress the gate, and Settings'
+        // re-show goes through `routerSheetDismissed`, not this.
         showWelcome = true
     }
 
@@ -396,12 +396,12 @@ struct MapScreen: View {
     }
 
     /// Settings' "Show the welcome again": the walkthrough is presented once
-    /// the Settings sheet has gone, so the two never stack.
+    /// the Settings sheet has gone, so the two never stack. The completed
+    /// flag stays true: closing the app mid-way must not bring it back.
     private func routerSheetDismissed() {
         openPendingTrailEdit()
         if pendingWelcome {
             pendingWelcome = false
-            welcomeCompleted = false
             showWelcome = true
         }
     }

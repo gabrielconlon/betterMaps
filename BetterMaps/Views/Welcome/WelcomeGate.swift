@@ -5,8 +5,9 @@ import Foundation
 ///
 /// - Completed once (`welcome.completed.v1`), it never shows again unless
 ///   Settings asks for it or `-ResetWelcome` (DEBUG) clears the flag.
-/// - The unit-test host and every UI-test, perf and screenshot launch argument
-///   suppress it, so existing automation never sees the walkthrough.
+/// - The unit-test host and every automation launch argument (`-UITest…`,
+///   `-Perf…`, `-open…` screenshot screens, `-sheetMedium`) suppress it, so
+///   existing and future automation never sees the walkthrough.
 /// - `-UITestWelcome` forces it on (for its own UI test) and beats the other
 ///   arguments, but never the test host.
 enum WelcomeGate {
@@ -14,16 +15,23 @@ enum WelcomeGate {
     static let forceArgument = "-UITestWelcome"
     static let resetArgument = "-ResetWelcome"
 
-    /// Launch arguments that mean "an automation drives this launch".
-    static let suppressingArguments: Set<String> = [
-        "-PerfSeed", "-UITestMapProbe", "-UITestFakeDirections",
-        "-openPlaceDetail", "-openQuickAdd", "-openTrailEditor", "-openLayersPanel"
-    ]
+    /// Launch-argument families that mean "an automation drives this launch":
+    /// UI-test flags, the perf harness and the debug screen openers.
+    static let suppressingPrefixes = ["-UITest", "-Perf", "-open"]
+    /// Single arguments that mean the same but share no prefix.
+    static let suppressingArguments: Set<String> = ["-sheetMedium"]
+
+    /// True when `argument` marks an automation launch (`forceArgument` aside,
+    /// which `shouldShow` checks first).
+    static func suppresses(_ argument: String) -> Bool {
+        suppressingArguments.contains(argument)
+            || suppressingPrefixes.contains { argument.hasPrefix($0) }
+    }
 
     static func shouldShow(completed: Bool, arguments: [String], isTestHost: Bool) -> Bool {
         if isTestHost { return false }
         if arguments.contains(forceArgument) { return true }
-        if arguments.contains(where: suppressingArguments.contains) { return false }
+        if arguments.contains(where: suppresses) { return false }
         return !completed
     }
 
@@ -69,5 +77,33 @@ enum WelcomeSummary {
             Line(title: "Travel by", value: modes.isEmpty ? "No networks" : modes.joined(separator: ", ")),
             Line(title: "Cycling the whole way", value: prefs.allowBikeDirect ? "On" : "Off")
         ]
+    }
+}
+
+/// The Getting around page's working copy of the directions preferences and
+/// whether the store has caught up with it. Pure so the merge rules are
+/// unit-tested: an edit the store has not taken yet is never overwritten by
+/// a re-read, and a re-read wins whenever nothing is waiting.
+struct WelcomePreferencesState: Equatable {
+    private(set) var prefs: DirectionsPreferencesSnapshot = .default
+    /// An edit is waiting to be written (the row could not be fetched, or a
+    /// save failed). "Start exploring" retries it once.
+    private(set) var hasUnsavedEdit = false
+
+    /// The live row was (re)read.
+    mutating func loaded(_ stored: DirectionsPreferencesSnapshot) {
+        guard !hasUnsavedEdit else { return }
+        prefs = stored
+    }
+
+    /// The person changed a control; the value shows at once, saved or not.
+    mutating func edited(_ snapshot: DirectionsPreferencesSnapshot) {
+        prefs = snapshot
+        hasUnsavedEdit = true
+    }
+
+    /// The last edit reached the store.
+    mutating func saved() {
+        hasUnsavedEdit = false
     }
 }
