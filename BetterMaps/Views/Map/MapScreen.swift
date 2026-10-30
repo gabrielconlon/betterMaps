@@ -226,7 +226,7 @@ struct MapScreen: View {
                       onRequestLocation: locateUser)
                 .animation(.easeInOut(duration: 0.2), value: draftStore.hasDraft)
                 .animation(.easeInOut(duration: 0.2), value: transitStore.highlightedRouteId)
-                .animation(.easeInOut(duration: 0.2), value: transitStore.drawnItinerary != nil)
+                .animation(.easeInOut(duration: 0.2), value: directionsDrawn)
 
             if isLayersPanelOpen {
                 layersPanel
@@ -444,10 +444,14 @@ struct MapScreen: View {
         return nil
     }
 
+    /// A picked journey, the search's previews or its pins are on the map.
+    private var directionsDrawn: Bool { transitStore.hasDirectionsContent }
+
     private var routeChip: HighlightedRouteChip? {
-        if transitStore.drawnItinerary != nil {
-            return HighlightedRouteChip(label: directions.drawnLabel ?? "Directions",
-                                        onClear: { directions.clearSelection() },
+        if directionsDrawn {
+            let label = transitStore.drawnItinerary != nil ? directions.drawnLabel : nil
+            return HighlightedRouteChip(label: label ?? "Directions",
+                                        onClear: { directions.chipCleared() },
                                         systemImage: "arrow.triangle.turn.up.right.diamond.fill",
                                         tint: .accentColor,
                                         prefix: nil,
@@ -582,8 +586,8 @@ struct MapScreen: View {
                 transitStore.clearHighlightedRoute()
                 return
             }
-            if transitStore.drawnItinerary != nil {
-                directions.clearSelection()
+            if directionsDrawn {
+                directions.clearMap()
                 return
             }
             viewModel.lookUpPlace(at: coordinate)

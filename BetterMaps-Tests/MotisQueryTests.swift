@@ -57,9 +57,9 @@ final class MotisQueryTests: XCTestCase {
         XCTAssertEqual(q["maxPreTransitTime"], "600")
         XCTAssertEqual(q["maxPostTransitTime"], "600")
         XCTAssertEqual(q["transitModes"], "BUS,COACH,TRAM,RAIL")
-        XCTAssertEqual(q["directModes"], "WALK,BIKE")
-        XCTAssertEqual(q["maxDirectTime"], "2700")
-        XCTAssertEqual(q.count, 11, "no unexpected items: \(q.keys.sorted())")
+        XCTAssertEqual(q["directModes"], "WALK", "cycling is opt-in by default")
+        XCTAssertNil(q["maxDirectTime"])
+        XCTAssertEqual(q.count, 10, "no unexpected items: \(q.keys.sorted())")
     }
 
     func testBikeOnAddsBikeDirectModeAndCap() throws {
@@ -158,6 +158,19 @@ final class MotisQueryTests: XCTestCase {
         req.walkToleranceOverrideMinutes = 5
         XCTAssertEqual(try items(MotisQuery.url(for: req))["maxPreTransitTime"], "300")
         XCTAssertEqual(q.count, 11, "overrides add no query items")
+    }
+
+    func testNoWalkLimitSendsNinetyMinutes() throws {
+        let q = try items(MotisQuery.url(for: request(prefs(walk: 0))))
+        XCTAssertEqual(q["maxPreTransitTime"], "5400")
+        XCTAssertEqual(q["maxPostTransitTime"], "5400")
+        XCTAssertEqual(MotisQuery.noWalkLimitSeconds, 5400)
+
+        var probe = request(prefs(walk: 10))
+        probe.walkToleranceOverrideMinutes = DirectionsPreferencesSnapshot.noWalkLimit
+        XCTAssertNil(probe.effectiveWalkToleranceSeconds)
+        XCTAssertEqual(try items(MotisQuery.url(for: probe))["maxPreTransitTime"], "5400",
+                       "the no-limit probe lifts a finite preference")
     }
 
     func testOverridesDefaultToNil() {

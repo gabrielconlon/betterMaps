@@ -178,13 +178,14 @@ struct SettingsView: View {
         }
     }
 
-    /// The same controls as the directions sheet, bound to the one
-    /// preferences row; the sheet picks the change up on save.
+    /// The trip controls from the directions sheet plus the rarely changed
+    /// ones, bound to the one preferences row; the sheet picks the change up
+    /// on save.
     @ViewBuilder
     private var directionsSection: some View {
         if let row = directionsRows.first {
             Section {
-                DirectionsControls(prefs: row.snapshot) { snapshot in
+                DirectionsSettingsControls(prefs: row.snapshot) { snapshot in
                     row.apply(snapshot)
                     try? modelContext.save()
                 }

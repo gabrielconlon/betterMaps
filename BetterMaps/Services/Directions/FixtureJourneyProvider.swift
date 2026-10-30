@@ -3,7 +3,7 @@ import CoreLocation
 
 /// Debug/test only. Synthetic Heuston → Dún Laoghaire options built in
 /// code (Luas + DART with one change, a direct bus, and, once the walk limit
-/// reaches 20 minutes, a second bus with longer walks), timed relative to
+/// reaches 20 minutes or is lifted, a second bus with longer walks), timed relative to
 /// `request.time`. Honours the request's mode and walk overrides so the
 /// view model's probes behave as they would against the real engine.
 /// Defined unconditionally so the live-provider stub can fall back to it;
@@ -16,7 +16,7 @@ struct FixtureJourneyProvider: JourneyProvider {
         let prefs = request.preferences
         guard prefs.maxTransfers > 0 else { return [] }
         let allowed = request.effectiveTransitModes
-        let longWalks = request.effectiveWalkToleranceMinutes >= Self.longWalkMinutes
+        let longWalks = request.effectiveWalkToleranceSeconds.map { $0 >= Self.longWalkMinutes * 60 } ?? true
         return Self.itineraries(anchor: request.time, arriveBy: request.arriveBy, longWalks: longWalks)
             .filter { itinerary in
                 itinerary.transitLegs.allSatisfy { allowed.contains($0.mode) }

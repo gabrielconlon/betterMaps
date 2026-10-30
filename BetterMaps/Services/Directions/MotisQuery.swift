@@ -10,10 +10,13 @@ enum MotisQuery {
     /// Cycling the whole way is capped at 45 minutes so the bike option stays
     /// a real alternative rather than a two-hour slog.
     static let maxDirectBikeSeconds = 2700
+    /// What "walk any distance" is sent as: 90 minutes, the most anyone
+    /// would walk to a train rather than the engine's own default.
+    static let noWalkLimitSeconds = 5400
 
     static func url(for request: JourneyRequest, base: URL = baseURL, numItineraries: Int = 5) -> URL {
         let prefs = request.preferences
-        let walkSeconds = request.effectiveWalkToleranceMinutes * 60
+        let walkSeconds = request.effectiveWalkToleranceSeconds ?? noWalkLimitSeconds
         var items: [URLQueryItem] = [
             URLQueryItem(name: "fromPlace", value: place(request.origin)),
             URLQueryItem(name: "toPlace", value: place(request.destination)),

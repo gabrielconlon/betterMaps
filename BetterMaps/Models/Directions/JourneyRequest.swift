@@ -4,8 +4,9 @@ import CoreLocation
 /// What the user asked for: where, when, and how they like to travel.
 ///
 /// The two overrides exist for the probes `DirectionsViewModel` runs beside
-/// the main query: a rail-only pass and a longer-walk pass. They replace the
-/// matching preference for one request without touching what the user set.
+/// the main query: a rail-only pass and a no-walk-limit pass per network.
+/// They replace the matching preference for one request without touching
+/// what the user set.
 struct JourneyRequest: Sendable {
     var origin: CLLocationCoordinate2D
     var destination: CLLocationCoordinate2D
@@ -16,7 +17,8 @@ struct JourneyRequest: Sendable {
     var preferences: DirectionsPreferencesSnapshot
     /// Networks to plan with instead of `preferences.allowedTransitModes`.
     var transitModesOverride: Set<TransitMode>? = nil
-    /// Walk limit to plan with instead of `preferences.walkToleranceMinutes`.
+    /// Walk limit to plan with instead of `preferences.walkToleranceMinutes`;
+    /// `DirectionsPreferencesSnapshot.noWalkLimit` (0) lifts the limit.
     var walkToleranceOverrideMinutes: Int? = nil
 
     init(origin: CLLocationCoordinate2D, destination: CLLocationCoordinate2D,
@@ -39,9 +41,15 @@ struct JourneyRequest: Sendable {
         transitModesOverride?.filter(\.isTransit) ?? preferences.allowedTransitModes
     }
 
-    /// The walk limit this request plans with, in minutes.
+    /// The walk limit this request plans with, in minutes; 0 means none.
     var effectiveWalkToleranceMinutes: Int {
         walkToleranceOverrideMinutes ?? preferences.walkToleranceMinutes
+    }
+
+    /// The walk limit this request plans with, in seconds; nil when there
+    /// is none.
+    var effectiveWalkToleranceSeconds: Int? {
+        DirectionsPreferencesSnapshot.walkSeconds(forMinutes: effectiveWalkToleranceMinutes)
     }
 }
 

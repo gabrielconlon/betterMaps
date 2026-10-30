@@ -66,7 +66,7 @@ struct ItineraryCard: View {
 }
 
 /// Why ranking placed an option where it did: "Rail" in the accent colour,
-/// anything else ("Fewer changes") in the quieter secondary tint.
+/// anything else ("Fastest by Bus", "Quiet roads") in the quieter secondary tint.
 struct ReasonChip: View {
     let reason: String
 

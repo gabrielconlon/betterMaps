@@ -12,13 +12,16 @@ import SwiftData
 /// first sync; `fetchOrCreate` collapses those to the newest.
 @Model
 final class DirectionsPreferences {
-    /// How far the user will walk to or from a stop, 5/10/15/20.
+    /// How far the user will walk to or from a stop: one of
+    /// `DirectionsPreferencesSnapshot.walkToleranceSteps`, where 0 means
+    /// no limit. Rows written before the longer steps existed hold 5–20,
+    /// which are still steps.
     var walkToleranceMinutes: Int = 10
     /// `TransitMode.rawValue`s the planner may use. Stored as strings so a
     /// future mode does not need a migration.
     var enabledModesRaw: [String] = ["bus", "luas", "dart", "rail"]
     /// Offer a cycle-the-whole-way option alongside transit.
-    var allowBikeDirect: Bool = true
+    var allowBikeDirect: Bool = false
     var maxTransfers: Int = 2
     /// Put a rail/DART option first when it exists and does not add more
     /// than `preferRailWalkCeilingMinutes` of walking.
@@ -95,8 +98,11 @@ final class DirectionsPreferences {
 /// Value copy of `DirectionsPreferences` for passing across actors and into
 /// `JourneyRequest`. The initializer clamps every field to its valid range.
 struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
-    /// The walk tolerances the UI offers; other values snap to the nearest.
-    static let walkToleranceSteps = [5, 10, 15, 20]
+    /// The walk tolerances the UI offers, in slider order; 0 is "no limit".
+    /// Other values snap to the nearest.
+    static let walkToleranceSteps = [5, 10, 15, 20, 30, 45, 0]
+    /// Marker value for "walk any distance".
+    static let noWalkLimit = 0
 
     let walkToleranceMinutes: Int
     let enabledModes: Set<TransitMode>
@@ -112,7 +118,7 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
     static let `default` = DirectionsPreferencesSnapshot(
         walkToleranceMinutes: 10,
         enabledModes: [.bus, .luas, .dart, .rail],
-        allowBikeDirect: true,
+        allowBikeDirect: false,
         maxTransfers: 2,
         preferRail: true,
         preferRailWalkCeilingMinutes: 20,
@@ -135,14 +141,39 @@ struct DirectionsPreferencesSnapshot: Sendable, Hashable, Codable {
         self.cyclingStyle = cyclingStyle
     }
 
-    /// Nearest of 5/10/15/20; an exact midpoint (7.5 cannot occur with Ints,
-    /// but 12 vs 13 can) rounds down to the smaller step.
+    /// Nearest of 5…45; 0 and anything over 45 mean no limit. An exact
+    /// midpoint (12 vs 13) rounds down to the smaller step.
     static func snapWalkTolerance(_ minutes: Int) -> Int {
-        var best = walkToleranceSteps[0]
-        for step in walkToleranceSteps where abs(step - minutes) < abs(best - minutes) {
+        let finite = walkToleranceSteps.filter { $0 != noWalkLimit }
+        guard minutes != noWalkLimit, minutes <= finite.max()! else { return noWalkLimit }
+        var best = finite[0]
+        for step in finite where abs(step - minutes) < abs(best - minutes) {
             best = step
         }
         return best
+    }
+
+    /// A walk limit in minutes as the planner and ranker take it: seconds,
+    /// or nil when `minutes` is `noWalkLimit`. The one place that
+    /// conversion lives.
+    static func walkSeconds(forMinutes minutes: Int) -> Int? {
+        minutes == noWalkLimit ? nil : minutes * 60
+    }
+
+    /// The walk limit in seconds; nil when there is none.
+    var walkToleranceSeconds: Int? {
+        Self.walkSeconds(forMinutes: walkToleranceMinutes)
+    }
+
+    /// "Walk up to 30 min" / "Walk any distance", for the slider and the
+    /// sheet's Options summary.
+    var walkToleranceLabel: String {
+        Self.walkToleranceLabel(forMinutes: walkToleranceMinutes)
+    }
+
+    /// `walkToleranceLabel` for a value the slider is still being dragged to.
+    static func walkToleranceLabel(forMinutes minutes: Int) -> String {
+        minutes == noWalkLimit ? "Walk any distance" : "Walk up to \(minutes) min"
     }
 
     /// `enabledModes` without walk/bike, which are never timetabled.
