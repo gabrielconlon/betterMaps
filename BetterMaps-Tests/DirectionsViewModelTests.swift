@@ -470,7 +470,8 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(provider.railProbes.count, 1)
         XCTAssertEqual(provider.railProbes.first?.transitModesOverride, [.luas, .dart, .rail])
         XCTAssertNil(provider.railProbes.first?.walkToleranceOverrideMinutes)
-        XCTAssertEqual(provider.familyProbes.map(\.transitModesOverride), [[.bus], [.luas], [.dart, .rail]])
+        // The probes run concurrently in a task group, so compare as a set.
+        XCTAssertEqual(Set(provider.familyProbes.compactMap(\.transitModesOverride)), [[.bus], [.luas], [.dart, .rail]])
         XCTAssertEqual(provider.familyProbes.first?.preferences.walkToleranceMinutes, 10, "preferences untouched")
         XCTAssertTrue(provider.familyProbes.allSatisfy { $0.effectiveWalkToleranceSeconds == nil })
     }
