@@ -22,6 +22,26 @@ struct RankingContext: Sendable {
     }
 }
 
+/// What ranking produced: the list in order, and which rows are there by
+/// guarantee (the first row, the rail pin, the fastest per enabled mode)
+/// rather than by score alone. The map previews those rows before one is
+/// picked, so the set is stated here instead of being read back out of
+/// each row's `reason` text.
+struct RankedItineraries: Equatable, Sendable {
+    var itineraries: [Itinerary]
+    var guaranteedIds: Set<Itinerary.ID>
+
+    init(itineraries: [Itinerary] = [], guaranteedIds: Set<Itinerary.ID> = []) {
+        self.itineraries = itineraries
+        self.guaranteedIds = guaranteedIds
+    }
+
+    /// The guaranteed rows, in list order.
+    var guaranteed: [Itinerary] {
+        itineraries.filter { guaranteedIds.contains($0.id) }
+    }
+}
+
 /// Orders a provider's itineraries for the directions sheet.
 enum RankingRules {
     static let railReason = "Rail"
@@ -56,14 +76,16 @@ enum RankingRules {
     /// Every other `reason` is cleared; this function owns the field. The one
     /// exception is a cycle-the-whole-way option, whose reason ("Quiet
     /// roads") comes from the cycling provider and is kept as given.
-    static func rank(_ itineraries: [Itinerary], context: RankingContext = RankingContext()) -> [Itinerary] {
-        // Decorate with the index so the sort is stable; `sorted` is not
-        // guaranteed to be.
-        typealias Entry = (offset: Int, itinerary: Itinerary)
-        let indexed: [Entry] = itineraries.enumerated().map { (offset: $0.offset, itinerary: $0.element) }
+    /// `guaranteedIds` names the first row, the rail pins and the fastest per
+    /// mode (the bike included, whatever its reason says).
+    static func rank(_ itineraries: [Itinerary], context: RankingContext = RankingContext()) -> RankedItineraries {
+        // Decorate with the index so the sort is stable (`sorted` is not
+        // guaranteed to be) and with the cost, worked out once per option.
+        let indexed: [Entry] = itineraries.enumerated().map {
+            Entry(offset: $0.offset, itinerary: $0.element, cost: cost($0.element, context: context))
+        }
         let byCost: (Entry, Entry) -> Bool = { lhs, rhs in
-            let lc = cost(lhs.itinerary, context: context), rc = cost(rhs.itinerary, context: context)
-            if lc != rc { return lc < rc }
+            if lhs.cost != rhs.cost { return lhs.cost < rhs.cost }
             return byDuration(lhs, rhs)
         }
 
@@ -95,7 +117,16 @@ enum RankingRules {
                 return true
             }
         }
-        return result
+        var guaranteed = Set(result.map(\.id)).filter { pinnedIds.contains($0) || fastestFor[$0] != nil }
+        if let first = result.first { guaranteed.insert(first.id) }
+        return RankedItineraries(itineraries: result, guaranteedIds: guaranteed)
+    }
+
+    /// One input option with its place in the input and its cost.
+    private struct Entry {
+        let offset: Int
+        let itinerary: Itinerary
+        let cost: Int
     }
 
     /// The chip for one row. The rail pin says "Rail"; a cycle keeps the
@@ -115,8 +146,7 @@ enum RankingRules {
         return itinerary.durationSeconds + 2 * max(0, itinerary.walkSeconds - limit)
     }
 
-    private static func byDuration(_ lhs: (offset: Int, itinerary: Itinerary),
-                                   _ rhs: (offset: Int, itinerary: Itinerary)) -> Bool {
+    private static func byDuration(_ lhs: Entry, _ rhs: Entry) -> Bool {
         if lhs.itinerary.durationSeconds != rhs.itinerary.durationSeconds {
             return lhs.itinerary.durationSeconds < rhs.itinerary.durationSeconds
         }

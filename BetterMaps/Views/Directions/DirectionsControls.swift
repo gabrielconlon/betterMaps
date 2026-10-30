@@ -9,34 +9,60 @@ struct DirectionsTripControls: View {
     let prefs: DirectionsPreferencesSnapshot
     let onChange: (DirectionsPreferencesSnapshot) -> Void
 
+    /// Where the thumb is while dragging. The label follows it live; the
+    /// preference (and the re-plan behind it) is written once, on release.
+    @State private var walkIndex: Double
+
     private static var modes: [TransitMode] { DirectionsControlsOrder.modes }
     private static let steps = DirectionsPreferencesSnapshot.walkToleranceSteps
+
+    init(prefs: DirectionsPreferencesSnapshot, onChange: @escaping (DirectionsPreferencesSnapshot) -> Void) {
+        self.prefs = prefs
+        self.onChange = onChange
+        _walkIndex = State(initialValue: Self.index(of: prefs.walkToleranceMinutes))
+    }
+
+    private static func index(of minutes: Int) -> Double {
+        Double(steps.firstIndex(of: minutes) ?? 1)
+    }
+
+    /// The minutes the thumb points at.
+    private var draggedMinutes: Int {
+        Self.steps[min(max(Int(walkIndex.rounded()), 0), Self.steps.count - 1)]
+    }
+
+    private var walkLabel: String {
+        DirectionsPreferencesSnapshot.walkToleranceLabel(forMinutes: draggedMinutes)
+    }
 
     var body: some View {
         Group {
             VStack(alignment: .leading, spacing: 2) {
-                Text(prefs.walkToleranceLabel)
+                Text(walkLabel)
                     .font(.subheadline)
-                Slider(value: Binding(
-                    get: { Double(Self.steps.firstIndex(of: prefs.walkToleranceMinutes) ?? 1) },
-                    set: { value in
-                        let index = min(max(Int(value.rounded()), 0), Self.steps.count - 1)
-                        let minutes = Self.steps[index]
-                        if minutes != prefs.walkToleranceMinutes {
-                            onChange(prefs.replacing(walkToleranceMinutes: minutes))
-                        }
-                    }
-                ), in: 0...Double(Self.steps.count - 1), step: 1) {
+                Slider(value: $walkIndex, in: 0...Double(Self.steps.count - 1), step: 1) {
                     Text("Walking")
                 } minimumValueLabel: {
                     Text("5 min").font(.caption).foregroundStyle(.secondary)
                 } maximumValueLabel: {
                     Text("Any").font(.caption).foregroundStyle(.secondary)
+                } onEditingChanged: { editing in
+                    guard !editing else { return }
+                    let minutes = draggedMinutes
+                    if minutes != prefs.walkToleranceMinutes {
+                        onChange(prefs.replacing(walkToleranceMinutes: minutes))
+                    }
                 }
                 .frame(minHeight: 44)
                 .accessibilityLabel("Walking")
-                .accessibilityValue(prefs.walkToleranceLabel)
+                .accessibilityValue(walkLabel)
                 .accessibilityIdentifier("directions.walkSlider")
+                // Settings, another device or a "walk any distance" button
+                // moved the limit: the thumb follows.
+                .onChange(of: prefs.walkToleranceMinutes) { _, minutes in
+                    let index = Self.index(of: minutes)
+                    if index != walkIndex { walkIndex = index }
+                }
             }
             .padding(.vertical, 4)
 
