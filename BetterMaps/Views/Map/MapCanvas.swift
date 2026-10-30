@@ -73,7 +73,12 @@ struct MapCanvas: View {
                                         mapHeading: mapHeading,
                                         onTapStop: onTapStop)
                     if let legs = shown.itineraryLegs {
-                        ItineraryLayerContent(legs: legs)
+                        ItineraryLayerContent(legs: legs, showsEndMarker: shown.directionsEndpoints == nil)
+                    } else if let previews = shown.previewLegs {
+                        DirectionsPreviewContent(itineraries: previews)
+                    }
+                    if let endpoints = shown.directionsEndpoints {
+                        DirectionsEndpointsContent(endpoints: endpoints)
                     }
                     if let droppedPin {
                         Annotation("Dropped Pin", coordinate: droppedPin, anchor: .bottom) {
@@ -186,6 +191,10 @@ struct MapCanvasContent {
     var highlightedRoute: [[CLLocationCoordinate2D]]?
     /// The picked directions option, one entry per leg.
     var itineraryLegs: [Leg]?
+    /// The options previewed before one is picked; nil when there are none.
+    var previewLegs: [[Leg]]?
+    /// The search's start and end pins.
+    var directionsEndpoints: DirectionsEndpoints?
     var zoomBucket = TransitZoomBucket(latitudeDelta: 0.2)
 
     @MainActor
@@ -198,6 +207,8 @@ struct MapCanvasContent {
         lines = transit.visibleLines
         highlightedRoute = transit.highlightedRoute
         itineraryLegs = transit.drawnItinerary
+        previewLegs = transit.previewItineraries.isEmpty ? nil : transit.previewItineraries
+        directionsEndpoints = transit.directionsEndpoints
         zoomBucket = transit.zoomBucket
     }
 }

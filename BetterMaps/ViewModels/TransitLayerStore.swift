@@ -110,6 +110,11 @@ final class TransitLayerStore {
     private(set) var drawnItinerary: [Leg]?
     /// Chip text for the drawn itinerary (the destination name).
     private(set) var drawnItineraryLabel: String?
+    /// The fastest option per network, drawn faintly while nothing is
+    /// picked; empty once an option is drawn or the search is cleared.
+    private(set) var previewItineraries: [[Leg]] = []
+    /// Where the current search starts and ends, for the map's pins.
+    private(set) var directionsEndpoints: DirectionsEndpoints?
 
     @ObservationIgnored private(set) var grid = TransitSpatialGrid(stops: [])
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -289,6 +294,7 @@ final class TransitLayerStore {
             drawnItinerary = nil
             drawnItineraryLabel = nil
         }
+        previewItineraries = []
         highlightedRouteId = routeId
         highlightedRouteLabel = label
         highlightedRoute = nil
@@ -339,13 +345,53 @@ final class TransitLayerStore {
         }
         drawnItinerary = legs
         drawnItineraryLabel = label
+        previewItineraries = []
         version &+= 1
     }
 
     func clearDrawnItinerary() {
-        guard drawnItinerary != nil || drawnItineraryLabel != nil else { return }
+        guard drawnItinerary != nil || drawnItineraryLabel != nil || !previewItineraries.isEmpty else { return }
         drawnItinerary = nil
         drawnItineraryLabel = nil
+        previewItineraries = []
         version &+= 1
+    }
+
+    // MARK: - Directions previews and pins
+
+    /// Faint polylines for the options worth a glance before picking one.
+    /// Ignored while an option is drawn: the picked journey is the map's
+    /// one story then.
+    func setPreviews(_ itineraries: [[Leg]]) {
+        guard drawnItinerary == nil else { return }
+        guard itineraries != previewItineraries else { return }
+        previewItineraries = itineraries
+        version &+= 1
+    }
+
+    func setDirectionsEndpoints(_ endpoints: DirectionsEndpoints) {
+        guard endpoints != directionsEndpoints else { return }
+        directionsEndpoints = endpoints
+        version &+= 1
+    }
+
+    func clearDirectionsEndpoints() {
+        guard directionsEndpoints != nil else { return }
+        directionsEndpoints = nil
+        version &+= 1
+    }
+}
+
+/// Start and end of the search on the map. `origin` is nil when the
+/// journey starts at the user's location, which the map already marks.
+struct DirectionsEndpoints: Equatable, Sendable {
+    var origin: CLLocationCoordinate2D?
+    var destination: CLLocationCoordinate2D
+
+    static func == (lhs: DirectionsEndpoints, rhs: DirectionsEndpoints) -> Bool {
+        lhs.destination.latitude == rhs.destination.latitude
+            && lhs.destination.longitude == rhs.destination.longitude
+            && lhs.origin?.latitude == rhs.origin?.latitude
+            && lhs.origin?.longitude == rhs.origin?.longitude
     }
 }
