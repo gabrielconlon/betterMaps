@@ -536,15 +536,17 @@ struct MapScreen: View {
     private var routeChip: HighlightedRouteChip? {
         if directionsDrawn {
             guard directionsDestination == nil else { return nil }
-            let name = directions.destination?.name
+            let name: String? = directions.destination?.name
+            let onOpen: (() -> Void)? = directions.destination == nil ? nil : { reopenDirections() }
+            let openLabel = "Show directions to \(name ?? "destination")"
             return HighlightedRouteChip(label: name ?? "Directions",
                                         onClear: { directions.chipCleared() },
                                         systemImage: "arrow.triangle.turn.up.right.diamond.fill",
                                         tint: .accentColor,
                                         prefix: nil,
                                         accessibilityIdentifier: "directions.clear",
-                                        onOpen: directions.destination == nil ? nil : reopenDirections,
-                                        openAccessibilityLabel: "Show directions to \(name ?? "destination")")
+                                        onOpen: onOpen,
+                                        openAccessibilityLabel: openLabel)
         }
         guard transitStore.highlightedRouteId != nil else { return nil }
         return HighlightedRouteChip(label: transitStore.highlightedRouteLabel,
