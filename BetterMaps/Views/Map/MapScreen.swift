@@ -85,6 +85,9 @@ struct MapScreen: View {
     /// peek height so the drawn journey shows.
     @State private var directionsDetent: PresentationDetent = .medium
     static let directionsPeek: PresentationDetent = .fraction(0.3)
+    /// Set by the map's Directions chip so the sheet reopens on the search
+    /// already drawn instead of starting it over (`DirectionsViewModel.resume`).
+    @State private var resumingDirections = false
 
     private static var initialDetent: SheetDetent {
         #if DEBUG
@@ -306,10 +309,29 @@ struct MapScreen: View {
                 if directions.isPresented { directions.sheetDismissed() }
                 return
             }
-            directionsDetent = .medium
             directions.attach(context: modelContext)
             directions.isPresented = true
-            directions.start(destination: destination, userLocation: directionsOrigin)
+            if resumingDirections, destination == directions.destination {
+                directionsDetent = directions.selectedId == nil ? .medium : Self.directionsPeek
+                directions.resume()
+            } else {
+                directionsDetent = .medium
+                directions.start(destination: destination, userLocation: directionsOrigin)
+            }
+            resumingDirections = false
+            fitDirectionsOnMap()
+        }
+        // Frame the journey whenever there is something new to frame: the
+        // ends (opening, or an edited start or destination), the previews
+        // arriving, or an option being picked.
+        .onChange(of: transitStore.directionsEndpoints) { _, endpoints in
+            if endpoints != nil { fitDirectionsOnMap() }
+        }
+        .onChange(of: transitStore.previewItineraries.isEmpty) { _, isEmpty in
+            if !isEmpty { fitDirectionsOnMap() }
+        }
+        .onChange(of: transitStore.drawnItinerary != nil) { _, isDrawn in
+            if isDrawn { fitDirectionsOnMap() }
         }
         .onChange(of: snapshotTrigger, initial: true) { _, _ in rebuildSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
@@ -506,19 +528,64 @@ struct MapScreen: View {
     /// A picked journey, the search's previews or its pins are on the map.
     private var directionsDrawn: Bool { transitStore.hasDirectionsContent }
 
+    /// The directions chip only shows once the card is away, while the
+    /// journey stays on the map: with the card up it duplicated the card's
+    /// own ✕ and its clear did nothing visible while only previews were
+    /// drawn (Gabe, 2026-10-31). Its label brings the card back; its ✕
+    /// clears the map.
     private var routeChip: HighlightedRouteChip? {
         if directionsDrawn {
-            let label = transitStore.drawnItinerary != nil ? directions.drawnLabel : nil
-            return HighlightedRouteChip(label: label ?? "Directions",
+            guard directionsDestination == nil else { return nil }
+            let name = directions.destination?.name
+            return HighlightedRouteChip(label: name ?? "Directions",
                                         onClear: { directions.chipCleared() },
                                         systemImage: "arrow.triangle.turn.up.right.diamond.fill",
                                         tint: .accentColor,
                                         prefix: nil,
-                                        accessibilityIdentifier: "directions.clear")
+                                        accessibilityIdentifier: "directions.clear",
+                                        onOpen: directions.destination == nil ? nil : reopenDirections,
+                                        openAccessibilityLabel: "Show directions to \(name ?? "destination")")
         }
         guard transitStore.highlightedRouteId != nil else { return nil }
         return HighlightedRouteChip(label: transitStore.highlightedRouteLabel,
                                     onClear: { transitStore.clearHighlightedRoute() })
+    }
+
+    /// The chip's label: the card comes back on the search the map shows.
+    private func reopenDirections() {
+        guard let destination = directions.destination else { return }
+        resumingDirections = true
+        viewModel.showDirections(to: destination)
+    }
+
+    /// Moves the camera so both ends of the journey, and the routes drawn
+    /// for it, sit in the map the directions card leaves uncovered.
+    private func fitDirectionsOnMap() {
+        var coordinates: [CLLocationCoordinate2D] = []
+        let legs = transitStore.drawnItinerary.map { [$0] } ?? transitStore.previewItineraries
+        for itinerary in legs {
+            for leg in itinerary { coordinates.append(contentsOf: leg.coordinates) }
+        }
+        if let origin = directions.origin?.coordinate { coordinates.append(origin) }
+        if let destination = directions.destination?.coordinate { coordinates.append(destination) }
+
+        let size = store.mapSize
+        #if targetEnvironment(macCatalyst)
+        let covered: CGFloat = 0
+        #else
+        // A picked option drops the card to its peek; otherwise it sits at
+        // medium (about half the screen). At large the map is hidden anyway,
+        // so frame for medium, where it lands next.
+        let covered: CGFloat = transitStore.drawnItinerary != nil || directionsDetent == Self.directionsPeek
+            ? 0.3 : 0.5
+        #endif
+        // The top clears the Layers / locate buttons and the route chip.
+        let insets = DirectionsCamera.Insets(top: 110, leading: 32,
+                                             bottom: size.height * covered + 24, trailing: 32)
+        guard let rect = DirectionsCamera.rect(fitting: coordinates, mapSize: size, insets: insets) else { return }
+        withAnimation(.easeInOut(duration: 0.45)) {
+            cameraPosition = .rect(rect)
+        }
     }
 
     /// Where a journey starts: the user's location when known. Under the

@@ -449,6 +449,33 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(model.itineraries.map(\.id), ["a"], "the list is kept for a reopen")
     }
 
+    func testResumeKeepsAPickedStartAndTheDrawnOption() async {
+        let provider = FakeJourneyProvider()
+        let a = makeItinerary("a")
+        provider.result = .success([a])
+        let store = TransitLayerStore()
+        let model = makeModel(provider, store: store)
+        model.isPresented = true
+        model.scheduleQuery(immediate: true)
+        await settle()
+        model.select(a)
+        model.sheetDismissed()
+        let plannedBefore = provider.baseRequests.count
+
+        // The map's Directions chip brings the card back on the same search,
+        // even with a location fix that `start` would have made the origin.
+        model.userLocation = CLLocationCoordinate2D(latitude: 53.35, longitude: -6.26)
+        model.isPresented = true
+        model.resume()
+        XCTAssertEqual(model.origin, heuston, "the picked start is kept")
+        XCTAssertEqual(model.destination, dunLaoghaire)
+        await settle()
+        XCTAssertEqual(model.selectedId, "a", "the drawn option is kept")
+        XCTAssertNotNil(store.drawnItinerary)
+        XCTAssertEqual(model.phase, .results)
+        XCTAssertGreaterThan(provider.baseRequests.count, plannedBefore, "and it re-plans")
+    }
+
     func testSelectionSurvivesRequeryWhenStillOffered() async {
         let provider = FakeJourneyProvider()
         let a = makeItinerary("a"), b = makeItinerary("b", minutes: 40)

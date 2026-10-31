@@ -166,6 +166,16 @@ final class DirectionsViewModel {
         scheduleQuery(immediate: true)
     }
 
+    /// Reopens the sheet on the search already on the map (the map's
+    /// Directions chip). Unlike `start`, nothing about the journey changes:
+    /// a picked starting point stays picked, as does the drawn option and a
+    /// chosen time, and a "leave now" search re-plans from now.
+    func resume() {
+        if departNow { time = Date() }
+        resetRainState()
+        scheduleQuery(immediate: true)
+    }
+
     func setOrigin(_ endpoint: DirectionsEndpoint) {
         if endpoint != origin {
             origin = endpoint
