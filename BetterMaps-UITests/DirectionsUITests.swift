@@ -43,8 +43,11 @@ final class DirectionsUITests: XCTestCase {
         XCTAssertTrue(first.waitForExistence(timeout: 10), "first itinerary card missing")
         first.tap()
 
-        XCTAssertTrue(app.buttons["directions.clear"].waitForExistence(timeout: 6),
-                      "clear-directions chip missing after picking an option")
-        XCTAssertTrue(app.descendants(matching: .any)["directions.timeline"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["directions.timeline"].waitForExistence(timeout: 6),
+                      "picked option's timeline missing")
+        // The map's Directions chip stands in for the card only once the
+        // card is away; with it up, the card's own close button is the one.
+        XCTAssertFalse(app.buttons["directions.clear"].exists,
+                       "directions chip should hide while the card is up")
     }
 }

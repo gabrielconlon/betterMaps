@@ -227,6 +227,44 @@ enum TransitColors {
         }
     }
 
+    // MARK: Directions on the map
+
+    /// Map strokes for directions: deeper versions of the network hues. The
+    /// pastel pins and network lines are background on purpose, which made a
+    /// journey drawn in them hard to pick out over the street grid (Gabe,
+    /// 2026-10-31). A route is the foreground story, so it takes the same
+    /// hue at full strength, over a casing (`routeCasing`).
+    static func routeLeg(for leg: Leg) -> Color {
+        switch leg.mode {
+        case .walk: return routeWalk
+        case .bike: return Color(red: 0.13, green: 0.55, blue: 0.30)
+        case .luas:
+            return leg.routeShortName?.lowercased() == "red"
+                ? Color(red: 0.86, green: 0.20, blue: 0.22)
+                : Color(red: 0.10, green: 0.60, blue: 0.33)
+        case .dart: return Color(red: 0.93, green: 0.47, blue: 0.08)
+        case .rail: return Color(red: 0.53, green: 0.29, blue: 0.80)
+        case .bus: return Color(red: 0.15, green: 0.42, blue: 0.92)
+        }
+    }
+
+    /// Walking legs on the map: dark slate on a light map, light grey on a
+    /// dark one. `systemGray` vanished into the grey road casing.
+    static let routeWalk = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.85, alpha: 1)
+            : UIColor(red: 0.30, green: 0.33, blue: 0.38, alpha: 1)
+    })
+
+    /// Wider stroke drawn under every directions leg so it stands off the
+    /// streets and transit lines it runs along: white on a light map, near
+    /// black on a dark one.
+    static let routeCasing = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.08, alpha: 0.9)
+            : UIColor(white: 1.0, alpha: 0.95)
+    })
+
     /// Luas Red line — pastel coral with the same .opacity treatment as the
     /// other network lines so all four (LuasRed/LuasGreen/DART/Rail) read
     /// as a coherent overlay set.

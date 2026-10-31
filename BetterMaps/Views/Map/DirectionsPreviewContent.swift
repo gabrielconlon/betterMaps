@@ -1,24 +1,41 @@
 import SwiftUI
 import MapKit
 
-/// The fastest option per network, drawn faintly so the user can compare
-/// where each one goes before picking. Thinner and paler than the picked
-/// journey (`ItineraryLayerContent`), which replaces these once chosen.
+/// The fastest option per network, drawn so the user can compare where each
+/// one goes before picking. A little thinner than the picked journey
+/// (`ItineraryLayerContent`), which replaces these once chosen, but in the
+/// same deep route colours over a casing: the first cut (3 pt, pastel, 55 %)
+/// was close to invisible on the street grid. All casings go down before any
+/// colour so one option's casing never cuts across another's line.
 /// Draws only from the value snapshot the canvas already holds.
 struct DirectionsPreviewContent: MapContent {
     let itineraries: [[Leg]]
 
-    private static let style = StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
-    private static let opacity = 0.55
+    private static let style = StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round)
+    private static let casing = StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round)
+    private static let opacity = 0.85
+
+    /// A leg tagged with its option's index: two options can share a leg id.
+    private struct PreviewLeg: Identifiable {
+        let id: String
+        let leg: Leg
+    }
+
+    private var legs: [PreviewLeg] {
+        itineraries.enumerated().flatMap { index, legs in
+            legs.filter { $0.coordinates.count > 1 }
+                .map { PreviewLeg(id: "\(index)-\($0.id)", leg: $0) }
+        }
+    }
 
     var body: some MapContent {
-        ForEach(Array(itineraries.enumerated()), id: \.offset) { _, legs in
-            ForEach(legs) { leg in
-                if leg.coordinates.count > 1 {
-                    MapPolyline(coordinates: leg.coordinates)
-                        .stroke(TransitColors.leg(for: leg).opacity(Self.opacity), style: Self.style)
-                }
-            }
+        ForEach(legs) { item in
+            MapPolyline(coordinates: item.leg.coordinates)
+                .stroke(TransitColors.routeCasing, style: Self.casing)
+        }
+        ForEach(legs) { item in
+            MapPolyline(coordinates: item.leg.coordinates)
+                .stroke(TransitColors.routeLeg(for: item.leg).opacity(Self.opacity), style: Self.style)
         }
     }
 }
