@@ -187,13 +187,12 @@ struct LayersPanel: View {
                         if !pinnedTags.isEmpty { subHeader("All tags") }
                         ForEach(otherTags) { tag in tagRow(tag) }
                     }
-                    if tagFilter.hasSelection {
-                        Text(matchSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                            .padding(.top, 4)
-                    }
+                    Text(tagFilter.hasSelection ? matchSummary : "All places shown. Tap a tag to show only its places.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
                 }
                 .opacity(settings.showPlaces ? 1 : 0.5)
             }
@@ -225,10 +224,16 @@ struct LayersPanel: View {
             .onChange(of: tagFilter.match) { _, _ in onFilterChanged() }
             Spacer(minLength: 0)
             if tagFilter.hasSelection {
-                Button("Clear") { tagFilter.clear() }
-                    .font(.caption.weight(.semibold))
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityLabel("Clear tag selection")
+                // Not "Clear": an empty selection shows every place, so the
+                // button's name says what the map will do.
+                Button("Show all") {
+                    tagFilter.clear()
+                    onFilterChanged()
+                }
+                .font(.caption.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Show all places")
+                .accessibilityHint("Clears the tag selection")
             }
         }
         .frame(minHeight: 44)
@@ -253,6 +258,12 @@ struct LayersPanel: View {
     private func tagRow(_ tag: LayerLite) -> some View {
         let color = Color(hex: tag.colorHex) ?? .red
         let selected = tagFilter.isSelected(tag.id)
+        // With nothing selected the map shows every place, so every row
+        // reads as on (a softer check) rather than as an empty circle. An
+        // empty circle beside a tag whose places are all on the map is the
+        // mismatch this replaces.
+        let showingAll = !tagFilter.hasSelection
+        let checked = selected || showingAll
         return HStack(spacing: 0) {
             Button {
                 tagFilter.toggle(tag.id)
@@ -269,9 +280,10 @@ struct LayersPanel: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 4)
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    Image(systemName: checked ? "checkmark.circle.fill" : "circle")
                         .font(.body)
-                        .foregroundStyle(selected ? color : Color.secondary)
+                        .foregroundStyle(checked ? color : Color.secondary)
+                        .opacity(showingAll ? 0.45 : 1)
                         .accessibilityHidden(true)
                 }
                 .frame(minHeight: 44)
@@ -280,8 +292,9 @@ struct LayersPanel: View {
             .buttonStyle(.plain)
             .sensoryFeedback(.selection, trigger: selected)
             .accessibilityLabel(tag.name)
-            .accessibilityValue(selected ? "Selected" : "Not selected")
-            .accessibilityHint(selected ? "Removes this tag from the filter" : "Filters the map by this tag")
+            .accessibilityValue(showingAll ? "Shown, no filter" : (selected ? "Selected" : "Not selected"))
+            .accessibilityHint(showingAll ? "Shows only this tag's places"
+                               : (selected ? "Removes this tag from the filter" : "Adds this tag to the filter"))
             .accessibilityAddTraits(selected ? .isSelected : [])
 
             starButton(for: tag)
