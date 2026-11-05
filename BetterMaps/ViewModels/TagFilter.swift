@@ -2,8 +2,8 @@ import Foundation
 import Observation
 
 /// The tag selection that filters saved places: which tags are picked and
-/// whether a place needs any or all of them. An empty selection shows every
-/// place.
+/// whether a place needs any or all of them. A selected tag is a layer that
+/// is on; an empty selection shows no tagged place.
 ///
 /// Persisted in UserDefaults:
 /// - `tagFilterIds`: JSON array of uuid strings.
@@ -62,9 +62,10 @@ final class TagFilter {
     /// One-time upgrade from per-layer visibility to a tag selection.
     ///
     /// - The selection becomes the tags that were visible, so the same places
-    ///   show. If every tag or none was visible, the selection is empty
-    ///   (show all).
+    ///   show. If none was visible, the selection is empty (layers off).
     /// - Match is `.all` when the old mode was "All Layers", else `.any`.
+    ///   Every tag visible used to show every place whatever the mode, so
+    ///   that case selects every tag with `.any`.
     /// - The old key is removed and a flag stops it running again.
     ///
     /// Waits (does nothing) until at least one tag exists, so a store still
@@ -75,8 +76,9 @@ final class TagFilter {
         guard !placeTags.isEmpty else { return }
 
         let visible = Set(placeTags.filter(\.isVisible).map(\.id))
-        selectedTagIds = visible.count == placeTags.count ? [] : visible
-        match = defaults.string(forKey: Self.legacyModeKey) == Self.legacyAllValue ? .all : .any
+        let everyTagVisible = visible.count == placeTags.count
+        selectedTagIds = visible
+        match = !everyTagVisible && defaults.string(forKey: Self.legacyModeKey) == Self.legacyAllValue ? .all : .any
         defaults.removeObject(forKey: Self.legacyModeKey)
         defaults.set(true, forKey: Self.migratedKey)
     }

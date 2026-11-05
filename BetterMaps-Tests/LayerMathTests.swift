@@ -41,17 +41,26 @@ final class LayerMathTests: XCTestCase {
 
     // MARK: - Empty selection
 
-    func testEmptySelectionShowsEveryPlaceIncludingUntaggedAndHiddenTags() {
+    func testEmptySelectionShowsNoTaggedPlaceOnlyUntagged() {
         let inBrunch = place("brunch", in: [brunch.id])
         let inOldHidden = place("old hidden", in: [oldHidden.id])
         let untagged = place("untagged", in: [])
         let both = place("both", in: [favorites.id, brunch.id])
 
         let out = LayerMath.filter([inBrunch, inOldHidden, untagged, both], layers: layers, filter: filter())
-        XCTAssertEqual(out.map(\.id), [inBrunch.id, inOldHidden.id, untagged.id, both.id],
-                       "order preserved; a tag's isVisible no longer filters")
-        XCTAssertEqual(out.map(\.matchCount), [0, 0, 0, 0], "matchCount counts selected tags only")
+        XCTAssertEqual(out.map(\.id), [untagged.id], "no tag is on, so no tagged place shows")
+        XCTAssertEqual(out.map(\.matchCount), [0])
         XCTAssertFalse(out.contains(where: \.showsOverlap))
+    }
+
+    func testEveryTagSelectedShowsEveryTaggedPlace() {
+        let inBrunch = place("brunch", in: [brunch.id])
+        let inOldHidden = place("old hidden", in: [oldHidden.id])
+        let both = place("both", in: [favorites.id, brunch.id])
+        let out = LayerMath.filter([inBrunch, inOldHidden, both], layers: layers,
+                                   filter: filter(Array(LayerMath.tagIds(layers)), .any))
+        XCTAssertEqual(out.map(\.id), [inBrunch.id, inOldHidden.id, both.id],
+                       "order preserved; a tag's isVisible no longer filters")
     }
 
     // MARK: - Any / All
@@ -92,7 +101,7 @@ final class LayerMathTests: XCTestCase {
         let untagged = place("u", in: [])
         let stale = UUID()
         let out = LayerMath.filter([a, untagged], layers: layers, filter: filter([stale], .all))
-        XCTAssertEqual(out.map(\.id), [a.id, untagged.id], "a selection of only deleted tags shows everything")
+        XCTAssertEqual(out.map(\.id), [untagged.id], "a selection of only deleted tags is no tag on")
         let mixed = LayerMath.filter([a, untagged], layers: layers, filter: filter([stale, brunch.id], .all))
         XCTAssertEqual(mixed.map(\.id), [a.id], "a deleted id never makes All impossible")
     }
@@ -112,8 +121,8 @@ final class LayerMathTests: XCTestCase {
         XCTAssertEqual(all.first?.matchCount, 2)
         XCTAssertEqual(all.first?.showsOverlap, false, "every place matches every tag in All: no ring")
 
-        let none = LayerMath.filter([shared], layers: layers, filter: filter())
-        XCTAssertEqual(none.first?.showsOverlap, false, "no selection: no ring")
+        let one = LayerMath.filter([shared], layers: layers, filter: filter([brunch.id], .any))
+        XCTAssertEqual(one.first?.showsOverlap, false, "one selected tag: no ring")
     }
 
     // MARK: - Pin tag
@@ -127,9 +136,8 @@ final class LayerMathTests: XCTestCase {
 
     func testPinWithNoSelectionIsLowestSortOrderTag() {
         let p = place("p", in: [coffee.id, favorites.id, trail.id])
-        let out = LayerMath.filter([p], layers: layers, filter: filter())
-        XCTAssertEqual(out.first?.pinLayerId, favorites.id, "a tag wins over a trail group")
-        XCTAssertEqual(LayerMath.pinTag(for: p, layers: layers, filter: filter()), favorites.id)
+        XCTAssertEqual(LayerMath.pinTag(for: p, layers: layers, filter: filter()), favorites.id,
+                       "a tag wins over a trail group")
     }
 
     func testPinOfUntaggedPlaceIsNil() {
@@ -148,7 +156,7 @@ final class LayerMathTests: XCTestCase {
     func testShowTrailsOffHidesTrailOnlyEndpointsButNotTaggedOnes() {
         let end = place("end", in: [trail.id], endpoint: true)
         let taggedEnd = place("tagged end", in: [trail.id, brunch.id], endpoint: true)
-        let out = LayerMath.filter([end, taggedEnd], layers: layers, filter: filter(showTrails: false))
+        let out = LayerMath.filter([end, taggedEnd], layers: layers, filter: filter([brunch.id], showTrails: false))
         XCTAssertEqual(out.map(\.id), [taggedEnd.id])
     }
 
@@ -187,8 +195,8 @@ final class LayerMathTests: XCTestCase {
             place("untagged", in: []),
             place("end", in: [trail.id], endpoint: true),
         ]
-        XCTAssertEqual(LayerMath.matchingPlaceCount(places, layers: layers, filter: filter()), 3,
-                       "no selection: every saved place, never trail points")
+        XCTAssertEqual(LayerMath.matchingPlaceCount(places, layers: layers, filter: filter()), 1,
+                       "no selection: only the untagged place, never trail points")
         XCTAssertEqual(LayerMath.matchingPlaceCount(places, layers: layers,
                                                     filter: filter([brunch.id, favorites.id], .any)), 2)
         XCTAssertEqual(LayerMath.matchingPlaceCount(places, layers: layers,

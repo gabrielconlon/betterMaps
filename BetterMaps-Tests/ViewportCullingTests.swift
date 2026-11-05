@@ -22,9 +22,12 @@ final class ViewportCullingTests: XCTestCase {
         PlaceLite(id: UUID(), name: name, latitude: lat, longitude: lon, layerIds: layerIds)
     }
 
-    func cull(_ places: [PlaceLite], trails: [TrailLite] = [], filter: PlaceFilter = .showAll,
+    /// Both tags on, so culling tests see every tagged place.
+    var allTags: PlaceFilter { PlaceFilter(tagIds: [brunch.id, favorites.id], match: .any) }
+
+    func cull(_ places: [PlaceLite], trails: [TrailLite] = [], filter: PlaceFilter? = nil,
               viewport: GeoBox, size: CGSize = CGSize(width: 390, height: 844)) -> CullOutput {
-        MapContentStore.cull(places: places, layers: layers, trails: trails, filter: filter,
+        MapContentStore.cull(places: places, layers: layers, trails: trails, filter: filter ?? allTags,
                              viewport: viewport, mapWidth: size.width, mapHeight: size.height)
     }
 
@@ -56,7 +59,7 @@ final class ViewportCullingTests: XCTestCase {
         XCTAssertEqual(cull([b, f], filter: onlyBrunch, viewport: cityViewport).places.map(\.id), [b.id])
         XCTAssertEqual(cull([b, f], filter: onlyBrunch, viewport: cityViewport).matchingPlaceCount, 1)
 
-        var off = PlaceFilter.showAll
+        var off = allTags
         off.showPlaces = false
         let hidden = cull([b, f], filter: off, viewport: cityViewport)
         XCTAssertTrue(hidden.places.isEmpty)
@@ -121,7 +124,7 @@ final class ViewportCullingTests: XCTestCase {
         let out = cull([], trails: [crossing, touching, far, hidden], viewport: launchViewport)
         XCTAssertEqual(Set(out.trails.map(\.id)), [crossing.id, touching.id])
 
-        var noTrails = PlaceFilter.showAll
+        var noTrails = allTags
         noTrails.showTrails = false
         XCTAssertTrue(cull([], trails: [crossing, touching], filter: noTrails, viewport: launchViewport).trails.isEmpty,
                       "the Trails switch hides every trail")
