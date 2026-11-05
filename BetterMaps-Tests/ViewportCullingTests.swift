@@ -169,6 +169,7 @@ final class ViewportCullingTests: XCTestCase {
             center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
             span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
         store.mapSize = CGSize(width: 390, height: 844)
+        store.filter = allTags  // the store starts with every tag off
         let b = place("b", lat: 53.35, lon: -6.26, in: [brunch.id])
         let f = place("f", lat: 53.3501, lon: -6.2601, in: [favorites.id])
         store.update(places: [b, f], layers: layers, trails: [])
@@ -198,6 +199,7 @@ final class ViewportCullingTests: XCTestCase {
             center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
             span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
         store.mapSize = CGSize(width: 390, height: 844)
+        store.filter = allTags  // the store starts with every tag off
         let places = [place("p", lat: 53.35, lon: -6.26, in: [brunch.id])]
         store.update(places: places, layers: layers, trails: [])
         try await Task.sleep(for: .milliseconds(400))
