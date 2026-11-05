@@ -167,7 +167,7 @@ final class MapContentStore {
     @ObservationIgnored var region: MKCoordinateRegion {
         didSet { scheduleRecompute() }
     }
-    @ObservationIgnored var filter: PlaceFilter = .showAll {
+    @ObservationIgnored var filter: PlaceFilter = .noTags {
         didSet { if filter != oldValue { scheduleRecompute() } }
     }
     @ObservationIgnored var mapSize: CGSize = .zero {

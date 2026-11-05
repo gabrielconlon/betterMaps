@@ -81,7 +81,8 @@ enum TagMatch: String, CaseIterable, Identifiable, Sendable {
 /// Everything that decides which saved places and trails are drawn: the tag
 /// selection and the two always-available layer switches.
 struct PlaceFilter: Sendable, Equatable {
-    /// Selected tag ids (place-kind layers). Empty shows every place.
+    /// Selected tag ids (place-kind layers): the tags that are on. Empty
+    /// shows no tagged place, only untagged ones.
     var tagIds: Set<UUID> = []
     var match: TagMatch = .any
     /// The Places layer. Off hides every place pin, trail endpoints included.
@@ -89,7 +90,8 @@ struct PlaceFilter: Sendable, Equatable {
     /// The Trails layer. Off hides every trail and its endpoints.
     var showTrails = true
 
-    static let showAll = PlaceFilter()
+    /// No tags on: the default, and what a fresh install starts with.
+    static let noTags = PlaceFilter()
 }
 
 /// A place that passed the filter, annotated with how many selected tags it
@@ -156,7 +158,9 @@ enum LayerMath {
     /// Applies the tag filter and the layer switches.
     ///
     /// - Places layer off: nothing is returned.
-    /// - No tags selected: every place shows, untagged ones included.
+    /// - No tags selected: no tagged place shows; untagged places do, since
+    ///   they belong to no layer that could switch them on. Layers start off,
+    ///   so the panel's empty circles and the map agree.
     /// - `.any`: places with at least one selected tag.
     /// - `.all`: places with every selected tag.
     /// - Untagged places are hidden while a selection exists.
@@ -227,7 +231,7 @@ enum LayerMath {
         let tagCount = matchCount(place, visible: tags)
         // Only in trail groups: a trail point, handled by the trail rule.
         if tagCount == 0, matchCount(place, visible: trailGroups) > 0 { return false }
-        if selected.isEmpty { return true }
+        if selected.isEmpty { return tagCount == 0 }
         let selectedCount = matchCount(place, visible: selected)
         switch match {
         case .any: return selectedCount > 0

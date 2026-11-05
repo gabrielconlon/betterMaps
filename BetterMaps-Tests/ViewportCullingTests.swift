@@ -22,9 +22,12 @@ final class ViewportCullingTests: XCTestCase {
         PlaceLite(id: UUID(), name: name, latitude: lat, longitude: lon, layerIds: layerIds)
     }
 
-    func cull(_ places: [PlaceLite], trails: [TrailLite] = [], filter: PlaceFilter = .showAll,
+    /// Both tags on, so culling tests see every tagged place.
+    var allTags: PlaceFilter { PlaceFilter(tagIds: [brunch.id, favorites.id], match: .any) }
+
+    func cull(_ places: [PlaceLite], trails: [TrailLite] = [], filter: PlaceFilter? = nil,
               viewport: GeoBox, size: CGSize = CGSize(width: 390, height: 844)) -> CullOutput {
-        MapContentStore.cull(places: places, layers: layers, trails: trails, filter: filter,
+        MapContentStore.cull(places: places, layers: layers, trails: trails, filter: filter ?? allTags,
                              viewport: viewport, mapWidth: size.width, mapHeight: size.height)
     }
 
@@ -56,7 +59,7 @@ final class ViewportCullingTests: XCTestCase {
         XCTAssertEqual(cull([b, f], filter: onlyBrunch, viewport: cityViewport).places.map(\.id), [b.id])
         XCTAssertEqual(cull([b, f], filter: onlyBrunch, viewport: cityViewport).matchingPlaceCount, 1)
 
-        var off = PlaceFilter.showAll
+        var off = allTags
         off.showPlaces = false
         let hidden = cull([b, f], filter: off, viewport: cityViewport)
         XCTAssertTrue(hidden.places.isEmpty)
@@ -121,7 +124,7 @@ final class ViewportCullingTests: XCTestCase {
         let out = cull([], trails: [crossing, touching, far, hidden], viewport: launchViewport)
         XCTAssertEqual(Set(out.trails.map(\.id)), [crossing.id, touching.id])
 
-        var noTrails = PlaceFilter.showAll
+        var noTrails = allTags
         noTrails.showTrails = false
         XCTAssertTrue(cull([], trails: [crossing, touching], filter: noTrails, viewport: launchViewport).trails.isEmpty,
                       "the Trails switch hides every trail")
@@ -166,6 +169,7 @@ final class ViewportCullingTests: XCTestCase {
             center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
             span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
         store.mapSize = CGSize(width: 390, height: 844)
+        store.filter = allTags  // the store starts with every tag off
         let b = place("b", lat: 53.35, lon: -6.26, in: [brunch.id])
         let f = place("f", lat: 53.3501, lon: -6.2601, in: [favorites.id])
         store.update(places: [b, f], layers: layers, trails: [])
@@ -195,6 +199,7 @@ final class ViewportCullingTests: XCTestCase {
             center: CLLocationCoordinate2D(latitude: 53.3498, longitude: -6.2603),
             span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
         store.mapSize = CGSize(width: 390, height: 844)
+        store.filter = allTags  // the store starts with every tag off
         let places = [place("p", lat: 53.35, lon: -6.26, in: [brunch.id])]
         store.update(places: places, layers: layers, trails: [])
         try await Task.sleep(for: .milliseconds(400))

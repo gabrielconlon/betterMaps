@@ -109,10 +109,13 @@ final class TagFilterTests: XCTestCase {
         XCTAssertEqual(filter.selectedTagIds, [brunch.id, bars.id])
     }
 
-    func testMigrationWithAllOrNoTagsVisibleIsEmptySelection() throws {
-        let allVisible = TagFilter(defaults: try makeDefaults())
+    func testMigrationWithAllTagsVisibleSelectsEveryTagAndNoneVisibleSelectsNone() throws {
+        let defaults = try makeDefaults()
+        defaults.set("All Layers", forKey: TagFilter.legacyModeKey)
+        let allVisible = TagFilter(defaults: defaults)
         allVisible.migrateIfNeeded(tags: tags(visible: [brunch.id, por.id, bars.id]))
-        XCTAssertTrue(allVisible.selectedTagIds.isEmpty, "trail groups never count")
+        XCTAssertEqual(allVisible.selectedTagIds, [brunch.id, por.id, bars.id], "trail groups never count")
+        XCTAssertEqual(allVisible.match, .any, "every tag visible showed every place, whatever the mode")
 
         let noneVisible = TagFilter(defaults: try makeDefaults())
         noneVisible.migrateIfNeeded(tags: tags(visible: []))
