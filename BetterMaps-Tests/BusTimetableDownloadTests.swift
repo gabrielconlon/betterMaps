@@ -58,12 +58,15 @@ final class BusTimetableDownloadTests: XCTestCase {
                             session: StubManifestProtocol.session())
     }
 
-    private func readyService(defaults: UserDefaults? = nil) throws -> BusTimetableService {
+    /// Takes a suite name rather than a `UserDefaults`: handing a caller's instance to the
+    /// actor's init is a Swift 6 sending error, so the service gets its own instance and a
+    /// test reads the same suite back through another one.
+    private func readyService(defaultsSuite: String = "timetable-tests") throws -> BusTimetableService {
         let source = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "timetable_mini", withExtension: "sqlite"))
         let db = dir.appendingPathComponent("transit_timetable.sqlite")
         try FileManager.default.copyItem(at: source, to: db)
         return BusTimetableService(databaseURL: db, session: StubManifestProtocol.session(),
-                                   defaults: defaults ?? UserDefaults(suiteName: "timetable-tests")!)
+                                   defaults: try XCTUnwrap(UserDefaults(suiteName: defaultsSuite)))
     }
 
     private func drain(_ stream: AsyncStream<BusTimetableService.DownloadState>) async -> [BusTimetableService.DownloadState] {
@@ -228,10 +231,11 @@ final class BusTimetableDownloadTests: XCTestCase {
     }
 
     func testRefreshRecordsTheManifestCheck() async throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "timetable-\(UUID().uuidString)"))
-        let service = try readyService(defaults: defaults)
+        let suite = "timetable-\(UUID().uuidString)"
+        let service = try readyService(defaultsSuite: suite)
         StubManifestProtocol.reset(body: #"{"built":"2026-10-18","sha256":"\#(String(repeating: "0", count: 64))","schemaVersion":1}"#)
         _ = await service.checkForUpdate()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let checked = defaults.object(forKey: BusTimetableService.lastManifestCheckKey) as? Date
         XCTAssertNotNil(checked, "a successful manifest fetch starts the next day's wait")
     }
