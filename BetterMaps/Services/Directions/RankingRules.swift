@@ -12,13 +12,18 @@ struct RankingContext: Sendable {
     /// Networks (and bike) the user has on. The fastest option on each is
     /// kept in the list whatever its cost.
     var enabledModes: Set<TransitMode> = []
+    /// The plan is "arrive by" a time: the same ride on an earlier service
+    /// only gets you there sooner and waiting, so the latest one wins.
+    var arriveBy: Bool = false
 
     init(preferRail: Bool = false, railWalkCeilingSeconds: Int = 1200,
-         walkToleranceSeconds: Int? = nil, enabledModes: Set<TransitMode> = []) {
+         walkToleranceSeconds: Int? = nil, enabledModes: Set<TransitMode> = [],
+         arriveBy: Bool = false) {
         self.preferRail = preferRail
         self.railWalkCeilingSeconds = railWalkCeilingSeconds
         self.walkToleranceSeconds = walkToleranceSeconds
         self.enabledModes = enabledModes
+        self.arriveBy = arriveBy
     }
 }
 
@@ -62,6 +67,12 @@ enum RankingRules {
     }
 
     /// Pure and deterministic:
+    /// 0. Arriving by a time, options that take the same rides (same
+    ///    networks, routes and stops) on different services collapse to the
+    ///    one arriving latest, and equal costs go to the later arrival. The
+    ///    engine answers an arrive-by query with a run of departures of one
+    ///    train (8:13, 8:29, 8:41, 8:59, 9:14 for a 9:15 arrival); only the
+    ///    last one is worth listing.
     /// 1. Each option's cost is its duration plus double whatever walking
     ///    exceeds the user's limit (none when they will walk any distance).
     /// 2. With `preferRail`, options that ride only rail modes and whose
@@ -81,11 +92,16 @@ enum RankingRules {
     static func rank(_ itineraries: [Itinerary], context: RankingContext = RankingContext()) -> RankedItineraries {
         // Decorate with the index so the sort is stable (`sorted` is not
         // guaranteed to be) and with the cost, worked out once per option.
-        let indexed: [Entry] = itineraries.enumerated().map {
+        let input = context.arriveBy ? latestPerRide(itineraries) : itineraries
+        let indexed: [Entry] = input.enumerated().map {
             Entry(offset: $0.offset, itinerary: $0.element, cost: cost($0.element, context: context))
         }
         let byCost: (Entry, Entry) -> Bool = { lhs, rhs in
             if lhs.cost != rhs.cost { return lhs.cost < rhs.cost }
+            if context.arriveBy, lhs.itinerary.durationSeconds == rhs.itinerary.durationSeconds,
+               lhs.itinerary.end != rhs.itinerary.end {
+                return lhs.itinerary.end > rhs.itinerary.end
+            }
             return byDuration(lhs, rhs)
         }
 
@@ -120,6 +136,34 @@ enum RankingRules {
         var guaranteed = Set(result.map(\.id)).filter { pinnedIds.contains($0) || fastestFor[$0] != nil }
         if let first = result.first { guaranteed.insert(first.id) }
         return RankedItineraries(itineraries: result, guaranteedIds: guaranteed)
+    }
+
+    /// Keeps, for each distinct ride (`rideKey`), the option arriving
+    /// latest, ties to the later departure, in input order otherwise. Walk-
+    /// and bike-only options have no ride and pass through.
+    static func latestPerRide(_ itineraries: [Itinerary]) -> [Itinerary] {
+        var best: [String: Itinerary] = [:]
+        for itinerary in itineraries {
+            guard let key = rideKey(itinerary) else { continue }
+            if let kept = best[key],
+               (kept.end, kept.start) >= (itinerary.end, itinerary.start) { continue }
+            best[key] = itinerary
+        }
+        return itineraries.filter { itinerary in
+            guard let key = rideKey(itinerary) else { return true }
+            return best[key]?.id == itinerary.id
+        }
+    }
+
+    /// The transit legs' network, route and stops, in order; nil when there
+    /// is no transit leg.
+    static func rideKey(_ itinerary: Itinerary) -> String? {
+        let transit = itinerary.transitLegs
+        guard !transit.isEmpty else { return nil }
+        return transit.map {
+            [$0.mode.rawValue, $0.routeShortName ?? "", $0.fromStopId ?? $0.fromName,
+             $0.toStopId ?? $0.toName].joined(separator: "|")
+        }.joined(separator: ">")
     }
 
     /// One input option with its place in the input and its cost.
