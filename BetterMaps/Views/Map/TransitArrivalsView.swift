@@ -42,6 +42,9 @@ struct TransitArrivalsView: View {
     @State private var isUpdatingTimetable = false
     @State private var timetableUpdateFailed = false
     @State private var downloadWatcher: Task<Void, Never>?
+    /// At a Luas / DART / rail stop with live times, the scheduled list
+    /// repeats the same trains, so it starts folded; this unfolds it.
+    @State private var showsScheduledAlongsideLive = false
 
     private let railService = IrishRailService()
     private let luasService = LuasService()
@@ -51,6 +54,18 @@ struct TransitArrivalsView: View {
     private var showsDart: Bool { stop.isServed(by: .dart) }
     private var showsRail: Bool { stop.isServed(by: .rail) }
     private var showsLive: Bool { showsLuas || showsDart || showsRail }
+
+    /// Live times are on screen and current, so the scheduled list would only
+    /// repeat them: it folds behind a "Show scheduled times" row instead.
+    /// When the live feed fails or has nothing, the schedule shows in full.
+    nonisolated static func foldsSchedule(showsLive: Bool, hasLiveData: Bool, liveFeedFailed: Bool) -> Bool {
+        showsLive && hasLiveData && !liveFeedFailed
+    }
+
+    private var foldsSchedule: Bool {
+        Self.foldsSchedule(showsLive: showsLive, hasLiveData: hasLiveData, liveFeedFailed: liveFeedFailed)
+            && !showsScheduledAlongsideLive
+    }
 
     private var hasLiveData: Bool {
         !filteredRailArrivals.isEmpty
@@ -417,6 +432,23 @@ struct TransitArrivalsView: View {
                         }
                     }
                 }
+            } else if foldsSchedule {
+                Button(action: { showsScheduledAlongsideLive = true }) {
+                    HStack {
+                        Label("Show scheduled times", systemImage: "calendar")
+                            .font(.subheadline)
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                            .font(.caption)
+                    }
+                    .padding(10)
+                    .frame(minHeight: 44)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(TapFeedbackStyle())
+                .accessibilityHint("Lists the timetable's departures, which repeat the live times above")
             } else if busLoaded && upcoming.isEmpty {
                 timetableCard {
                     Label("No scheduled departures in the next 2 hours",
@@ -426,7 +458,7 @@ struct TransitArrivalsView: View {
                 }
             }
 
-            ForEach(upcoming.prefix(10)) { dep in
+            ForEach(foldsSchedule ? [] : Array(upcoming.prefix(10))) { dep in
                 Button(action: { onSelectRoute?(dep.routeId, Self.routeLabel(dep.routeShortName)) }) {
                     HStack {
                         Text(Self.routeLabel(dep.routeShortName))

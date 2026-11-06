@@ -58,11 +58,12 @@ final class BusTimetableDownloadTests: XCTestCase {
                             session: StubManifestProtocol.session())
     }
 
-    private func readyService() throws -> BusTimetableService {
+    private func readyService(defaults: UserDefaults? = nil) throws -> BusTimetableService {
         let source = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "timetable_mini", withExtension: "sqlite"))
         let db = dir.appendingPathComponent("transit_timetable.sqlite")
         try FileManager.default.copyItem(at: source, to: db)
-        return BusTimetableService(databaseURL: db, session: StubManifestProtocol.session())
+        return BusTimetableService(databaseURL: db, session: StubManifestProtocol.session(),
+                                   defaults: defaults ?? UserDefaults(suiteName: "timetable-tests")!)
     }
 
     private func drain(_ stream: AsyncStream<BusTimetableService.DownloadState>) async -> [BusTimetableService.DownloadState] {
@@ -213,6 +214,26 @@ final class BusTimetableDownloadTests: XCTestCase {
         XCTAssertFalse(BusTimetableService.isStale(built: "2026-10-19", days: 14, bundleBuilt: nil, now: now))
         XCTAssertTrue(BusTimetableService.isStale(built: "2026-10-01", days: 14, bundleBuilt: nil, now: now))
         XCTAssertTrue(BusTimetableService.isStale(built: nil, days: 14, bundleBuilt: nil, now: now))
+    }
+
+    func testManifestIsCheckedDailyEvenWhenTheTimetableIsRecent() throws {
+        let now = try XCTUnwrap(BusTimetableService.isoDay("2026-11-06")).addingTimeInterval(20 * 3600)
+        XCTAssertFalse(BusTimetableService.isStale(built: "2026-10-26", days: 14, bundleBuilt: nil, now: now),
+                       "11 days old: the 14-day rule alone never looked for the 2 Nov build")
+        XCTAssertTrue(BusTimetableService.isCheckDue(lastChecked: nil, every: 86_400, now: now))
+        XCTAssertTrue(BusTimetableService.isCheckDue(lastChecked: now.addingTimeInterval(-86_400), every: 86_400, now: now))
+        XCTAssertFalse(BusTimetableService.isCheckDue(lastChecked: now.addingTimeInterval(-3600), every: 86_400, now: now))
+        XCTAssertTrue(BusTimetableService.isCheckDue(lastChecked: now.addingTimeInterval(3600), every: 86_400, now: now),
+                      "a last check in the future (clock changed) doesn't block checks")
+    }
+
+    func testRefreshRecordsTheManifestCheck() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "timetable-\(UUID().uuidString)"))
+        let service = try readyService(defaults: defaults)
+        StubManifestProtocol.reset(body: #"{"built":"2026-10-18","sha256":"\#(String(repeating: "0", count: 64))","schemaVersion":1}"#)
+        _ = await service.checkForUpdate()
+        let checked = defaults.object(forKey: BusTimetableService.lastManifestCheckKey) as? Date
+        XCTAssertNotNil(checked, "a successful manifest fetch starts the next day's wait")
     }
 
     // MARK: - Behind the app

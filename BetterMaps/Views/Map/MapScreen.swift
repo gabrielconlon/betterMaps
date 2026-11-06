@@ -10,6 +10,7 @@ import CoreData
 /// map content.
 struct MapScreen: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @Query private var layers: [Layer]
     @Query private var places: [Place]
 
@@ -367,6 +368,13 @@ struct MapScreen: View {
             guard !transitSettings.enabledKinds.isEmpty else { return }
             await transitStore.loadIfNeeded()
             await BusTimetableService.shared.refreshIfStale(days: 14, bundleBuilt: TransitBundle.builtDate(in: .main))
+        }
+        // The app can stay in memory for days, so the launch check alone left
+        // the timetable on an old build. Coming back to the app asks again
+        // (at most once a day; the service throttles it).
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, !transitSettings.enabledKinds.isEmpty else { return }
+            Task { await BusTimetableService.shared.refreshIfStale(days: 14, bundleBuilt: TransitBundle.builtDate(in: .main)) }
         }
         #if DEBUG
         .task { openDebugScreens() }

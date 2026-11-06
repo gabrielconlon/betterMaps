@@ -110,6 +110,7 @@ actor BusTimetableService {
     private let databaseURL: URL
     private let legacyDatabaseURL: URL?
     private let session: URLSession
+    private let defaults: UserDefaults
     private var db: GTFSDatabase?
     private(set) var state: DownloadState = .notDownloaded
     private var resolved = false
@@ -127,10 +128,20 @@ actor BusTimetableService {
     ///   found there is moved to `databaseURL` on first use.
     init(databaseURL: URL = BusTimetableService.defaultDatabaseURL,
          legacyDatabaseURL: URL? = nil,
-         session: URLSession = .shared) {
+         session: URLSession = .shared,
+         defaults: UserDefaults = .standard) {
         self.databaseURL = databaseURL
         self.legacyDatabaseURL = legacyDatabaseURL
         self.session = session
+        self.defaults = defaults
+    }
+
+    /// When the release manifest was last fetched successfully, whatever it
+    /// said. Persisted so a relaunch doesn't re-ask within the same day.
+    static let lastManifestCheckKey = "BusTimetable.lastManifestCheck"
+    private var lastManifestCheck: Date? {
+        get { defaults.object(forKey: Self.lastManifestCheckKey) as? Date }
+        set { defaults.set(newValue, forKey: Self.lastManifestCheckKey) }
     }
 
     /// Sidecar copy of the manifest the installed file came from.
@@ -253,6 +264,7 @@ actor BusTimetableService {
         let next: DownloadState
         do {
             let manifest = try await fetchManifest()
+            lastManifestCheck = Date()
             try await install(manifest: manifest, reportsProgress: true, generation: started)
             next = .ready(builtDate: db?.metaValue("built"))
         } catch {
@@ -352,16 +364,33 @@ actor BusTimetableService {
         guard openInstalled() else { throw BusTimetableError.invalidDownload }
     }
 
-    /// Re-downloads in the background when the installed timetable was built
-    /// more than `days` ago, or before `bundleBuilt` (the app's own stops
-    /// file: an app update that widens the stop set must not keep querying a
-    /// timetable that lacks those stops), and the release has a newer build.
-    /// The current file keeps serving queries until the new one is swapped in.
-    func refreshIfStale(days: Int = 14, bundleBuilt: Date? = nil) {
+    /// Re-downloads in the background when the release has a newer build.
+    /// It asks when the installed timetable was built more than `days` ago,
+    /// or before `bundleBuilt` (the app's own stops file: an app update that
+    /// widens the stop set must not keep querying a timetable that lacks
+    /// those stops), and otherwise at most once per `checkEvery`.
+    ///
+    /// The daily check is what keeps the timetable current. The release is
+    /// rebuilt every Monday, and with only the 14-day rule a phone that
+    /// installed the 26 Oct build skipped the 2 Nov one and would have kept
+    /// it until 9 Nov. The manifest is a few hundred bytes and the 13 MB file
+    /// is only fetched when its checksum changed. The current file keeps
+    /// serving queries until the new one is swapped in.
+    func refreshIfStale(days: Int = 14, checkEvery: TimeInterval = 86_400, bundleBuilt: Date? = nil) {
         resolveIfNeeded()
         guard case .ready(let built) = state, downloadTask == nil, refreshTask == nil else { return }
-        guard Self.isStale(built: built, days: days, bundleBuilt: bundleBuilt, now: Date()) else { return }
+        let now = Date()
+        guard Self.isStale(built: built, days: days, bundleBuilt: bundleBuilt, now: now)
+                || Self.isCheckDue(lastChecked: lastManifestCheck, every: checkEvery, now: now) else { return }
         startRefresh()
+    }
+
+    /// True when the manifest hasn't been fetched within `every`, or the
+    /// clock went backwards past the last check.
+    static func isCheckDue(lastChecked: Date?, every: TimeInterval, now: Date) -> Bool {
+        guard let lastChecked else { return true }
+        let elapsed = now.timeIntervalSince(lastChecked)
+        return elapsed < 0 || elapsed >= every
     }
 
     static func isStale(built: String?, days: Int, bundleBuilt: Date?, now: Date) -> Bool {
@@ -391,6 +420,7 @@ actor BusTimetableService {
         defer { if started == generation { refreshTask = nil } }
         do {
             let manifest = try await fetchManifest()
+            lastManifestCheck = Date()
             let local = localManifest()
             if let sha = manifest.sha256, sha.lowercased() == local?.sha256?.lowercased() { return .upToDate }
             if let remoteBuilt = manifest.built, let localBuilt = db?.metaValue("built"),

@@ -37,6 +37,18 @@ final class TransitArrivalsLogicTests: XCTestCase {
         XCTAssertEqual(TransitArrivalsView.routeLabel("Red"), "Red")
     }
 
+    // MARK: - Scheduled list next to live times
+
+    func testScheduleFoldsOnlyWhenLiveTimesAreShowing() {
+        XCTAssertTrue(TransitArrivalsView.foldsSchedule(showsLive: true, hasLiveData: true, liveFeedFailed: false),
+                      "live DART times on screen: the schedule would list the same trains twice")
+        XCTAssertFalse(TransitArrivalsView.foldsSchedule(showsLive: true, hasLiveData: true, liveFeedFailed: true),
+                       "live feed down: the schedule is the fallback and shows in full")
+        XCTAssertFalse(TransitArrivalsView.foldsSchedule(showsLive: true, hasLiveData: false, liveFeedFailed: false))
+        XCTAssertFalse(TransitArrivalsView.foldsSchedule(showsLive: false, hasLiveData: false, liveFeedFailed: false),
+                       "bus stops have no live feed; the schedule is the board")
+    }
+
     // MARK: - Nearest Irish Rail station
 
     private func station(_ code: String, _ lat: Double, _ lon: Double) -> IrishRailStation {
