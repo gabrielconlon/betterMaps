@@ -1082,7 +1082,8 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(sent.style, .quiet)
         XCTAssertEqual(sent.origin.latitude, heuston.coordinate.latitude)
         XCTAssertEqual(sent.destination.longitude, dunLaoghaire.coordinate.longitude)
-        XCTAssertEqual(sent.departure, provider.baseRequests[0].time)
+        XCTAssertEqual(sent.time, provider.baseRequests[0].time)
+        XCTAssertFalse(sent.arriveBy)
     }
 
     func testEngineCycleKeptWhenBikeRouterFails() async {
@@ -1182,16 +1183,31 @@ final class DirectionsViewModelTests: XCTestCase {
 
     func testFixtureCyclingProviderGivesASyntheticRoute() async throws {
         let route = try await FixtureCyclingProvider().route(
-            CyclingRouteRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, style: .quiet, departure: t0))
+            CyclingRouteRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, style: .quiet, time: t0))
         XCTAssertEqual(route.legs.count, 1)
         XCTAssertEqual(route.legs[0].mode, .bike)
         XCTAssertEqual(route.legs[0].coordinates.count, 8)
         XCTAssertEqual(route.durationSeconds, 1500)
         XCTAssertEqual(route.reason, "Quiet roads")
         XCTAssertEqual(route.start, t0)
+        XCTAssertEqual(route.end, t0.addingTimeInterval(1500))
         let fast = try await FixtureCyclingProvider().route(
-            CyclingRouteRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, style: .fast, departure: t0))
+            CyclingRouteRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, style: .fast, time: t0))
         XCTAssertNil(fast.reason)
+    }
+
+    /// Arrive by 09:15: the ride ends at 09:15 and starts its duration
+    /// earlier, as the transit options do (it was showing 9:15–9:41).
+    func testArriveByCycleEndsAtThePlannedTime() async throws {
+        let route = try await FixtureCyclingProvider().route(
+            CyclingRouteRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate, style: .quiet,
+                                time: t0, arriveBy: true))
+        XCTAssertEqual(route.end, t0)
+        XCTAssertEqual(route.start, t0.addingTimeInterval(-1500))
+        XCTAssertEqual(route.legs[0].start, route.start)
+        let base = JourneyRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate,
+                                  time: t0, arriveBy: true)
+        XCTAssertTrue(DirectionsViewModel.cyclingRequest(for: base).arriveBy)
     }
 
     func testFixtureProviderHonoursOverrides() async throws {

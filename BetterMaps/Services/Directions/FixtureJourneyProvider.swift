@@ -156,8 +156,7 @@ struct FixtureCyclingProvider: CyclingRouteProvider {
     static let durationSeconds = 1500
 
     func route(_ request: CyclingRouteRequest) async throws -> Itinerary {
-        let start = request.departure
-        let end = start.addingTimeInterval(TimeInterval(Self.durationSeconds))
+        let (start, end) = request.window(durationSeconds: Self.durationSeconds)
         let points = (0..<8).map { step -> CLLocationCoordinate2D in
             let t = Double(step) / 7
             // A gentle bow off the straight line so the drawn route is visibly a route.

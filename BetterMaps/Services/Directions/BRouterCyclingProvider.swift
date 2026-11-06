@@ -88,8 +88,7 @@ actor BRouterCyclingProvider: CyclingRouteProvider {
     }
 
     private static func itinerary(from track: BRouterTrack, request: CyclingRouteRequest) -> Itinerary {
-        let start = request.departure
-        let end = start.addingTimeInterval(TimeInterval(track.durationSeconds))
+        let (start, end) = request.window(durationSeconds: track.durationSeconds)
         let posix = Locale(identifier: "en_US_POSIX")
         let rounded = [request.origin, request.destination]
             .map { String(format: "%.4f,%.4f", locale: posix, $0.latitude, $0.longitude) }
