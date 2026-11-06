@@ -22,7 +22,7 @@ final class BRouterCyclingProviderTests: XCTestCase {
     private let departure = Date(timeIntervalSince1970: 1_793_694_960)
 
     private func request(_ style: CyclingStyle) -> CyclingRouteRequest {
-        CyclingRouteRequest(origin: rathmines, destination: phoenix, style: style, departure: departure)
+        CyclingRouteRequest(origin: rathmines, destination: phoenix, style: style, time: departure)
     }
 
     private func fixtureData() throws -> Data {

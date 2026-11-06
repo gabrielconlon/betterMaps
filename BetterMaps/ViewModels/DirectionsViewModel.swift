@@ -321,10 +321,10 @@ final class DirectionsViewModel {
     }
 
     /// The bike router's question for the same journey: the user's style,
-    /// leaving at the planned time.
+    /// leaving at the planned time, or arriving by it.
     nonisolated static func cyclingRequest(for base: JourneyRequest) -> CyclingRouteRequest {
         CyclingRouteRequest(origin: base.origin, destination: base.destination,
-                            style: base.preferences.cyclingStyle, departure: base.time)
+                            style: base.preferences.cyclingStyle, time: base.time, arriveBy: base.arriveBy)
     }
 
     /// The network families a no-limit probe is run for, in order.
