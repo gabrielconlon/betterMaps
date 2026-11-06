@@ -236,6 +236,32 @@ final class RankingRulesTests: XCTestCase {
         XCTAssertEqual(RankingRules.rank(input).itineraries.map(\.id), ["earlier", "later"])
     }
 
+    // MARK: Arrive by
+
+    /// A 9:15 arrive-by answered with five departures of the same DART: only
+    /// the last one is listed.
+    func testArriveByKeepsOnlyTheLatestServiceOfTheSameRide() {
+        let input = [0, 16, 28, 46, 61].map { minutes in
+            journey("dart\(minutes)", [(.walk, 21), (.dart, 12), (.walk, 7)], startOffset: TimeInterval(minutes * 60))
+        }
+        var ctx = context(preferRail: false)
+        ctx.arriveBy = true
+        XCTAssertEqual(RankingRules.rank(input, context: ctx).itineraries.map(\.id), ["dart61"])
+        // Leaving at a time, every departure stays.
+        XCTAssertEqual(RankingRules.rank(input, context: context(preferRail: false)).itineraries.count, 5)
+    }
+
+    func testArriveByKeepsDifferentRidesAndPrefersTheLaterArrivalOnATie() {
+        let input = [
+            journey("dartEarly", [(.walk, 21), (.dart, 12), (.walk, 7)]),
+            journey("busLate", [(.walk, 5), (.bus, 30), (.walk, 5)], startOffset: 30 * 60),
+            journey("dartLate", [(.walk, 21), (.dart, 12), (.walk, 7)], startOffset: 20 * 60),
+        ]
+        var ctx = context(preferRail: false)
+        ctx.arriveBy = true
+        XCTAssertEqual(RankingRules.rank(input, context: ctx).itineraries.map(\.id), ["busLate", "dartLate"])
+    }
+
     func testStaleReasonsAreCleared() {
         // A provider may have ranked already; the view model's pass decides.
         let input = [itinerary("a", duration: 1200, reason: "Rail"),

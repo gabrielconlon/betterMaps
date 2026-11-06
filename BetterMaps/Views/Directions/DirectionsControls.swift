@@ -73,23 +73,19 @@ struct DirectionsTripControls: View {
                 // iPhone width and were truncating to "B…", "L…", "D…".
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(Self.modes) { mode in
-                        Toggle(isOn: Binding(
-                            get: { prefs.enabledModes.contains(mode) },
-                            set: { on in
-                                var modes = prefs.enabledModes
-                                if on { modes.insert(mode) } else { modes.remove(mode) }
-                                onChange(prefs.replacing(enabledModes: modes))
-                            }
-                        )) {
-                            Label(mode.displayName, systemImage: mode.systemImage)
-                                .font(.subheadline.weight(.medium))
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, minHeight: 36)
+                        let on = prefs.enabledModes.contains(mode)
+                        Button {
+                            var modes = prefs.enabledModes
+                            if on { modes.remove(mode) } else { modes.insert(mode) }
+                            onChange(prefs.replacing(enabledModes: modes))
+                        } label: {
+                            ModeChipLabel(mode: mode, isOn: on)
                         }
-                        .toggleStyle(.button)
-                        .buttonStyle(.bordered)
-                        .tint(TransitColors.pin(mode.layerKind ?? .bus))
+                        .buttonStyle(.plain)
                         .accessibilityLabel(mode.displayName)
+                        .accessibilityValue(on ? "On" : "Off")
+                        .accessibilityAddTraits(on ? .isSelected : [])
+                        .accessibilityIdentifier("directions.mode.\(mode.rawValue)")
                     }
                 }
             }
@@ -124,5 +120,35 @@ struct DirectionsTripControls: View {
                 .padding(.vertical, 4)
             }
         }
+    }
+}
+
+/// One "Travel by" chip. On is the network's colour, filled, with a tick;
+/// off is grey and outlined with no colour at all. A bordered toggle button
+/// tinted per network read the same either way (an off Bus chip was still
+/// blue and looked on), so the two states differ in fill, colour and glyph.
+private struct ModeChipLabel: View {
+    let mode: TransitMode
+    let isOn: Bool
+
+    var body: some View {
+        let tint = TransitColors.pin(mode.layerKind ?? .bus)
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        HStack(spacing: 6) {
+            Image(systemName: mode.systemImage)
+            Text(mode.displayName)
+                .lineLimit(1)
+            if isOn {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.bold))
+            }
+        }
+        .font(.subheadline.weight(.medium))
+        // The network colours are pastels: dark text on them, not white.
+        .foregroundStyle(isOn ? Color.black.opacity(0.85) : Color.secondary)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .background { if isOn { shape.fill(tint) } }
+        .overlay { if !isOn { shape.strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1) } }
+        .contentShape(shape)
     }
 }
