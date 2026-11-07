@@ -15,16 +15,28 @@ struct RankingContext: Sendable {
     /// The plan is "arrive by" a time: the same ride on an earlier service
     /// only gets you there sooner and waiting, so the latest one wins.
     var arriveBy: Bool = false
+    /// The time the user must arrive by, when `arriveBy` is on. With it, an
+    /// option is costed from when it leaves rather than how long it rides
+    /// (waiting at the far end is time the user has spent too), and options
+    /// that get there hours early are dropped. Without the engine having a
+    /// service near the target (DART on a Sunday morning) it searches back
+    /// as far as it must, and "arrive by 09:15" came back topped by the last
+    /// DART of the night before.
+    var arriveByTime: Date? = nil
 
     init(preferRail: Bool = false, railWalkCeilingSeconds: Int = 1200,
          walkToleranceSeconds: Int? = nil, enabledModes: Set<TransitMode> = [],
-         arriveBy: Bool = false) {
+         arriveBy: Bool = false, arriveByTime: Date? = nil) {
         self.preferRail = preferRail
         self.railWalkCeilingSeconds = railWalkCeilingSeconds
         self.walkToleranceSeconds = walkToleranceSeconds
         self.enabledModes = enabledModes
         self.arriveBy = arriveBy
+        self.arriveByTime = arriveByTime
     }
+
+    /// The arrive-by target when ranking is arriving by a time.
+    var arrivalTarget: Date? { arriveBy ? arriveByTime : nil }
 }
 
 /// What ranking produced: the list in order, and which rows are there by
@@ -53,6 +65,9 @@ enum RankingRules {
     static let fastestByPrefix = "Fastest by "
     /// The most options the sheet lists.
     static let maxResults = 8
+    /// Arriving by a time, an option that gets there more than this long
+    /// before it is not one anyone would take; it is left out.
+    static let maxArriveByEarlySeconds = 4 * 3600
 
     /// Networks that count as "rail" for the pin: trams included, since Luas
     /// is how most people reach a DART station from the city centre.
@@ -72,8 +87,10 @@ enum RankingRules {
     ///    one arriving latest, and equal costs go to the later arrival. The
     ///    engine answers an arrive-by query with a run of departures of one
     ///    train (8:13, 8:29, 8:41, 8:59, 9:14 for a 9:15 arrival); only the
-    ///    last one is worth listing.
-    /// 1. Each option's cost is its duration plus double whatever walking
+    ///    last one is worth listing. Options arriving more than
+    ///    `maxArriveByEarlySeconds` before the target are dropped.
+    /// 1. Each option's cost is its duration (arriving by a known time: the
+    ///    time from leaving to the target, so waiting counts) plus double whatever walking
     ///    exceeds the user's limit (none when they will walk any distance).
     /// 2. With `preferRail`, options that ride only rail modes and whose
     ///    walking at the two ends stays within the ceiling come first, by
@@ -92,7 +109,7 @@ enum RankingRules {
     static func rank(_ itineraries: [Itinerary], context: RankingContext = RankingContext()) -> RankedItineraries {
         // Decorate with the index so the sort is stable (`sorted` is not
         // guaranteed to be) and with the cost, worked out once per option.
-        let input = context.arriveBy ? latestPerRide(itineraries) : itineraries
+        let input = context.arriveBy ? latestPerRide(withinArriveByWindow(itineraries, context: context)) : itineraries
         let indexed: [Entry] = input.enumerated().map {
             Entry(offset: $0.offset, itinerary: $0.element, cost: cost($0.element, context: context))
         }
@@ -155,6 +172,14 @@ enum RankingRules {
         }
     }
 
+    /// Drops options that arrive more than `maxArriveByEarlySeconds` before
+    /// the arrive-by target. Everything passes when there is no target.
+    static func withinArriveByWindow(_ itineraries: [Itinerary], context: RankingContext) -> [Itinerary] {
+        guard let target = context.arrivalTarget else { return itineraries }
+        let earliest = target.addingTimeInterval(-TimeInterval(maxArriveByEarlySeconds))
+        return itineraries.filter { $0.end >= earliest }
+    }
+
     /// The transit legs' network, route and stops, in order; nil when there
     /// is no transit leg.
     static func rideKey(_ itinerary: Itinerary) -> String? {
@@ -184,10 +209,16 @@ enum RankingRules {
         return fastestReason(named)
     }
 
-    /// Duration plus double the walking beyond the user's limit.
+    /// Duration plus double the walking beyond the user's limit. Arriving
+    /// by a known time, the duration is counted from leaving to the target,
+    /// so a ride that gets there early pays for the wait.
     static func cost(_ itinerary: Itinerary, context: RankingContext) -> Int {
-        guard let limit = context.walkToleranceSeconds else { return itinerary.durationSeconds }
-        return itinerary.durationSeconds + 2 * max(0, itinerary.walkSeconds - limit)
+        var base = itinerary.durationSeconds
+        if let target = context.arrivalTarget {
+            base = max(base, Int(target.timeIntervalSince(itinerary.start).rounded()))
+        }
+        guard let limit = context.walkToleranceSeconds else { return base }
+        return base + 2 * max(0, itinerary.walkSeconds - limit)
     }
 
     private static func byDuration(_ lhs: Entry, _ rhs: Entry) -> Bool {
