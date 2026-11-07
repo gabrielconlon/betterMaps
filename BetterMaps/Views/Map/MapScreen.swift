@@ -35,6 +35,10 @@ struct MapScreen: View {
     @State private var transitStore = TransitLayerStore.shared
     @State private var transitSettings = TransitLayerSettings.shared
     @State private var searchState = SearchState()
+    @State private var recents = RecentSearchStore.shared
+    /// The starting point of a recent journey being reopened, read once by
+    /// the directions sheet as it opens.
+    @State private var pendingDirectionsOrigin: DirectionsEndpoint?
     @FocusState private var isSearchFocused: Bool
     @AppStorage(MapStyleOption.storageKey) private var mapStyleOption: MapStyleOption = .standard
     @State private var sheetDetent: SheetDetent = Self.initialDetent
@@ -317,10 +321,19 @@ struct MapScreen: View {
                 directions.resume()
             } else {
                 directionsDetent = .medium
-                directions.start(destination: destination, userLocation: directionsOrigin)
+                directions.start(destination: destination, origin: pendingDirectionsOrigin,
+                                 userLocation: directionsOrigin)
             }
             resumingDirections = false
+            pendingDirectionsOrigin = nil
             fitDirectionsOnMap()
+        }
+        // A journey that planned is a recent search, whichever way it was
+        // reached (search, a place card, a recent row, an edited end).
+        .onChange(of: directions.phase) { _, phase in
+            guard phase == .results, let origin = directions.origin,
+                  let destination = directions.destination else { return }
+            recents.recordJourney(from: origin, to: destination)
         }
         // Frame the journey whenever there is something new to frame: the
         // ends (opening, or an edited start or destination), the previews
@@ -476,19 +489,23 @@ struct MapScreen: View {
             transitStore: transitStore,
             searchActions: SheetSearchActions(
                 onSelectPlace: { place in
+                    recents.recordPlace(place)
                     showResult(at: place.coordinate)
                     viewModel.selectPlace(place)
                 },
                 onSelectStop: { stop in
+                    recents.recordStop(stop)
                     showResult(at: stop.coordinate)
                     viewModel.showTransitArrivals(for: stop)
                 },
                 onSelectRoute: { route in
+                    recents.recordRoute(route)
                     dismissSearch()
                     sheetDetent = .collapsed
                     transitStore.toggleHighlightedRoute(route.id, label: TransitArrivalsView.routeLabel(route.short))
                 },
                 onSelectPOI: { item in
+                    recents.recordPOI(item)
                     showResult(at: item.placemark.coordinate)
                     viewModel.showPOI(item)
                 },
@@ -496,7 +513,8 @@ struct MapScreen: View {
                     dismissSearch()
                     sheetDetent = .collapsed
                     viewModel.showDirections(to: endpoint)
-                }
+                },
+                onOpenRecent: { openRecent($0) }
             ),
             onDrawTrail: { startDrawTrail(in: $0) }
         )
@@ -938,6 +956,52 @@ struct MapScreen: View {
         dismissSearch()
         sheetDetent = .collapsed
         focus(on: coordinate)
+    }
+
+    /// A Recents row: reopen what it was. A saved place or stop that has
+    /// since gone falls back to what is at its coordinate; an Apple Maps
+    /// result is looked up again by name; a journey re-plans from now.
+    private func openRecent(_ entry: RecentSearch) {
+        recents.record(entry.refreshed())
+        switch entry.kind {
+        case .savedPlace(let id, _):
+            showResult(at: entry.coordinate)
+            if let place = places.first(where: { $0.id == id }) {
+                viewModel.selectPlace(place)
+            } else {
+                viewModel.activeSheet = .poiLookup(entry.coordinate)
+            }
+        case .stop(let id, _, _, _):
+            showResult(at: entry.coordinate)
+            Task {
+                await transitStore.loadIfNeeded()
+                if let stop = transitStore.stop(id: id) {
+                    viewModel.showTransitArrivals(for: stop)
+                } else {
+                    viewModel.activeSheet = .poiLookup(entry.coordinate)
+                }
+            }
+        case .poi:
+            showResult(at: entry.coordinate)
+            Task {
+                if let item = await POILookup.item(named: entry.name, near: entry.coordinate) {
+                    viewModel.showPOI(item)
+                } else {
+                    viewModel.activeSheet = .poiLookup(entry.coordinate)
+                }
+            }
+        case .transitRoute(let id, let short, _, _):
+            dismissSearch()
+            sheetDetent = .collapsed
+            if transitStore.highlightedRouteId != id {
+                transitStore.toggleHighlightedRoute(id, label: TransitArrivalsView.routeLabel(short))
+            }
+        case .journey(let origin, let destination):
+            dismissSearch()
+            sheetDetent = .collapsed
+            pendingDirectionsOrigin = origin.endpoint
+            viewModel.showDirections(to: destination.endpoint)
+        }
     }
 
     private func dismissSearch() {

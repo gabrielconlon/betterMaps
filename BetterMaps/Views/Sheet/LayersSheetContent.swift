@@ -10,6 +10,8 @@ struct SheetSearchActions {
     let onSelectPOI: (MKMapItem) -> Void
     /// The row's trailing arrow: plan a journey to this result.
     let onDirections: (DirectionsEndpoint) -> Void
+    /// A Recents row: reopen the place, route or journey.
+    let onOpenRecent: (RecentSearch) -> Void
 }
 
 /// Trail count and total length of one trail group, precomputed with the
@@ -31,7 +33,7 @@ struct SheetLayerLists: Equatable {
 }
 
 /// Body of the persistent sheet at medium / expanded: search results while a
-/// query is typed, otherwise hints, then pinned routes and stops first (the
+/// query is typed, otherwise hints, recent searches, then pinned routes and stops first (the
 /// things reached for on the way out the door), then tags and trail groups
 /// to browse. Creating, editing and deleting tags and trail groups lives in
 /// Settings and the "+" menu, so the sheet stays short. Nothing here changes
@@ -72,6 +74,9 @@ struct LayersSheetContent: View {
                                        onDirections: searchActions.onDirections)
                 } else {
                     FirstRunHintsView(hints: hints)
+                    RecentSearchesSection(store: RecentSearchStore.shared,
+                                          onOpen: searchActions.onOpenRecent,
+                                          onDirections: searchActions.onDirections)
                     PinnedRoutesSection(highlightedRouteId: transitStore.highlightedRouteId) { route in
                         transitStore.toggleHighlightedRoute(route.routeId, label: route.shortName)
                     }

@@ -144,10 +144,15 @@ final class DirectionsViewModel {
     /// stays idle until the user picks a starting point. A different journey
     /// clears what was found for the old one first; the same journey (the
     /// sheet reopened) keeps its list and drawn option while it refreshes.
-    func start(destination: DirectionsEndpoint, userLocation: CLLocationCoordinate2D?) {
+    /// A picked `origin` (a recent journey from somewhere other than "My
+    /// Location") is used instead of the user's location.
+    func start(destination: DirectionsEndpoint, origin pickedOrigin: DirectionsEndpoint? = nil,
+               userLocation: CLLocationCoordinate2D?) {
         self.userLocation = userLocation
         let newOrigin: DirectionsEndpoint?
-        if let userLocation {
+        if let pickedOrigin, !pickedOrigin.isUserLocation {
+            newOrigin = pickedOrigin
+        } else if let userLocation {
             newOrigin = .userLocation(userLocation)
         } else if origin?.isUserLocation == true {
             newOrigin = nil

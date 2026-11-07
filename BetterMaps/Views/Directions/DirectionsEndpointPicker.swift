@@ -4,7 +4,7 @@ import MapKit
 
 /// Picks one end of a journey inside the directions sheet (no second sheet):
 /// a search field over saved places, stops and nearby Apple Maps results,
-/// with "My Location" first when it is known.
+/// with "My Location" first when it is known, then recent places.
 struct DirectionsEndpointPicker: View {
     enum Which: Equatable {
         case origin, destination
@@ -20,6 +20,8 @@ struct DirectionsEndpointPicker: View {
     @Query private var places: [Place]
     @State private var searchState = SearchState()
     @FocusState private var isFocused: Bool
+    private let recents = RecentSearchStore.shared
+    static let recentLimit = 5
 
     private var query: String { searchState.searchText.trimmingCharacters(in: .whitespaces) }
 
@@ -65,6 +67,19 @@ struct DirectionsEndpointPicker: View {
                                         title: "My Location", subtitle: nil)
                     }
                     .buttonStyle(.plain)
+                }
+                let recentPlaces = Array(recents.places.prefix(Self.recentLimit))
+                if !recentPlaces.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        SheetSectionHeader(title: "Recents")
+                        ForEach(recentPlaces) { entry in
+                            if let endpoint = entry.endpoint {
+                                let style = RecentSearchStyle(entry)
+                                resultButton(endpoint, icon: style.icon, color: style.color,
+                                             shape: style.shape, subtitle: entry.subtitle)
+                            }
+                        }
+                    }
                 }
                 Text("Search a place, stop or address")
                     .font(.footnote)

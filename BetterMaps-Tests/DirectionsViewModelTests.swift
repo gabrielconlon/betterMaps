@@ -244,6 +244,28 @@ final class DirectionsViewModelTests: XCTestCase {
         XCTAssertEqual(model.itineraries.map(\.id), ["a"])
     }
 
+    /// A recent journey reopened plans from its own starting point, not
+    /// from wherever the user is now.
+    func testStartWithPickedOriginPlansFromIt() async {
+        let provider = FakeJourneyProvider()
+        provider.result = .success([makeItinerary("a")])
+        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
+        let elsewhere = CLLocationCoordinate2D(latitude: 53.40, longitude: -6.40)
+        model.start(destination: dunLaoghaire, origin: heuston, userLocation: elsewhere)
+        XCTAssertEqual(model.origin, heuston)
+        await settle()
+        XCTAssertEqual(provider.baseRequests.first?.origin.latitude, heuston.coordinate.latitude)
+    }
+
+    /// A recent journey from "My Location" starts from the fresh fix.
+    func testStartWithUserLocationOriginUsesTheCurrentFix() {
+        let model = DirectionsViewModel(provider: FakeJourneyProvider(), store: TransitLayerStore(), weather: FakeWeather().service, cycling: FakeCyclingProvider())
+        let stale = DirectionsEndpoint.userLocation(CLLocationCoordinate2D(latitude: 53.0, longitude: -6.0))
+        model.start(destination: dunLaoghaire, origin: stale, userLocation: heuston.coordinate)
+        XCTAssertEqual(model.origin?.isUserLocation, true)
+        XCTAssertEqual(model.origin?.coordinate.latitude, heuston.coordinate.latitude)
+    }
+
     func testSwapEndpoints() {
         let model = makeModel(FakeJourneyProvider())
         model.swapEndpoints()
