@@ -262,6 +262,39 @@ final class RankingRulesTests: XCTestCase {
         XCTAssertEqual(RankingRules.rank(input, context: ctx).itineraries.map(\.id), ["busLate", "dartLate"])
     }
 
+    /// Arrive by 09:15 on a Sunday, when the first DART runs too late: the
+    /// engine's answer is the last DART of the night before (23:22–23:59,
+    /// short ride) beside a long early-morning option. The night-before
+    /// train is not listed, and nothing hours early outranks one that leaves
+    /// later just because it rides for less time.
+    func testArriveByDropsOptionsArrivingHoursEarlyAndCostsTheWait() {
+        let target = t0
+        let nightBefore = journey("nightBefore", [(.walk, 18), (.dart, 12), (.walk, 7)],
+                                  startOffset: -(9 * 3600 + 53 * 60))
+        let longWalk = journey("longWalk", [(.walk, 60), (.luas, 18), (.walk, 61)],
+                               startOffset: -(2 * 3600 + 32 * 60))
+        var ctx = context(preferRail: false)
+        ctx.enabledModes = [.luas, .dart, .rail]
+        ctx.arriveBy = true
+        ctx.arriveByTime = target
+        XCTAssertEqual(RankingRules.rank([nightBefore, longWalk], context: ctx).itineraries.map(\.id), ["longWalk"])
+
+        // Same day, both in the window: the one leaving later wins although
+        // it rides longer, since the other has the user waiting at the far end.
+        let earlyShort = journey("earlyShort", [(.walk, 5), (.dart, 20), (.walk, 5)], startOffset: -(3 * 3600))
+        let lateLong = journey("lateLong", [(.walk, 10), (.bus, 35), (.walk, 5)], startOffset: -(55 * 60))
+        XCTAssertEqual(RankingRules.rank([earlyShort, lateLong], context: ctx).itineraries.map(\.id),
+                       ["lateLong", "earlyShort"])
+    }
+
+    /// Without a target time (or leaving at a time) nothing is dropped.
+    func testArriveByWindowNeedsATarget() {
+        let early = journey("early", [(.walk, 5), (.dart, 20), (.walk, 5)], startOffset: -(10 * 3600))
+        var ctx = context(preferRail: false)
+        ctx.arriveByTime = t0
+        XCTAssertEqual(RankingRules.rank([early], context: ctx).itineraries.map(\.id), ["early"])
+    }
+
     func testStaleReasonsAreCleared() {
         // A provider may have ranked already; the view model's pass decides.
         let input = [itinerary("a", duration: 1200, reason: "Rail"),

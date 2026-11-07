@@ -635,7 +635,8 @@ final class DirectionsViewModel {
             railWalkCeilingSeconds: prefs.preferRailWalkCeilingMinutes * 60,
             walkToleranceSeconds: rainAdjusted ? Self.rainWalkSeconds : prefs.walkToleranceSeconds,
             enabledModes: enabled,
-            arriveBy: !departNow && arriveBy)
+            arriveBy: !departNow && arriveBy,
+            arriveByTime: time)
     }
 
     private func publish(_ outcome: Result<PlanOutcome, Error>) {
