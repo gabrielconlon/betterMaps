@@ -194,7 +194,20 @@ struct MapScreen: View {
 
     // MARK: - Body
 
+    // The modifier chain is split: one more `.onChange` on `mainBody` and
+    // the type checker gives up on it.
     var body: some View {
+        mainBody
+            // A journey that planned is a recent search, whichever way it
+            // was reached (search, a place card, a recent row, an edited end).
+            .onChange(of: directions.phase) { _, phase in
+                guard phase == .results, let origin = directions.origin,
+                      let destination = directions.destination else { return }
+                recents.recordJourney(from: origin, to: destination)
+            }
+    }
+
+    private var mainBody: some View {
         ZStack {
             MapCanvas(
                 cameraPosition: $cameraPosition,
@@ -327,13 +340,6 @@ struct MapScreen: View {
             resumingDirections = false
             pendingDirectionsOrigin = nil
             fitDirectionsOnMap()
-        }
-        // A journey that planned is a recent search, whichever way it was
-        // reached (search, a place card, a recent row, an edited end).
-        .onChange(of: directions.phase) { _, phase in
-            guard phase == .results, let origin = directions.origin,
-                  let destination = directions.destination else { return }
-            recents.recordJourney(from: origin, to: destination)
         }
         // Frame the journey whenever there is something new to frame: the
         // ends (opening, or an edited start or destination), the previews
