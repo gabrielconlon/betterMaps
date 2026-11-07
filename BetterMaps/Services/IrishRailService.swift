@@ -46,6 +46,18 @@ struct IrishRailArrival: Identifiable {
     let lastLocation: String
 }
 
+extension IrishRailArrival {
+    /// The feed lists one direction's trains and then the other's, so a
+    /// station served both ways read 09:20, 09:31, 09:45, 10:00, 09:11, 09:25.
+    /// The stop sheet shows one list, so order it by minutes away; ties keep
+    /// the feed's order.
+    static func soonestFirst(_ arrivals: [IrishRailArrival]) -> [IrishRailArrival] {
+        arrivals.enumerated()
+            .sorted { ($0.element.dueIn, $0.offset) < ($1.element.dueIn, $1.offset) }
+            .map(\.element)
+    }
+}
+
 extension IrishRailStation {
     /// The station closest to `coordinate`, if it is within `radius`
     /// metres. The API's station order is alphabetical, so "first within
@@ -130,7 +142,7 @@ actor IrishRailService {
         ]
         guard let url = components?.url else { throw .unavailable }
         let data = try await TransitFeed.fetch(url, feed: "irishrail.arrivals", using: load)
-        return IrishRailArrivalParser(data: data).parse()
+        return IrishRailArrival.soonestFirst(IrishRailArrivalParser(data: data).parse())
     }
 
     /// Non-throwing convenience: `[]` when the feed is unavailable.

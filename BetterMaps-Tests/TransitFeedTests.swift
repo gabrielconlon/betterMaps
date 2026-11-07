@@ -49,6 +49,26 @@ final class TransitFeedTests: XCTestCase {
         XCTAssertEqual(stub.calls, 2)
     }
 
+    func testArrivalsAreSortedByMinutesAwayAcrossDirections() async throws {
+        func train(_ code: String, _ due: Int, _ direction: String) -> String {
+            "<objStationData><Traincode>\(code)</Traincode><Duein>\(due)</Duein>"
+                + "<Direction>\(direction)</Direction><Traintype>DART</Traintype></objStationData>"
+        }
+        // The feed's own order: northbound first, then southbound.
+        let xml = "<ArrayOfObjStationData>"
+            + train("N1", 18, "Northbound") + train("N2", 29, "Northbound")
+            + train("N3", 44, "Northbound") + train("N4", 59, "Northbound")
+            + train("S1", 10, "Southbound") + train("S2", 24, "Southbound")
+            + train("S3", 40, "Southbound") + train("S4", 29, "Southbound")
+            + "</ArrayOfObjStationData>"
+        let service = IrishRailService(
+            load: { url in ok(url, xml) },
+            stationCache: IrishRailService.StationCache()
+        )
+        let arrivals = try await service.arrivals(stationCode: "SMONT")
+        XCTAssertEqual(arrivals.map(\.trainCode), ["S1", "N1", "S2", "N2", "S4", "S3", "N3", "N4"])
+    }
+
     func testTransportErrorMapsToUnavailable() async {
         let service = IrishRailService(
             load: { _ in throw URLError(.notConnectedToInternet) },
