@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// "Walk 3 › Luas Red 13 › DART 26": one coloured chip per leg, wrapping
+/// "Walk 🕒3 › Luas Red 🕒13 › DART 🕒26": one coloured chip per leg, wrapping
 /// onto further lines when the journey has many legs.
 struct ModeChipStrip: View {
     let legs: [Leg]
@@ -28,9 +28,18 @@ struct ModeChipStrip: View {
         return HStack(spacing: 3) {
             Image(systemName: leg.mode.systemImage)
                 .font(.caption2.weight(.semibold))
-            Text(DirectionsFormat.chipLabel(leg))
+            Text(DirectionsFormat.legName(leg))
                 .font(.caption.weight(.semibold))
-                .monospacedDigit()
+            // The clock separates the route number from the leg's minutes:
+            // without it "Bus 39A 12" reads as one run of numbers.
+            HStack(spacing: 1) {
+                Image(systemName: "clock")
+                    .font(.caption2.weight(.semibold))
+                Text(DirectionsFormat.wholeMinutes(leg.durationSeconds))
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+            }
+            .padding(.leading, 2)
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)

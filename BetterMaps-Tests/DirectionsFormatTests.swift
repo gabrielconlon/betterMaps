@@ -20,12 +20,12 @@ final class DirectionsFormatTests: XCTestCase {
     }
 
     func testChipLabels() {
-        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.walk, minutes: 3)), "Walk 3")
-        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.luas, minutes: 13, route: "Red")), "Luas Red 13")
-        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.dart, minutes: 26, route: "DART")), "DART 26")
-        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.bus, minutes: 12, route: "39A")), "Bus 39A 12")
-        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.rail, minutes: 40, route: "rail")), "Rail 40")
-        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.bike, minutes: 18)), "Bike 18")
+        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.walk, minutes: 3)), "Walk, 3 min")
+        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.luas, minutes: 13, route: "Red")), "Luas Red, 13 min")
+        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.dart, minutes: 26, route: "DART")), "DART, 26 min")
+        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.bus, minutes: 12, route: "39A")), "Bus 39A, 12 min")
+        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.rail, minutes: 40, route: "rail")), "Rail, 40 min")
+        XCTAssertEqual(DirectionsFormat.chipLabel(leg(.bike, minutes: 18)), "Bike, 18 min")
     }
 
     func testSummary() {
