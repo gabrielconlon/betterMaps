@@ -59,6 +59,12 @@ final class DirectionsViewModel {
     private(set) var phase: Phase = .idle
     /// Chip text for the drawn option; nil when nothing is drawn.
     var drawnLabel: String?
+    /// Arriving by a time: for each network the user has on that has
+    /// nothing in the list because none of its services gets there in time,
+    /// the one that arrives soonest after the target. The sheet warns about
+    /// each and shows its card, so a Sunday-morning search says "no DART
+    /// gets you there by 09:15" instead of silently leaving the DART out.
+    private(set) var lateOptions: [LateOption] = []
     /// The forecast's verdict for this search; nil when dry, off, or unknown.
     private(set) var rainHint: RainHint?
     /// True while the results shown were planned with the rain walk limit.
@@ -135,6 +141,7 @@ final class DirectionsViewModel {
     var selectedItinerary: Itinerary? {
         guard let selectedId else { return nil }
         return itineraries.first { $0.id == selectedId }
+            ?? lateOptions.first { $0.itinerary.id == selectedId }?.itinerary
     }
 
     // MARK: - Endpoints
@@ -222,6 +229,7 @@ final class DirectionsViewModel {
     /// The journey changed: nothing found for the old one may linger.
     private func forgetResults() {
         ranked = RankedItineraries()
+        lateOptions = []
         dropSelection()
         store.setPreviews([])
     }
@@ -376,6 +384,91 @@ final class DirectionsViewModel {
         }
         assert(result.count <= maxPlanCalls)
         return result
+    }
+
+    // MARK: - Late options (arriving by a time)
+
+    /// A network that cannot get the user there by the time asked, and its
+    /// service arriving soonest after it.
+    struct LateOption: Equatable, Sendable {
+        /// The network named in the warning ("No DART gets you there…").
+        let mode: TransitMode
+        /// Its option arriving soonest after the target; `reason` says how late.
+        let itinerary: Itinerary
+        /// The arrive-by time it misses.
+        let target: Date
+    }
+
+    /// Whole minutes after `target` that `itinerary` arrives, at least one.
+    nonisolated static func lateMinutes(_ itinerary: Itinerary, target: Date) -> Int {
+        max(1, Int((itinerary.end.timeIntervalSince(target) / 60).rounded(.up)))
+    }
+
+    /// How far before the target the late search starts leaving. Two hours
+    /// covers any ride that could have arrived in time but did not.
+    nonisolated static let lateSearchLead: TimeInterval = 2 * 3600
+    /// A service arriving later than this after the target is not "close to
+    /// the time" and is not offered.
+    nonisolated static let maxLateSeconds: TimeInterval = 4 * 3600
+
+    /// The network families (as in `probeFamilies`, cut to what the user has
+    /// on) that no listed option rides.
+    nonisolated static func missingFamilies(listed: [Itinerary], allowed: Set<TransitMode>) -> [Set<TransitMode>] {
+        probeFamilies.compactMap { family in
+            let modes = family.intersection(allowed)
+            guard !modes.isEmpty else { return nil }
+            let ridden = listed.contains { itinerary in modes.contains { RankingRules.rides(itinerary, $0) } }
+            return ridden ? nil : modes
+        }
+    }
+
+    /// The question for a missing family: leaving from `lateSearchLead`
+    /// before the target on that family alone, with no walk limit.
+    nonisolated static func lateRequest(for base: JourneyRequest, family: Set<TransitMode>) -> JourneyRequest {
+        var request = base
+        request.arriveBy = false
+        request.time = base.time.addingTimeInterval(-lateSearchLead)
+        request.transitModesOverride = family
+        request.walkToleranceOverrideMinutes = DirectionsPreferencesSnapshot.noWalkLimit
+        return request
+    }
+
+    /// The option riding `family` that arrives soonest after `target` (ties
+    /// to the later departure), within `maxLateSeconds`; nil when there is
+    /// none, which also means the family has nothing to warn about: a
+    /// network that does not serve this trip at all is not "late".
+    nonisolated static func lateOption(from found: [Itinerary], family: Set<TransitMode>,
+                                       target: Date) -> LateOption? {
+        let latest = target.addingTimeInterval(maxLateSeconds)
+        let candidates = found.filter { itinerary in
+            itinerary.end > target && itinerary.end <= latest
+                && family.contains { RankingRules.rides(itinerary, $0) }
+        }
+        guard let best = candidates.min(by: { ($0.end, $1.start) < ($1.end, $0.start) }) else { return nil }
+        let named = RankingRules.guaranteedModes.filter { family.contains($0) && RankingRules.rides(best, $0) }
+        guard let mode = RankingRules.chipMode(for: best, among: named) else { return nil }
+        var itinerary = best
+        itinerary.reason = "\(lateMinutes(best, target: target)) min late"
+        return LateOption(mode: mode, itinerary: itinerary, target: target)
+    }
+
+    /// One late search per missing family, run together. A failed search
+    /// just means no warning for that family.
+    nonisolated static func lateOptions(for request: JourneyRequest, listed: [Itinerary],
+                                        with provider: any JourneyProvider) async -> [LateOption] {
+        let families = missingFamilies(listed: listed, allowed: request.preferences.allowedTransitModes)
+        guard request.arriveBy, !families.isEmpty else { return [] }
+        var found: [Int: LateOption] = [:]
+        await withTaskGroup(of: (Int, LateOption?).self) { group in
+            for (index, family) in families.enumerated() {
+                group.addTask {
+                    let answer = (try? await provider.plan(lateRequest(for: request, family: family))) ?? []
+                    return (index, lateOption(from: answer, family: family, target: request.time))
+                }
+            }
+            for await (index, option) in group { found[index] = option }
+        }
+        return families.indices.compactMap { found[$0] }
     }
 
     /// A per-network probe with no walk limit.
@@ -547,7 +640,13 @@ final class DirectionsViewModel {
         }
         guard !Task.isCancelled, generation == gen else { return }
         rainAdjusted = false
+        lateOptions = []
         publish(outcome)
+        if request.arriveBy, case .success = outcome {
+            let late = await Self.lateOptions(for: request, listed: itineraries, with: provider)
+            guard !Task.isCancelled, generation == gen else { return }
+            lateOptions = late
+        }
 
         guard prefs.rainAware else {
             rainHint = nil
@@ -654,7 +753,7 @@ final class DirectionsViewModel {
             }
             // Keep the pick if the same option is still offered; otherwise
             // the map shows the previews.
-            if let selectedId, let kept = itineraries.first(where: { $0.id == selectedId }) {
+            if selectedId != nil, let kept = selectedItinerary {
                 draw(kept)
             } else {
                 dropSelection()
@@ -761,6 +860,7 @@ final class DirectionsViewModel {
         departNow = true
         arriveBy = false
         ranked = RankedItineraries()
+        lateOptions = []
         phase = .idle
         resetRainState()
         clearMap()

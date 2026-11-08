@@ -216,10 +216,14 @@ struct DirectionsSheet: View {
             }
 
         case .results:
-            itineraryList
+            VStack(spacing: 8) {
+                lateWarnings
+                itineraryList
+            }
 
         case .empty(let suggestRelaxWalk, let suggestTransfers):
             VStack(spacing: 8) {
+                lateWarnings
                 StatusView(status: .empty(title: "No journeys found",
                                           hint: emptyHint(suggestRelaxWalk: suggestRelaxWalk,
                                                           suggestTransfers: suggestTransfers),
@@ -272,6 +276,43 @@ struct DirectionsSheet: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("directions.results")
+    }
+
+    /// Arriving by a time: one warning per network that cannot make it, with
+    /// its closest service right under it. Above the list on purpose: the
+    /// network the user expected is missing from it, and the reason should
+    /// be the first thing they read, not something to scroll for.
+    @ViewBuilder
+    private var lateWarnings: some View {
+        if !model.lateOptions.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(model.lateOptions.enumerated()), id: \.element.itinerary.id) { index, late in
+                    Label {
+                        Text(lateText(late))
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("directions.lateWarning.\(index)")
+                    ItineraryCard(itinerary: late.itinerary, index: index,
+                                  isSelected: late.itinerary.id == model.selectedId,
+                                  identifierPrefix: "directions.late") {
+                        model.select(late.itinerary)
+                        onSelectItinerary()
+                    }
+                }
+            }
+            .padding(.bottom, 4)
+        }
+    }
+
+    /// "No DART gets you there by 09:15. The closest arrives at 09:25."
+    private func lateText(_ late: DirectionsViewModel.LateOption) -> String {
+        "No \(late.mode.displayName) gets you there by \(DirectionsFormat.clock(late.target)). "
+            + "The closest arrives at \(DirectionsFormat.clock(late.itinerary.end))."
     }
 
     @ViewBuilder

@@ -1285,4 +1285,106 @@ final class DirectionsViewModelTests: XCTestCase {
             XCTAssertEqual(itinerary.end, base.time)
         }
     }
+
+    // MARK: Late options (arriving by a time)
+
+    /// One ride of `mode` (no walking) from `start` for `minutes`.
+    private func ride(_ id: String, _ mode: TransitMode, start: Date, minutes: Int) -> Itinerary {
+        let end = start.addingTimeInterval(TimeInterval(minutes * 60))
+        let leg = Leg(id: "\(id)-leg", mode: mode, routeShortName: nil, fromName: "A", toName: "B",
+                      start: start, end: end, durationSeconds: minutes * 60,
+                      coordinates: [heuston.coordinate, dunLaoghaire.coordinate])
+        return Itinerary(id: id, legs: [leg], start: start, end: end, durationSeconds: minutes * 60,
+                         transfers: 0, walkSeconds: 0, bikeSeconds: 0)
+    }
+
+    func testMissingFamiliesAreTheEnabledNetworksNothingListedRides() {
+        let listed = [ride("bus", .bus, start: t0, minutes: 50), ride("luas", .luas, start: t0, minutes: 80)]
+        let all: Set<TransitMode> = [.bus, .luas, .dart, .rail]
+        XCTAssertEqual(DirectionsViewModel.missingFamilies(listed: listed, allowed: all), [[.dart, .rail]])
+        // A network the user has off is never missing.
+        XCTAssertEqual(DirectionsViewModel.missingFamilies(listed: listed, allowed: [.bus, .luas]), [])
+        // DART alone still makes the train family present.
+        XCTAssertEqual(DirectionsViewModel.missingFamilies(listed: listed + [ride("d", .dart, start: t0, minutes: 30)],
+                                                           allowed: all), [])
+    }
+
+    func testLateRequestLeavesBeforeTheTargetOnTheFamilyAlone() {
+        let base = JourneyRequest(origin: heuston.coordinate, destination: dunLaoghaire.coordinate,
+                                  time: t0, arriveBy: true)
+        let late = DirectionsViewModel.lateRequest(for: base, family: [.dart, .rail])
+        XCTAssertFalse(late.arriveBy)
+        XCTAssertEqual(late.time, t0.addingTimeInterval(-DirectionsViewModel.lateSearchLead))
+        XCTAssertEqual(late.transitModesOverride, [.dart, .rail])
+        XCTAssertEqual(late.walkToleranceOverrideMinutes, DirectionsPreferencesSnapshot.noWalkLimit)
+    }
+
+    /// Arrive by 09:15 (t0) on a Sunday: the first DART that gets there
+    /// arrives 10 minutes late, and that is the one offered.
+    func testLateOptionIsTheSoonestArrivalAfterTheTarget() {
+        let found = [
+            ride("later", .dart, start: t0.addingTimeInterval(-600), minutes: 50),   // +40
+            ride("soonest", .dart, start: t0.addingTimeInterval(-1800), minutes: 40), // +10
+            ride("onTime", .dart, start: t0.addingTimeInterval(-3600), minutes: 30), // early, not late
+        ]
+        let late = DirectionsViewModel.lateOption(from: found, family: [.dart, .rail], target: t0)
+        XCTAssertEqual(late?.itinerary.id, "soonest")
+        XCTAssertEqual(late?.mode, .dart)
+        XCTAssertEqual(late?.itinerary.reason, "10 min late")
+        XCTAssertEqual(late?.target, t0)
+    }
+
+    func testNoLateOptionWhenNothingArrivesWithinTheLateWindow() {
+        let tooLate = ride("tooLate", .dart, start: t0.addingTimeInterval(4 * 3600), minutes: 30)
+        XCTAssertNil(DirectionsViewModel.lateOption(from: [tooLate], family: [.dart, .rail], target: t0))
+        XCTAssertNil(DirectionsViewModel.lateOption(from: [], family: [.dart, .rail], target: t0))
+    }
+
+    /// The whole search: buses and the Luas make it in time, the DART does
+    /// not. The list is the on-time options and one late DART is offered.
+    func testArriveBySearchOffersTheClosestLateServiceForAMissingNetwork() async {
+        let target = t0
+        let bus = ride("bus", .bus, start: target.addingTimeInterval(-3000), minutes: 50)
+        let luas = ride("luas", .luas, start: target.addingTimeInterval(-8000), minutes: 120)
+        let lateDart = ride("dart", .dart, start: target.addingTimeInterval(-1800), minutes: 40)
+        let provider = RoutingFakeProvider { request in
+            if request.arriveBy { return request.transitModesOverride == [.luas] ? [luas] : [bus] }
+            return request.transitModesOverride?.contains(.dart) == true ? [lateDart] : []
+        }
+        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(),
+                                        weather: FakeWeather().service, cycling: FakeCyclingProvider())
+        model.origin = heuston
+        model.destination = dunLaoghaire
+        model.departNow = false
+        model.time = target
+        model.arriveBy = true
+        model.scheduleQuery(immediate: true)
+        await settle(.milliseconds(300))
+
+        XCTAssertEqual(Set(model.itineraries.map(\.id)), ["bus", "luas"])
+        XCTAssertEqual(model.lateOptions.map(\.itinerary.id), ["dart"])
+        XCTAssertEqual(model.lateOptions.first?.mode, .dart)
+        // Only the train family was missing, so only it was asked again.
+        let lateRequests = provider.log.requests.filter { !$0.arriveBy }
+        XCTAssertEqual(lateRequests.map(\.transitModesOverride), [[.dart, .rail]])
+
+        // Picking the late card draws it like any other option.
+        model.select(model.lateOptions[0].itinerary)
+        XCTAssertEqual(model.selectedItinerary?.id, "dart")
+    }
+
+    func testLeavingAtATimeNeverAsksForLateOptions() async {
+        let provider = RoutingFakeProvider { _ in [] }
+        let model = DirectionsViewModel(provider: provider, store: TransitLayerStore(),
+                                        weather: FakeWeather().service, cycling: FakeCyclingProvider())
+        model.origin = heuston
+        model.destination = dunLaoghaire
+        model.departNow = false
+        model.time = t0
+        model.scheduleQuery(immediate: true)
+        await settle(.milliseconds(300))
+        XCTAssertEqual(model.lateOptions, [])
+        XCTAssertFalse(provider.log.requests.isEmpty)
+        XCTAssertTrue(provider.log.requests.allSatisfy { !$0.arriveBy && $0.time == self.t0 })
+    }
 }

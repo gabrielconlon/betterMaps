@@ -7,6 +7,8 @@ struct ItineraryCard: View {
     /// Position in the list, for the accessibility identifier.
     let index: Int
     let isSelected: Bool
+    /// Accessibility identifier stem; the index is appended.
+    var identifierPrefix = "directions.itinerary"
     let onSelect: () -> Void
 
     var body: some View {
@@ -47,7 +49,7 @@ struct ItineraryCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("directions.itinerary.\(index)")
+        .accessibilityIdentifier("\(identifierPrefix).\(index)")
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("Shows this journey on the map")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
