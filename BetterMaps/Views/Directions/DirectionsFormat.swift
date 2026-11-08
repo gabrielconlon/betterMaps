@@ -11,9 +11,11 @@ enum DirectionsFormat {
         return String(format: "%d h %02d min", hours, rest)
     }
 
-    /// Chip text for one leg: "Walk 3", "Luas Red 13", "DART 26", "Bus 39A 12".
+    /// Spoken text for one leg's chip: "Walk, 3 min", "Bus 39A, 12 min". The chip
+    /// itself draws the name, then a clock glyph, then the bare minutes, because
+    /// "Bus 39A 12" read as one run of numbers.
     static func chipLabel(_ leg: Leg) -> String {
-        "\(legName(leg)) \(wholeMinutes(leg.durationSeconds))"
+        "\(legName(leg)), \(minutes(leg.durationSeconds))"
     }
 
     /// "Luas Red", "DART", "Bus 39A", "Walk": the leg without its duration.
